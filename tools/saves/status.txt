@@ -1,0 +1,18 @@
+# After Continue, on the map: open the map menu, go to Menu > Status and wait for the page to draw.
+# Input only (no game data): played by `xtask replay-from-save` after the title screen and Continue.
+10 -
+4 a
+20 -
+# Menu is the fifth entry of the map menu.
+repeat 4
+4 down
+14 -
+end
+4 a
+30 -
+# Status is the second entry of the Menu list.
+4 down
+14 -
+4 a
+14 -
+60 -

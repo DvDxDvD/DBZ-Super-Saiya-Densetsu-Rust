@@ -1,0 +1,9 @@
+# For a save on map 16 (the start of the Ginyu squad's chapter): the scene that starts the map plays by
+# itself; A reads the messages, and the battle against Jeice and Burter opens on its own.
+# Input only (no game data): played by `xtask replay-from-save` after the title screen and Continue.
+60 -
+repeat 8
+4 a
+50 -
+end
+120 -

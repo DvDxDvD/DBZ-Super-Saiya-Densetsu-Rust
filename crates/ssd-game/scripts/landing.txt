@@ -1,0 +1,91 @@
+@prefix battle 3690
+# Take off, land again, walk about and fly around the first island (frame 3690: on foot, no menu open).
+10 -
+# Map menu > Fly: take off.
+4 a
+20 -
+4 down
+14 -
+4 down
+14 -
+4 a
+200 -
+# Hover over the island, open the flight menu and land (Land is its first entry).
+20 -
+4 a
+20 -
+4 a
+14 -
+110 -
+# Walk about on foot.
+8 up
+20 -
+8 up
+20 -
+8 up
+20 -
+8 right
+20 -
+8 right
+20 -
+8 up
+20 -
+8 up
+20 -
+8 left
+20 -
+8 left
+20 -
+8 down
+20 -
+8 down
+20 -
+8 down
+20 -
+8 left
+20 -
+8 down
+20 -
+# Talk and Look.
+4 a
+20 -
+4 a
+14 -
+40 -
+4 a
+40 -
+4 a
+20 -
+4 down
+14 -
+4 a
+14 -
+40 -
+4 a
+40 -
+# Take off again and fly around.
+4 a
+20 -
+4 down
+14 -
+4 down
+14 -
+4 a
+200 -
+60 left
+20 -
+60 up
+20 -
+60 right
+20 -
+60 down
+20 -
+60 left
+20 -
+60 up
+20 -
+# A random battle starts about here: fight it with A.
+repeat 30
+4 a
+12 -
+end

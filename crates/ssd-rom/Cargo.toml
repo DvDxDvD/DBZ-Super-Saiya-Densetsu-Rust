@@ -1,0 +1,13 @@
+[package]
+name = "ssd-rom"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+crc = { workspace = true }
+sha1_smol = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

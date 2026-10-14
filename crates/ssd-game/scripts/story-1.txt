@@ -1,0 +1,459 @@
+@prefix battle 3690
+# Story 1: from the first island to the second, through random battles, and the first level-up.
+# Frames 0 to 3689 are battle_input's (title, new game, the first map); frames 3690 on follow
+# landing.txt (take-off, landing, walking, Talk and Look, the first battle), then the flights east,
+# south and up and down over the sea, the landing on the second island, walking there with its
+# battles, the Item menu (Bulma: "Can't use" at full HP), and the flight west over the sea that
+# ends the battles at level 2 (Goku, EXP 74). Random battles are fought with A (4 frames every 16),
+# B closes menus. No shop or town is reached yet: the houses of the first island do not open.
+# Take off, land again, walk about and fly around the first island (frame 3690: on foot, no menu open).
+10 -
+# Map menu > Fly: take off.
+4 a
+20 -
+4 down
+14 -
+4 down
+14 -
+4 a
+200 -
+# Hover over the island, open the flight menu and land (Land is its first entry).
+20 -
+4 a
+20 -
+4 a
+14 -
+110 -
+# Walk about on foot.
+8 up
+20 -
+8 up
+20 -
+8 up
+20 -
+8 right
+20 -
+8 right
+20 -
+8 up
+20 -
+8 up
+20 -
+8 left
+20 -
+8 left
+20 -
+8 down
+20 -
+8 down
+20 -
+8 down
+20 -
+8 left
+20 -
+8 down
+20 -
+# Talk and Look.
+4 a
+20 -
+4 a
+14 -
+40 -
+4 a
+40 -
+4 a
+20 -
+4 down
+14 -
+4 a
+14 -
+40 -
+4 a
+40 -
+# Take off again and fly around.
+4 a
+20 -
+4 down
+14 -
+4 down
+14 -
+4 a
+200 -
+60 left
+20 -
+60 up
+20 -
+60 right
+20 -
+60 down
+20 -
+60 left
+20 -
+60 up
+20 -
+# A random battle starts about here: fight it with A.
+repeat 30
+4 a
+12 -
+end
+# Battle won: the messages and the item found take A presses (16 frames apart).
+repeat 90
+4 a
+12 -
+end
+138 -
+# Fly east into a random battle, which A fights.
+500 right
+100 -
+repeat 70
+4 a
+12 -
+end
+100 -
+# Close any menu that was left open, then fly back over the island and land on its
+# landing spot, a little left and above the house (the spot the take-off left from).
+4 b
+20 -
+60 left
+20 -
+30 right
+20 -
+33 left
+3 up
+20 -
+4 a
+20 -
+4 a
+150 -
+# Walk a little on the island, then take off again from the Fly entry (two downs from Talk).
+20 -
+4 a
+20 -
+4 down
+14 -
+4 down
+14 -
+4 a
+200 -
+# Fly south into random battles, which A fights; the B presses close the flight menu after them.
+300 down
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+300 down
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+300 down
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Fly right into random battles.
+300 right
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Fly up into random battles.
+300 up
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Fly left into random battles.
+300 left
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Fly down into random battles.
+300 down
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Fly right into random battles.
+300 right
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Fly up into random battles.
+300 up
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Fly down into random battles.
+300 down
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Fly right into random battles.
+300 right
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Fly up into random battles.
+300 up
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Fly left into random battles.
+300 left
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Fly down into random battles.
+300 down
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Fly right into random battles.
+300 right
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Fly up into random battles.
+300 up
+repeat 24
+4 a
+12 -
+end
+4 a
+# Close the menu the battle left open, fly onto the second island and land on its west coast.
+4 b
+20 -
+40 left
+20 -
+4 a
+20 -
+4 a
+150 -
+# Walk on the island, north and east, with the random battles on land fought by A.
+120 up
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+120 right
+repeat 40
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# West along the coast of the second island: walk, A fights any random battle, B closes the menu.
+# Walk left for 240 frames; A fights any battle, then B closes the menu.
+240 left
+repeat 100
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Walk down for 240 frames; A fights any battle, then B closes the menu.
+240 down
+repeat 100
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Walk left for 240 frames; A fights any battle, then B closes the menu.
+240 left
+repeat 100
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Walk up for 240 frames; A fights any battle, then B closes the menu.
+240 up
+repeat 100
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Walk left for 240 frames; A fights any battle, then B closes the menu.
+240 left
+repeat 100
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Walk down for 240 frames; A fights any battle, then B closes the menu.
+240 down
+repeat 100
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Item menu: Bulma (restores 25 HP) on Goku at full HP gives "Can't use": A dismisses it,
+# then B backs out of the target, the item list and the map menu.
+4 a
+20 -
+4 down
+14 -
+4 down
+14 -
+4 down
+14 -
+4 a
+40 -
+4 a
+40 -
+4 a
+40 -
+4 a
+60 -
+4 a
+40 -
+4 b
+40 -
+4 b
+40 -
+4 b
+40 -
+4 b
+40 -
+4 b
+40 -
+4 b
+40 -
+# Take off from the coast and fly west over the sea into random battles (A fights them).
+4 a
+20 -
+4 down
+14 -
+4 down
+14 -
+4 a
+200 -
+240 left
+repeat 100
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+240 left
+repeat 100
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+240 left
+repeat 100
+4 a
+12 -
+end
+4 b
+20 -
+4 b
+20 -
+# Finish the battle that the last flight met: A through its messages (the rewards come after them).
+repeat 150
+4 a
+12 -
+end
+# A tail: the rewards and the level-up messages of the last battle.
+repeat 20
+4 a
+12 -
+end

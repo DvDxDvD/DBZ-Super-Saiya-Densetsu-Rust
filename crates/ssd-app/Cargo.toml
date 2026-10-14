@@ -1,0 +1,38 @@
+[package]
+name = "ssd-app"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "ssd-recompiled"
+path = "src/main.rs"
+
+[dependencies]
+ssd-game = { workspace = true }
+ssd-hd = { workspace = true }   # the PNG writer of the UI snapshots (ssd_hd::png)
+ssd-oracle = { workspace = true }
+ssd-rom = { workspace = true }
+ssd-catalogue = { workspace = true }   # the names and pictures of the HD menus
+ssd-menus = { workspace = true }       # the layout, the draw lists and the view of the HD menus
+ssd-hdpack = { workspace = true }      # the first launch installs the shared HD art pack
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+snes-config = { workspace = true }
+sdl3 = { workspace = true }
+pollster = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+
+[features]
+recomp = ["ssd-game/recomp"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

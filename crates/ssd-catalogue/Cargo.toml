@@ -1,0 +1,17 @@
+[package]
+name = "ssd-catalogue"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ssd-game = { workspace = true }   # the addresses of the tables (ssd_game::data, from re/symbols.toml)
+ssd-menus = { workspace = true }   # the labels of the HD menus (menus.rs)
+thiserror = { workspace = true }
+
+[dev-dependencies]
+ssd-oracle = { workspace = true }   # tests/real_rom.rs: the live game state of the replays
+ssd-rom = { workspace = true }
+
+[lints]
+workspace = true

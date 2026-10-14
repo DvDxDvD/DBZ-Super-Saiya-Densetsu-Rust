@@ -1,0 +1,419 @@
+mod app;
+mod audio;
+mod canvas;
+mod debugger;
+mod egui_input;
+mod hd;
+mod hd_art;
+mod hd_install;
+mod hook_setup;
+mod hotkeys;
+mod input;
+mod layout;
+mod panel;
+mod paths;
+mod replay_io;
+mod replays;
+mod rom_setup;
+mod snapshot;
+mod tab_debugger;
+mod tab_memory;
+mod tab_replays;
+mod tab_routines;
+#[cfg(test)]
+mod test_support;
+mod theme;
+mod ui;
+mod ui_script;
+mod video;
+
+use clap::error::ErrorKind;
+use clap::{CommandFactory, Parser};
+use hook_setup::{HookSetup, HookSwitch, HooksArg};
+use ssd_game::Ruleset;
+use ssd_hd::{HdOptions, Look};
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+/// No ROM in the data directory and none given.
+const EXIT_ROM_MISSING: u8 = 2;
+/// The ROM is not one of the accepted images (or the cached copy is damaged).
+const EXIT_ROM_REJECTED: u8 = 3;
+/// The symbols file cannot be read, is invalid, or names a routine without a Rust function.
+const EXIT_SYMBOLS: u8 = 4;
+/// A verify run found divergences between the Rust routines and the original.
+const EXIT_DIVERGENCES: u8 = 5;
+/// `--install-hd-pack` named a pack that cannot be installed.
+const EXIT_HD_PACK: u8 = 7;
+/// The replay cannot be played or recorded as asked: unreadable, not a replay, for another ROM or
+/// emulator version, an initial SRAM the cartridge does not take, or `--record` naming it.
+const EXIT_REPLAY: u8 = 6;
+
+#[derive(Parser)]
+#[command(name = "ssd-recompiled", about = "Dragon Ball Z: Super Saiya Densetsu Recompiled")]
+struct Cli {
+    /// ROM to identify, normalise and cache (needed on first launch).
+    #[arg(long)]
+    rom: Option<PathBuf>,
+    /// Klepto v1.02 IPS patch, required with the Japanese Rev 1 ROM.
+    #[arg(long, requires = "rom")]
+    ips: Option<PathBuf>,
+    /// Run N frames without a window, then exit (testing).
+    #[arg(long)]
+    headless_frames: Option<u64>,
+    /// With --headless-frames: write the last frame as a BMP here.
+    #[arg(long, requires = "headless_frames")]
+    screenshot: Option<PathBuf>,
+    /// With --headless-frames: draw the debug panel offscreen (no window) after the script's
+    /// actions, and write it as a PNG here. See the README, "UI snapshots".
+    #[arg(long, requires = "headless_frames", conflicts_with = "screenshot")]
+    ui_snapshot: Option<PathBuf>,
+    /// With --ui-snapshot: the actions to apply before the picture, one per line.
+    #[arg(long, requires = "ui_snapshot")]
+    ui_script: Option<PathBuf>,
+    /// With --ui-snapshot: the picture's size in pixels, `WIDTHxHEIGHT` [default: 1440x900].
+    #[arg(long, value_parser = parse_size, requires = "ui_snapshot")]
+    ui_size: Option<(u32, u32)>,
+    /// Enhanced graphics: the picture drawn again at this many times the PPU's resolution (2 to 8),
+    /// from the state the PPU drew it from. Without it the Classic picture is shown. In a window or
+    /// with --ui-snapshot.
+    #[arg(long, value_parser = parse_hd_scale)]
+    hd_scale: Option<u32>,
+    /// The HD pack folder to draw art from (made by `xtask hd-convert` and `hd-import`) [default:
+    /// the newest pack of the ROM under the cache directory]. Used with --hd-scale and in the HD
+    /// menus.
+    #[arg(long)]
+    hd_pack: Option<PathBuf>,
+    /// Install this shared HD art pack (the `hd-pack.zip` file, or its folder) for your ROM before
+    /// starting: the game builds its HD data from the ROM and the art, once. Without it, an
+    /// `hd-pack.zip` or `hd-pack` folder next to the game is installed on the first Enhanced launch.
+    #[arg(long)]
+    install_hd_pack: Option<PathBuf>,
+    /// Draw no HD art: the Enhanced picture is the look alone.
+    #[arg(long)]
+    no_hd_art: bool,
+    /// Draw no HD text: the game's own letters, made bigger by the look.
+    #[arg(long)]
+    no_hd_font: bool,
+    /// The look of the Enhanced picture: `crisp` (pixel art made bigger, the diagonals smoothed) or
+    /// `smooth` [default: crisp]. Needs --hd-scale.
+    #[arg(long, value_enum, requires = "hd_scale")]
+    enhanced_look: Option<LookArg>,
+    /// Which routines run in Rust: none (the original game code), all of them (rust), or all of
+    /// them checked against the original code, which stays in charge (verify).
+    #[arg(long, value_enum, default_value_t = HooksArg::Original)]
+    hooks: HooksArg,
+    /// Symbols file naming the routines to hook [default: re/symbols.toml of the workspace, else
+    /// symbols.toml next to the executable].
+    #[arg(long)]
+    symbols: Option<PathBuf>,
+    /// Where --hooks verify saves divergence reports [default: .work/divergences].
+    #[arg(long)]
+    divergence_dir: Option<PathBuf>,
+    /// Record the session as a replay to this file: every frame's joypad from power-on and the
+    /// SRAM at power-on. Needs --hooks original: a hooked call can run on past a frame with
+    /// that frame's joypad, which a replay would not reproduce.
+    #[arg(long)]
+    record: Option<PathBuf>,
+    /// Play this replay from power-on, its initial SRAM in memory (the save file is neither read
+    /// nor written). A headless run stops at its end; a windowed one runs on with all buttons
+    /// released. With --record, records what is played. Loading a state is disabled while
+    /// recording or playing.
+    #[arg(long)]
+    replay: Option<PathBuf>,
+    /// Time the window's frame loop without a window (the Enhanced picture at --hd-scale, 4 by
+    /// default, and the debug panel, drawn offscreen) over these replays, each at the speeds of
+    /// --bench-speeds, flat out; prints the emulated frames per second and where the time went.
+    #[arg(long, num_args = 1.., value_name = "REPLAY", conflicts_with_all = ["headless_frames", "replay", "record"])]
+    bench_app: Option<Vec<PathBuf>>,
+    /// With --bench-app: the speeds run, comma separated [default: 1,2,4,8].
+    #[arg(long, requires = "bench_app", value_delimiter = ',', default_values_t = [1_u32, 2, 4, 8])]
+    bench_speeds: Vec<u32>,
+    /// With --bench-app: the emulated frames timed at each speed [default: 1200].
+    #[arg(long, requires = "bench_app", default_value_t = 1200)]
+    bench_frames: u64,
+    /// With --bench-app: the frames run before the timing starts [default: 120].
+    #[arg(long, requires = "bench_app", default_value_t = 120)]
+    bench_warm_up: u64,
+    /// With --bench-app: draw with the debug panel closed.
+    #[arg(long, requires = "bench_app")]
+    bench_panel_closed: bool,
+    /// The rules and visuals: `classic` (the original, the reference of the replays) or `enhanced`
+    /// (the HD menus in the window and in UI snapshots) [default: classic].
+    #[arg(long, value_enum, default_value_t = ModeArg::Classic)]
+    mode: ModeArg,
+}
+
+/// `--mode`: the two modes of the game (spec §5.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum ModeArg {
+    Classic,
+    Enhanced,
+}
+
+impl ModeArg {
+    fn ruleset(self) -> Ruleset {
+        match self {
+            Self::Classic => Ruleset::classic(),
+            Self::Enhanced => Ruleset::enhanced(),
+        }
+    }
+}
+
+pub(crate) const TITLE: &str = "Dragon Ball Z: Super Saiya Densetsu Recompiled";
+
+fn main() -> ExitCode {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let cli = Cli::parse();
+    if cli.record.is_some() && cli.hooks != HooksArg::Original {
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--record needs --hooks original: a hooked call can run on past a frame with that \
+                 frame's joypad, which a replay would not reproduce",
+            )
+            .exit();
+    }
+    // Before the ROM, like the symbols: a bad script is a mistake of the command line too.
+    let script = cli.ui_script.as_deref().map_or_else(Vec::new, read_script);
+    // Before the ROM: a bad symbols file is a mistake of the command line, whatever the data dir.
+    let hooks =
+        match hook_setup::prepare(cli.hooks, cli.symbols.as_deref(), cli.divergence_dir.as_deref())
+        {
+            Ok(hooks) => hooks,
+            Err(e) => {
+                eprintln!("symbols error: {e:#}");
+                return ExitCode::from(EXIT_SYMBOLS);
+            }
+        };
+    let rom = match rom_setup::resolve_rom(cli.rom.as_deref(), cli.ips.as_deref()) {
+        Ok(rom_setup::RomSetup::Ready(bytes)) => bytes,
+        Ok(rom_setup::RomSetup::Missing) => {
+            let msg = "No ROM yet. Start once with:\n\nssd-recompiled --rom \"path\\to\\rom.sfc\"\n\n\
+                       Accepted: Klepto v1.02 English translation, or the Japanese Rev 1 ROM with --ips dbz102.ips.";
+            eprintln!("{msg}");
+            if cli.headless_frames.is_none() {
+                let _ = sdl3::messagebox::show_simple_message_box(
+                    sdl3::messagebox::MessageBoxFlag::INFORMATION,
+                    TITLE,
+                    msg,
+                    None,
+                );
+            }
+            return ExitCode::from(EXIT_ROM_MISSING);
+        }
+        Err(e) => {
+            eprintln!("ROM rejected: {e:#}");
+            return ExitCode::from(EXIT_ROM_REJECTED);
+        }
+    };
+    let session = match replay_io::Session::new(cli.replay.as_deref(), cli.record.as_deref(), &rom)
+    {
+        Ok(session) => session,
+        Err(e) => return error_exit(&e),
+    };
+    // The HD pack of the ROM, built from the art pack beside the game when the HD picture or the HD
+    // menus will draw it (Classic never does)
+    let need = if cli.install_hd_pack.is_some() {
+        hd_install::Need::Asked
+    } else if !cli.no_hd_art
+        && cli.hd_pack.is_none()
+        && (cli.hd_scale.is_some() || cli.mode == ModeArg::Enhanced)
+    {
+        hd_install::Need::Wanted
+    } else {
+        hd_install::Need::No
+    };
+    if let Err(hd_install::Failed(message)) =
+        hd_install::ensure(&rom, need, cli.install_hd_pack.as_deref())
+    {
+        eprintln!("HD pack: {message}");
+        return ExitCode::from(EXIT_HD_PACK);
+    }
+    hd_art::configure(hd_art::Config {
+        pack: cli.hd_pack.clone(),
+        off: cli.no_hd_art,
+        font_off: cli.no_hd_font,
+    });
+    let enhanced = cli.hd_scale.map(|scale| HdOptions {
+        scale,
+        look: cli.enhanced_look.map_or_else(Look::default, Look::from),
+    });
+    if cli.hd_scale.is_some() && cli.headless_frames.is_some() && cli.ui_snapshot.is_none() {
+        Cli::command()
+            .error(ErrorKind::ArgumentConflict, "--hd-scale needs a window or --ui-snapshot")
+            .exit()
+    }
+    if let Some(replays) = &cli.bench_app {
+        let request = app::bench::Request {
+            replays: replays.clone(),
+            speeds: cli.bench_speeds.clone(),
+            frames: cli.bench_frames,
+            enhanced: enhanced.unwrap_or(HdOptions { scale: 4, look: Look::default() }),
+            panel: !cli.bench_panel_closed,
+            warm_up: cli.bench_warm_up,
+        };
+        let switch = load_switch(&cli);
+        return match app::bench::run(&rom, hooks.as_ref(), switch.as_ref(), &request) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => error_exit(&e),
+        };
+    }
+    let result = match (cli.headless_frames, cli.ui_snapshot.as_deref()) {
+        (Some(frames), None) => {
+            app::run_headless(rom, frames, cli.screenshot.as_deref(), hooks.as_ref(), session)
+        }
+        (Some(frames), Some(out)) => {
+            let request = snapshot::Request {
+                frames,
+                out,
+                size: cli.ui_size.unwrap_or(snapshot::DEFAULT_SIZE),
+                script: &script,
+                enhanced,
+            };
+            let switch = load_switch(&cli);
+            app::run_ui_snapshot(
+                rom,
+                &request,
+                hooks.as_ref(),
+                switch.as_ref(),
+                cli.hooks,
+                cli.mode.ruleset(),
+                session,
+            )
+        }
+        (None, _) => {
+            // The panel can change the hook mode of a running machine; that needs the symbols,
+            // whatever mode the run starts in.
+            let switch = load_switch(&cli);
+            app::run_windowed(
+                rom,
+                hooks.as_ref(),
+                cli.hooks,
+                switch.as_ref(),
+                cli.mode.ruleset(),
+                session,
+                enhanced,
+            )
+        }
+    };
+    match result {
+        Ok(stats) => ExitCode::from(finish(hooks.as_ref(), &stats)),
+        Err(e) => error_exit(&e),
+    }
+}
+
+/// `--hd-scale`: a whole scale from 2 to [`ssd_hd::MAX_SCALE`].
+fn parse_hd_scale(text: &str) -> Result<u32, String> {
+    text.parse::<u32>()
+        .ok()
+        .filter(|scale| (2..=ssd_hd::MAX_SCALE).contains(scale))
+        .ok_or_else(|| format!("`{text}` is not a scale from 2 to {}", ssd_hd::MAX_SCALE))
+}
+
+/// `--enhanced-look`: the look of the Enhanced picture.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum LookArg {
+    Crisp,
+    Smooth,
+}
+
+impl From<LookArg> for Look {
+    fn from(look: LookArg) -> Self {
+        match look {
+            LookArg::Crisp => Self::Crisp,
+            LookArg::Smooth => Self::Smooth,
+        }
+    }
+}
+
+/// `--ui-size`: `WIDTHxHEIGHT` in pixels, each side from 1 to [`snapshot::MAX_SIDE`].
+fn parse_size(text: &str) -> Result<(u32, u32), String> {
+    let (width, height) = text
+        .split_once(['x', 'X'])
+        .ok_or_else(|| format!("`{text}` is not WIDTHxHEIGHT, such as 1440x900"))?;
+    let side = |part: &str| {
+        part.parse::<u32>()
+            .ok()
+            .filter(|side| (1..=snapshot::MAX_SIDE).contains(side))
+            .ok_or_else(|| format!("`{text}`: each side is from 1 to {}", snapshot::MAX_SIDE))
+    };
+    Ok((side(width)?, side(height)?))
+}
+
+/// The script of `--ui-script`, read and checked; a bad one is a usage error (exit 2).
+fn read_script(path: &Path) -> Vec<ui_script::Line> {
+    let text =
+        std::fs::read_to_string(path).unwrap_or_else(|e| script_usage_error(path, &e.to_string()));
+    ui_script::parse(&text).unwrap_or_else(|e| script_usage_error(path, &e.to_string()))
+}
+
+fn script_usage_error(path: &Path, message: &str) -> ! {
+    Cli::command()
+        .error(ErrorKind::ValueValidation, format!("--ui-script {}: {message}", path.display()))
+        .exit()
+}
+
+/// The symbols and hook switch of the panel, if the symbols file can be read: a warning says why
+/// the hook mode cannot be changed otherwise.
+fn load_switch(cli: &Cli) -> Option<HookSwitch> {
+    HookSwitch::load(cli.symbols.as_deref(), cli.divergence_dir.as_deref())
+        .inspect_err(|e| log::warn!("the hook mode cannot be changed in the panel: {e:#}"))
+        .ok()
+}
+
+/// Reports a failed run: a rejected replay exits with [`EXIT_REPLAY`], anything else with 1.
+fn error_exit(error: &anyhow::Error) -> ExitCode {
+    if replay_io::is_rejection(error) {
+        eprintln!("{error:#}");
+        return ExitCode::from(EXIT_REPLAY);
+    }
+    eprintln!("error: {error:#}");
+    ExitCode::FAILURE
+}
+
+/// The end of a successful run, and its exit code: a verify run prints its table and fails if
+/// anything diverged.
+fn finish(hooks: Option<&HookSetup>, stats: &app::RunStats) -> u8 {
+    let Some(hooks) = hooks.filter(|hooks| hooks.is_verify()) else {
+        return 0;
+    };
+    println!("{}", hook_setup::stats_table(stats));
+    let divergences = hook_setup::divergence_count(stats);
+    if divergences == 0 {
+        return 0;
+    }
+    let report_errors = hook_setup::report_error_count(stats);
+    eprintln!(
+        "{}",
+        hook_setup::divergence_summary(divergences, report_errors, hooks.divergence_dir())
+    );
+    EXIT_DIVERGENCES
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ssd_oracle::HookStats;
+    use std::path::Path;
+
+    const REPO_SYMBOLS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../re/symbols.toml");
+
+    fn stats(divergences: u64) -> app::RunStats {
+        vec![("rng_next_a".to_owned(), HookStats { calls: 9, divergences, ..HookStats::default() })]
+    }
+
+    fn setup(mode: HooksArg) -> Option<HookSetup> {
+        hook_setup::prepare(mode, Some(Path::new(REPO_SYMBOLS)), None).unwrap()
+    }
+
+    #[test]
+    fn only_a_verify_run_with_divergences_fails() {
+        assert_eq!(finish(setup(HooksArg::Verify).as_ref(), &stats(0)), 0);
+        assert_eq!(finish(setup(HooksArg::Verify).as_ref(), &stats(1)), EXIT_DIVERGENCES);
+        assert_eq!(EXIT_DIVERGENCES, 5);
+        // Nothing is compared outside verify, whatever the counters say.
+        assert_eq!(finish(setup(HooksArg::Rust).as_ref(), &stats(1)), 0);
+        assert_eq!(finish(None, &stats(1)), 0);
+    }
+}

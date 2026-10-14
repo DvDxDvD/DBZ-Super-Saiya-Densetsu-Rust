@@ -1,0 +1,171 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ssd-rom",
+    "crates/ssd-oracle",
+    "crates/ssd-recomp",
+    "crates/ssd-recomp-gen",
+    "crates/ssd-game",
+    "crates/ssd-app",
+    "crates/ssd-catalogue",
+    "crates/ssd-save",
+    "crates/ssd-hd",
+    "crates/ssd-menus",
+    "crates/ssd-hdpack",
+    "xtask",
+    "third_party/jgenesis/common/jgenesis-common",
+    "third_party/jgenesis/common/jgenesis-proc-macros",
+    "third_party/jgenesis/common/dsp",
+    "third_party/jgenesis/cpu/wdc65816-emu",
+    "third_party/jgenesis/cpu/spc700-emu",
+    "third_party/jgenesis/cpu/arm7tdmi-emu",
+    "third_party/jgenesis/config/snes-config",
+    "third_party/jgenesis/backend/snes-core",
+    "third_party/jgenesis/backend/snes-coprocessors",
+    "third_party/jgenesis/frontend/jgenesis-renderer",
+]
+default-members = ["crates/ssd-app"]
+
+[workspace.package]
+# Version used by the vendored jgenesis crates (`version = { workspace = true }`).
+version = "0.14.1"
+
+[workspace.dependencies]
+# Third-party (versions copied from jgenesis 85ffe5f where shared)
+anyhow = "1"
+bincode = "2"
+# `min_const_generics`: the fast-forward patch casts `[bool; 8]` (third_party/jgenesis/PATCHES.md);
+# without it snes-core builds only when another dependency happens to enable the feature.
+bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
+clap = { version = "4", features = ["derive"] }
+crc = "3"
+env_logger = "0.11"
+glyphon = "0.12"
+js-sys = "0.3"   # jgenesis-common wasm32-only dep; cargo validates `workspace = true` on every platform
+log = "0.4"
+multiversion = "0.9"
+num = "0.4"
+pollster = "1"
+rand = "0.10"
+regex = "1"   # export-public: the rules of the scan (xtask)
+rayon = "1"   # the row-parallel passes of the Enhanced picture (ssd-hd)
+raw-window-handle = "0.6"
+rustc-hash = "2"
+sdl3 = { version = "0.20", features = ["raw-window-handle", "build-from-source-static"] }
+serde = { version = "1", features = ["derive"] }
+ab_glyph = "0.2"   # rasterising the HD text font (ssd-hd)
+png = "0.18"   # decoding the HD art (ssd-hd, xtask)
+serde_json = "1"   # hd-import: the art indexes
+sha1_smol = "1"
+image-webp = "0.2"   # decoding the HD art that comes as WebP (ssd-hd)
+zip = { version = "9", default-features = false, features = ["deflate"] }   # the HD pack as a zip (ssd-hdpack, xtask)
+webp = { version = "0.3", default-features = false }   # encoding the HD pack's art (xtask hd-pack-public)
+tempfile = "3"
+test-log = "0.2"
+thiserror = "2"
+time = "0.3"
+toml = "1"
+wgpu = "30"
+# The debug panel (ssd-app). egui-wgpu 0.36 is built on the same wgpu major as jgenesis-renderer.
+egui = { version = "0.36", default-features = false }
+egui-wgpu = { version = "0.36", default-features = false }
+naga = "29"
+
+# Vendored jgenesis crates
+dsp = { path = "third_party/jgenesis/common/dsp" }
+jgenesis-common = { path = "third_party/jgenesis/common/jgenesis-common" }
+jgenesis-proc-macros = { path = "third_party/jgenesis/common/jgenesis-proc-macros" }
+arm7tdmi-emu = { path = "third_party/jgenesis/cpu/arm7tdmi-emu" }
+spc700-emu = { path = "third_party/jgenesis/cpu/spc700-emu" }
+wdc65816-emu = { path = "third_party/jgenesis/cpu/wdc65816-emu" }
+snes-config = { path = "third_party/jgenesis/config/snes-config" }
+snes-coprocessors = { path = "third_party/jgenesis/backend/snes-coprocessors" }
+snes-core = { path = "third_party/jgenesis/backend/snes-core" }
+jgenesis-renderer = { path = "third_party/jgenesis/frontend/jgenesis-renderer" }
+
+# Our crates
+ssd-rom = { path = "crates/ssd-rom" }
+ssd-oracle = { path = "crates/ssd-oracle" }
+ssd-recomp = { path = "crates/ssd-recomp" }
+ssd-recomp-gen = { path = "crates/ssd-recomp-gen" }
+ssd-game = { path = "crates/ssd-game" }
+ssd-catalogue = { path = "crates/ssd-catalogue" }
+ssd-save = { path = "crates/ssd-save" }
+ssd-hd = { path = "crates/ssd-hd" }
+ssd-menus = { path = "crates/ssd-menus" }
+ssd-hdpack = { path = "crates/ssd-hdpack" }
+
+# Required by the vendored crates (`[lints] workspace = true`); copied from jgenesis.
+[workspace.lints.rust]
+rust_2018_idioms = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+clone_on_ref_ptr = "warn"
+dbg_macro = "warn"
+empty_drop = "warn"
+empty_structs_with_brackets = "warn"
+float_cmp_const = "warn"
+fn_to_numeric_cast_any = "warn"
+get_unwrap = "warn"
+if_then_some_else_none = "warn"
+mixed_read_write_in_expression = "warn"
+mod_module_files = "warn"
+mutex_atomic = "warn"
+rc_buffer = "warn"
+rc_mutex = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+suspicious_xor_used_as_pow = "warn"
+todo = "warn"
+try_err = "warn"
+unneeded_field_pattern = "warn"
+unseparated_literal_suffix = "warn"
+verbose_file_reads = "warn"
+# Allow block copied from jgenesis (pedantic lints upstream disagrees with)
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+enum_glob_use = "allow"
+if_not_else = "allow"
+inline_always = "allow"
+manual_string_new = "allow"
+map_unwrap_or = "allow"
+module_name_repetitions = "allow"
+needless_pass_by_value = "allow"
+similar_names = "allow"
+single_match_else = "allow"
+stable_sort_primitive = "allow"
+struct_excessive_bools = "allow"
+struct_field_names = "allow"
+too_many_lines = "allow"
+unchecked_time_subtraction = "allow"
+unreadable_literal = "allow"
+verbose_bit_mask = "allow"
+
+# The emulator is unusably slow without optimisation; keep our own crates debuggable.
+[profile.dev]
+opt-level = 1
+
+# Third-party registry crates.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Vendored emulator crates are workspace members, so "*" does not cover them.
+[profile.dev.package.snes-core]
+opt-level = 3
+[profile.dev.package.wdc65816-emu]
+opt-level = 3
+[profile.dev.package.spc700-emu]
+opt-level = 3
+[profile.dev.package.dsp]
+opt-level = 3
+[profile.dev.package.jgenesis-common]
+opt-level = 3
+
+[profile.dev.build-override]
+opt-level = 1
+
+[profile.release]
+lto = "thin"

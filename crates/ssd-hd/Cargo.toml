@@ -1,0 +1,25 @@
+[package]
+name = "ssd-hd"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ssd-oracle = { workspace = true }   # the frame log the PPU writes (FrameLog) and Color
+ssd-rom = { workspace = true }      # crc32 of the index and of the pack's ROM
+ssd-catalogue = { workspace = true } # the title set's LZ stream (graphics::lz_decode, regroup)
+rustc-hash = { workspace = true }   # the tile index of the pack
+rayon = { workspace = true }         # the row-parallel passes of the Enhanced picture
+serde = { workspace = true }        # hdpack.toml
+ab_glyph = { workspace = true }     # the HD text: Share Tech Mono rasterised at the picture scale
+png = { workspace = true }          # decoding the pack's art
+image-webp = { workspace = true }   # decoding the pack's art when it is WebP
+sha1_smol = { workspace = true }    # the keys of the battle poses
+thiserror = { workspace = true }
+toml = { workspace = true }         # hdpack.toml
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

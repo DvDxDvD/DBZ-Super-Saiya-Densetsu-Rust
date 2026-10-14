@@ -1,0 +1,32 @@
+[package]
+name = "ssd-oracle"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+snes-core = { workspace = true }
+snes-config = { workspace = true }
+wdc65816-emu = { workspace = true }
+jgenesis-common = { workspace = true }
+bincode = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+ssd-rom = { workspace = true }   # crc32 for state headers; fix_lorom_checksum in the synthetic test ROM
+
+[features]
+# Counts the opcode fetches of the original code by address (`xtask causes`).
+histogram = []
+
+[build-dependencies]
+crc = { workspace = true }   # build/core_version.rs: the core version replays carry (CRC32 of the vendored sources)
+
+[dev-dependencies]
+tempfile = { workspace = true }
+crc = { workspace = true }   # tests/core_version.rs includes build/core_version.rs
+ssd-game = { workspace = true }   # tests/sync.rs: the play-through script (ssd_game::scripts)
+
+[lints]
+workspace = true

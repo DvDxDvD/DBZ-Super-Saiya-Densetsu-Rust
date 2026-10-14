@@ -1,0 +1,624 @@
+//! `shots`: plays an input script headless from power-on and writes the screen at chosen frames
+//! as PNG files, with a fingerprint of each frame and the values of chosen WRAM bytes, so
+//! one can find out where the game is without a window (`CONTRIBUTING.md`). It is how the
+//! scripts of the menu, shop and save replays were authored. Output goes to `.work/shots/` and
+//! is never tracked (the screenshots are derived from the game).
+//!
+//! The script is the name of a script of `ssd_game::scripts` (`battle`, `menus`, ...) or the path
+//! of a timeline file (one `<frames> <keys>` per line, see `ssd_game::scripts::parse_timeline`), or
+//! of a replay (`.ssdreplay`), which also gives the SRAM it powers on with.
+
+use anyhow::{Context, bail};
+use ssd_game::scripts::{self, REPLAYS};
+use ssd_oracle::{Joypad, Machine, MemorySaveStore, NullAudio, Symbols};
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
+/// The command line of `shots`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Args {
+    pub script: String,
+    pub frames: Vec<u64>,
+    pub every: Option<u64>,
+    /// Last frame to play (default: the script's last, or the last of `--frames`).
+    pub upto: Option<u64>,
+    pub out: Option<PathBuf>,
+    /// Put the shots in one contact sheet of this many columns (half size) instead of files.
+    pub sheet: Option<usize>,
+    pub no_png: bool,
+    /// Variable names or hex bus addresses to print with each shot.
+    pub peek: Vec<String>,
+    pub state_in: Option<PathBuf>,
+    pub state_out: Option<PathBuf>,
+    /// Write the 128 KiB of WRAM at the end (to find variables by diffing two runs).
+    pub wram_out: Option<PathBuf>,
+    /// Write the script as an input timeline for `tools/re/trace.lua` (`DBZ_INPUTS`) and stop.
+    pub mesen_inputs: Option<PathBuf>,
+    /// Power on with this battery save (8 KiB) instead of a blank cartridge.
+    pub sram: Option<PathBuf>,
+    /// WRAM bytes (variables or hex bus addresses) whose CPU writes are printed, one line per
+    /// change, with the frame they happened in.
+    pub watch: Vec<String>,
+    /// From this frame on the run goes one CPU cycle at a time and each watched write also says
+    /// where the CPU was (the program counter after the writing instruction's cycle).
+    pub watch_from: Option<u64>,
+    /// Write the battery SRAM (8 KiB) at the end: a save the game wrote itself, when the script
+    /// ended with the map menu's Save.
+    pub sram_out: Option<PathBuf>,
+}
+
+/// Parses `<script> [--frames a,b,c] [--every N] [--upto N] [--out dir] [--sheet COLS]
+/// [--no-png] [--peek a,b] [--watch a,b] [--watch-from N] [--state-in f] [--state-out f]
+/// [--wram-out f] [--sram f] [--sram-out f]`.
+///
+/// # Errors
+///
+/// An unknown option, a bad value, or no script.
+pub fn parse_args(args: &[&str]) -> Result<Args, String> {
+    let mut parsed = Args {
+        script: String::new(),
+        frames: Vec::new(),
+        every: None,
+        upto: None,
+        out: None,
+        sheet: None,
+        no_png: false,
+        peek: Vec::new(),
+        state_in: None,
+        state_out: None,
+        wram_out: None,
+        mesen_inputs: None,
+        sram: None,
+        watch: Vec::new(),
+        watch_from: None,
+        sram_out: None,
+    };
+    let number = |flag: &str, v: Option<&&str>| -> Result<u64, String> {
+        let v = v.ok_or(format!("{flag} needs a value"))?;
+        v.parse().map_err(|_| format!("bad {flag} `{v}`"))
+    };
+    let mut it = args.iter();
+    while let Some(&arg) = it.next() {
+        match arg {
+            "--frames" => {
+                let v = it.next().ok_or("--frames needs a list")?;
+                for f in v.split(',').filter(|f| !f.is_empty()) {
+                    parsed.frames.push(f.parse().map_err(|_| format!("bad frame `{f}`"))?);
+                }
+            }
+            "--every" => parsed.every = Some(number(arg, it.next())?.max(1)),
+            "--upto" => parsed.upto = Some(number(arg, it.next())?),
+            "--sheet" => {
+                parsed.sheet =
+                    Some(usize::try_from(number(arg, it.next())?.clamp(1, 16)).unwrap_or(4));
+            }
+            "--out" => {
+                parsed.out = Some(PathBuf::from(it.next().ok_or("--out needs a directory")?));
+            }
+            "--no-png" => parsed.no_png = true,
+            "--peek" => {
+                let v = it.next().ok_or("--peek needs a list")?;
+                parsed.peek.extend(v.split(',').filter(|p| !p.is_empty()).map(str::to_owned));
+            }
+            "--sram-out" => {
+                parsed.sram_out = Some(PathBuf::from(it.next().ok_or("--sram-out needs a file")?));
+            }
+            "--watch-from" => parsed.watch_from = Some(number(arg, it.next())?),
+            "--watch" => {
+                let v = it.next().ok_or("--watch needs a list")?;
+                parsed.watch.extend(v.split(',').filter(|p| !p.is_empty()).map(str::to_owned));
+            }
+            "--state-in" => {
+                parsed.state_in = Some(PathBuf::from(it.next().ok_or("--state-in needs a file")?));
+            }
+            "--state-out" => {
+                parsed.state_out =
+                    Some(PathBuf::from(it.next().ok_or("--state-out needs a file")?));
+            }
+            "--mesen-inputs" => {
+                parsed.mesen_inputs =
+                    Some(PathBuf::from(it.next().ok_or("--mesen-inputs needs a file")?));
+            }
+            "--sram" => {
+                parsed.sram = Some(PathBuf::from(it.next().ok_or("--sram needs a file")?));
+            }
+            "--wram-out" => {
+                parsed.wram_out = Some(PathBuf::from(it.next().ok_or("--wram-out needs a file")?));
+            }
+            option if option.starts_with("--") => return Err(format!("unknown option `{option}`")),
+            script if parsed.script.is_empty() => script.clone_into(&mut parsed.script),
+            other => return Err(format!("one script only (`{other}` is a second one)")),
+        }
+    }
+    if parsed.script.is_empty() {
+        return Err("needs a script name or a timeline file".to_owned());
+    }
+    if parsed.frames.is_empty()
+        && parsed.every.is_none()
+        && parsed.state_out.is_none()
+        && parsed.wram_out.is_none()
+        && parsed.mesen_inputs.is_none()
+        && parsed.watch.is_empty()
+        && parsed.sram_out.is_none()
+    {
+        return Err("needs --frames or --every (or --state-out, --wram-out, --sram-out, --watch)"
+            .to_owned());
+    }
+    Ok(parsed)
+}
+
+/// The input of a script: its joypad per frame and its length.
+pub struct Script {
+    pub name: String,
+    pub inputs: Box<dyn Fn(u64) -> Joypad>,
+    pub frames: u64,
+    /// The SRAM a replay powers on with (`--sram` wins over it).
+    pub sram: Option<Vec<u8>>,
+}
+
+/// A script of `ssd_game::scripts` by name, or a timeline file.
+///
+/// # Errors
+///
+/// Neither a known name nor a readable, valid timeline.
+pub fn load_script(spec: &str) -> anyhow::Result<Script> {
+    if let Some(&(name, frames, input)) = REPLAYS.iter().find(|(name, ..)| *name == spec) {
+        return Ok(Script { name: name.to_owned(), inputs: Box::new(input), frames, sram: None });
+    }
+    let path = Path::new(spec);
+    if !path.is_file() {
+        let names: Vec<&str> = REPLAYS.iter().map(|(n, ..)| *n).collect();
+        bail!("`{spec}` is neither a script ({}) nor a timeline file", names.join(", "));
+    }
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading {spec}"))?;
+    let inputs = scripts::parse_timeline(&text).map_err(|e| anyhow::anyhow!("{spec}: {e}"))?;
+    let frames = inputs.len() as u64;
+    Ok(Script {
+        name: path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned()),
+        inputs: Box::new(move |frame| {
+            usize::try_from(frame).ok().and_then(|f| inputs.get(f)).copied().unwrap_or_default()
+        }),
+        frames,
+        sram: None,
+    })
+}
+
+/// A replay file as a script: its inputs, and the SRAM it powers on with.
+///
+/// # Errors
+///
+/// The file cannot be read or is not a replay of `rom` for this core.
+pub fn load_replay_script(path: &Path, rom: &[u8]) -> anyhow::Result<Script> {
+    let mut replay = crate::shared::read_replay(path, rom)?;
+    let frames = replay.frames();
+    let sram = replay.initial_sram.take();
+    Ok(Script {
+        name: path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned()),
+        inputs: Box::new(move |frame| replay.input(frame)),
+        frames,
+        sram,
+    })
+}
+
+/// The timeline text of `tools/re/trace.lua`'s `DBZ_INPUTS` for the first `frames` frames of
+/// `inputs`: one `<n> <keys>` row per run of equal joypads.
+fn mesen_timeline(inputs: &dyn Fn(u64) -> Joypad, frames: u64) -> String {
+    let keys = |p: &Joypad| {
+        let all = [
+            (p.up, "up"),
+            (p.down, "down"),
+            (p.left, "left"),
+            (p.right, "right"),
+            (p.a, "a"),
+            (p.b, "b"),
+            (p.x, "x"),
+            (p.y, "y"),
+            (p.l, "l"),
+            (p.r, "r"),
+            (p.start, "start"),
+            (p.select, "select"),
+        ];
+        let names: Vec<&str> = all.iter().filter(|(on, _)| *on).map(|(_, n)| *n).collect();
+        if names.is_empty() { "-".to_owned() } else { names.join(",") }
+    };
+    let mut out = String::from(
+        "# generated by `xtask shots --mesen-inputs`
+",
+    );
+    let mut run: Option<(String, u64)> = None;
+    for frame in 0..frames {
+        let k = keys(&inputs(frame));
+        match &mut run {
+            Some((last, n)) if *last == k => *n += 1,
+            _ => {
+                if let Some((last, n)) = run.take() {
+                    let _ = writeln!(out, "{n} {last}");
+                }
+                run = Some((k, 1));
+            }
+        }
+    }
+    if let Some((last, n)) = run {
+        let _ = writeln!(out, "{n} {last}");
+    }
+    out.push_str(
+        "@mode idle
+",
+    );
+    out
+}
+
+/// One WRAM byte range to print: its label and bus offset in WRAM.
+struct Peek {
+    label: String,
+    offset: usize,
+    size: usize,
+}
+
+fn resolve_peeks(symbols: &Symbols, specs: &[String]) -> anyhow::Result<Vec<Peek>> {
+    specs
+        .iter()
+        .map(|spec| {
+            if let Some(v) = symbols.variables().iter().find(|v| v.name == *spec) {
+                return Ok(Peek {
+                    label: spec.clone(),
+                    offset: (v.address & 0x1_FFFF) as usize,
+                    size: v.size.min(8) as usize,
+                });
+            }
+            let address = crate::disasm::parse_address(spec)
+                .with_context(|| format!("`{spec}` is neither a variable nor an address"))?;
+            let offset = match crate::disasm::region(address) {
+                crate::disasm::Region::Wram(o) => o as usize,
+                _ => bail!("`{spec}` is not in WRAM"),
+            };
+            Ok(Peek { label: format!("{offset:05X}"), offset, size: 1 })
+        })
+        .collect()
+}
+
+/// RGBA bytes of the machine's last frame, and its size.
+fn rgba(machine: &Machine) -> (u32, u32, Vec<u8>) {
+    let frame = machine.frame();
+    let mut bytes = Vec::with_capacity(frame.pixels.len() * 4);
+    for c in frame.pixels {
+        bytes.extend_from_slice(&[c.r, c.g, c.b, 0xFF]);
+    }
+    (frame.size.width, frame.size.height, bytes)
+}
+
+/// Half-size copy of an RGBA image (each pixel the average of 2x2).
+fn halve(width: u32, height: u32, rgba: &[u8]) -> (u32, u32, Vec<u8>) {
+    let (w, h) = (width as usize / 2, height as usize / 2);
+    let mut out = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        for x in 0..w {
+            for channel in 0..3 {
+                let at = |dx: usize, dy: usize| {
+                    u32::from(rgba[((2 * y + dy) * width as usize + 2 * x + dx) * 4 + channel])
+                };
+                out.push(((at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1)) / 4) as u8);
+            }
+            out.push(0xFF);
+        }
+    }
+    (w as u32, h as u32, out)
+}
+
+/// A contact sheet: the tiles in rows of `cols`, 2 pixels apart on a grey background.
+fn sheet(tiles: &[(u32, u32, Vec<u8>)], cols: usize) -> (u32, u32, Vec<u8>) {
+    let (tw, th) = (tiles[0].0 as usize, tiles[0].1 as usize);
+    let rows = tiles.len().div_ceil(cols);
+    let (w, h) = (cols * (tw + 2) + 2, rows * (th + 2) + 2);
+    let mut out = vec![0x60_u8; w * h * 4];
+    for (i, (_, _, pixels)) in tiles.iter().enumerate() {
+        let (ox, oy) = (2 + (i % cols) * (tw + 2), 2 + (i / cols) * (th + 2));
+        for y in 0..th {
+            let from = y * tw * 4;
+            let to = ((oy + y) * w + ox) * 4;
+            out[to..to + tw * 4].copy_from_slice(&pixels[from..from + tw * 4]);
+        }
+    }
+    (w as u32, h as u32, out)
+}
+
+/// A PNG of an RGBA image with stored (uncompressed) deflate blocks.
+pub(crate) fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+    fn chunk(out: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let start = out.len();
+        out.extend_from_slice(&kind);
+        out.extend_from_slice(data);
+        let crc = ssd_rom::crc32(&out[start..]);
+        out.extend_from_slice(&crc.to_be_bytes());
+    }
+    let row = width as usize * 4;
+    let mut raw = Vec::with_capacity(rgba.len() + height as usize);
+    for line in rgba.chunks_exact(row) {
+        raw.push(0);
+        raw.extend_from_slice(line);
+    }
+    let mut z = vec![0x78, 0x01];
+    let mut blocks = raw.chunks(0xFFFF).peekable();
+    while let Some(block) = blocks.next() {
+        z.push(u8::from(blocks.peek().is_none()));
+        z.extend_from_slice(&(block.len() as u16).to_le_bytes());
+        z.extend_from_slice(&(!(block.len() as u16)).to_le_bytes());
+        z.extend_from_slice(block);
+    }
+    let (mut a, mut b) = (1_u32, 0_u32);
+    for &byte in &raw {
+        a = (a + u32::from(byte)) % 65_521;
+        b = (b + a) % 65_521;
+    }
+    z.extend_from_slice(&((b << 16) | a).to_be_bytes());
+    let mut header = Vec::new();
+    header.extend_from_slice(&width.to_be_bytes());
+    header.extend_from_slice(&height.to_be_bytes());
+    header.extend_from_slice(&[8, 6, 0, 0, 0]);
+    let mut out = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n'];
+    chunk(&mut out, *b"IHDR", &header);
+    chunk(&mut out, *b"IDAT", &z);
+    chunk(&mut out, *b"IEND", &[]);
+    out
+}
+
+/// The WRAM offset a CPU write to bus address `bus` lands on (bank `$7E`, or the low 8 KiB mirrored
+/// in the system banks), if it is one.
+fn wram_offset(bus: u32) -> Option<usize> {
+    match (bus >> 16, bus & 0xFFFF) {
+        (0x7E, low) => Some(low as usize),
+        (0x00..=0x3F | 0x80..=0xBF, low) if low < 0x2000 => Some(low as usize),
+        _ => None,
+    }
+}
+
+/// Plays the script and writes what `args` ask for; returns the lines printed (one per shot).
+///
+/// # Errors
+///
+/// The script, a state file or a file to write is bad, or the run fails.
+pub fn run(
+    rom: &[u8],
+    symbols: &Symbols,
+    args: &Args,
+    root: &Path,
+    out: &mut dyn std::io::Write,
+) -> anyhow::Result<()> {
+    let script = if args.script.ends_with(".ssdreplay") {
+        load_replay_script(Path::new(&args.script), rom)?
+    } else {
+        load_script(&args.script)?
+    };
+    let dir =
+        args.out.clone().unwrap_or_else(|| root.join(".work").join("shots").join(&script.name));
+    if let Some(path) = &args.mesen_inputs {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, mesen_timeline(&*script.inputs, script.frames))?;
+        writeln!(out, "{} frames of {} written to {}", script.frames, script.name, path.display())?;
+        return Ok(());
+    }
+    let peeks = resolve_peeks(symbols, &args.peek)?;
+    let mut saves = MemorySaveStore::default();
+    if let Some(path) = &args.sram {
+        let sram = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        saves.0.insert("sav".to_owned(), sram);
+    } else if let Some(sram) = &script.sram {
+        saves.0.insert("sav".to_owned(), sram.clone());
+    }
+    let mut machine = Machine::new(rom.to_vec(), Box::new(saves))?;
+    if let Some(path) = &args.state_in {
+        let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        machine.load_state(&bytes)?;
+    }
+    let last = args
+        .upto
+        .or_else(|| args.frames.iter().copied().max())
+        .unwrap_or(script.frames)
+        .max(machine.frame_count());
+    let watches = resolve_peeks(symbols, &args.watch)?;
+    let mut last_seen: Vec<Option<u8>> = vec![None; watches.len()];
+    machine.set_cpu_write_log(!watches.is_empty());
+    let wanted = |frame: u64| {
+        args.frames.contains(&frame)
+            || args.every.is_some_and(|n| frame.is_multiple_of(n) && frame > 0)
+    };
+    let mut tiles = Vec::new();
+    let mut labels = Vec::new();
+    while machine.frame_count() < last {
+        let frame = machine.frame_count();
+        if args.watch_from.is_some_and(|from| frame >= from) && !watches.is_empty() {
+            let pad = (script.inputs)(frame);
+            loop {
+                let event = machine.tick(pad, &mut NullAudio)?;
+                for (bus, value) in machine.take_cpu_writes() {
+                    let wram = wram_offset(bus);
+                    let r = machine.cpu_registers();
+                    for w in &watches {
+                        if wram == Some(w.offset) {
+                            writeln!(
+                                out,
+                                "write frame {:6} {}={value:02X} pc={:02X}:{:04X}",
+                                frame + 1,
+                                w.label,
+                                r.pbr,
+                                r.pc
+                            )?;
+                        }
+                    }
+                }
+                if matches!(event, ssd_oracle::TickEvent::Frame) {
+                    break;
+                }
+            }
+        } else {
+            machine.run_frame((script.inputs)(frame), &mut NullAudio)?;
+        }
+        let frame = machine.frame_count();
+        if !watches.is_empty() && args.watch_from.is_none_or(|from| frame <= from) {
+            for (bus, value) in machine.take_cpu_writes() {
+                let wram = wram_offset(bus);
+                for (w, seen) in watches.iter().zip(last_seen.iter_mut()) {
+                    if wram == Some(w.offset) && *seen != Some(value) {
+                        *seen = Some(value);
+                        writeln!(out, "write frame {frame:6} {}={value:02X}", w.label)?;
+                    }
+                }
+            }
+        }
+        if !wanted(frame) {
+            continue;
+        }
+        let (w, h, pixels) = rgba(&machine);
+        let mut line = format!("frame {frame:6} crc {:08X}", ssd_rom::crc32(&pixels));
+        for p in &peeks {
+            let bytes = &machine.wram()[p.offset..p.offset + p.size];
+            let value = bytes.iter().rev().fold(String::new(), |mut text, b| {
+                let _ = write!(text, "{b:02X}");
+                text
+            });
+            let _ = write!(line, " {}={value}", p.label);
+        }
+        if !args.no_png {
+            if args.sheet.is_some() {
+                tiles.push(halve(w, h, &pixels));
+                labels.push(frame);
+            } else {
+                std::fs::create_dir_all(&dir)?;
+                let path = dir.join(format!("f{frame:06}.png"));
+                std::fs::write(&path, encode_png(w, h, &pixels))
+                    .with_context(|| format!("writing {}", path.display()))?;
+                let _ = write!(line, " {}", path.display());
+            }
+        }
+        writeln!(out, "{line}")?;
+    }
+    if let (Some(cols), false) = (args.sheet, tiles.is_empty()) {
+        let (w, h, pixels) = sheet(&tiles, cols);
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("sheet_{}.png", labels[0]));
+        std::fs::write(&path, encode_png(w, h, &pixels))?;
+        let list: Vec<String> = labels.iter().map(u64::to_string).collect();
+        writeln!(out, "sheet {} ({cols} columns, frames {})", path.display(), list.join(" "))?;
+    }
+    if let Some(path) = &args.wram_out {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, machine.wram())?;
+        writeln!(out, "WRAM at frame {} written to {}", machine.frame_count(), path.display())?;
+    }
+    if let Some(path) = &args.sram_out {
+        let sram = machine.sram().context("the cartridge has no SRAM")?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, sram)?;
+        writeln!(out, "SRAM at frame {} written to {}", machine.frame_count(), path.display())?;
+    }
+    if let Some(path) = &args.state_out {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, machine.save_state())?;
+        writeln!(out, "state at frame {} written to {}", machine.frame_count(), path.display())?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_arguments_need_a_script_and_a_way_to_pick_frames() {
+        let a = parse_args(&[
+            "menus",
+            "--frames",
+            "10,20",
+            "--sheet",
+            "4",
+            "--peek",
+            "in_battle,7E0010",
+        ])
+        .unwrap();
+        assert_eq!(a.script, "menus");
+        assert_eq!(a.frames, [10, 20]);
+        assert_eq!(a.sheet, Some(4));
+        assert_eq!(a.peek, ["in_battle", "7E0010"]);
+        assert!(parse_args(&["menus", "--every", "300", "--no-png"]).unwrap().no_png);
+        assert!(parse_args(&["menus", "--state-out", "s"]).is_ok());
+        for bad in
+            [&[][..], &["menus"], &["a", "b", "--every", "3"], &["a", "--every"], &["a", "--zz"]]
+        {
+            assert!(parse_args(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn watch_and_save_options_are_parsed_and_enough_to_run() {
+        let a = parse_args(&[
+            "x.ssdreplay",
+            "--watch",
+            "7E01D8,scene_id",
+            "--watch-from",
+            "2200",
+            "--sram-out",
+            "o.sav",
+        ])
+        .unwrap();
+        assert_eq!(a.watch, ["7E01D8", "scene_id"]);
+        assert_eq!(a.watch_from, Some(2200));
+        assert_eq!(a.sram_out, Some(PathBuf::from("o.sav")));
+        assert!(parse_args(&["x", "--sram-out", "o.sav"]).is_ok());
+        assert!(parse_args(&["x", "--watch", "scene_id"]).is_ok());
+        assert!(parse_args(&["x", "--watch"]).is_err());
+        assert!(parse_args(&["x", "--watch-from", "soon"]).is_err());
+    }
+
+    #[test]
+    fn a_script_becomes_a_mesen_timeline_of_runs() {
+        let pad = |frame: u64| Joypad { a: frame >= 3, start: frame == 1, ..Joypad::default() };
+        let text = mesen_timeline(&pad, 5);
+        let rows: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(rows, ["1 -", "1 start", "1 -", "2 a", "@mode idle"]);
+    }
+
+    #[test]
+    fn a_png_has_its_signature_header_and_a_valid_length() {
+        let pixels = vec![0x80_u8; 4 * 4 * 4];
+        let png = encode_png(4, 4, &pixels);
+        assert_eq!(&png[..8], &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+        assert_eq!(&png[12..16], b"IHDR");
+        assert_eq!(&png[png.len() - 8..png.len() - 4], b"IEND");
+        // 4 rows of (1 filter byte + 16 pixel bytes), one stored block, zlib header and Adler-32.
+        let idat = png.windows(4).position(|w| w == b"IDAT").unwrap();
+        let len = u32::from_be_bytes(png[idat - 4..idat].try_into().unwrap());
+        assert_eq!(len as usize, 2 + 5 + 4 * 17 + 4);
+    }
+
+    #[test]
+    fn a_sheet_places_half_size_tiles_in_a_grid() {
+        let tile = (4_u32, 4_u32, vec![0xFF_u8; 64]);
+        let (w, h, pixels) = sheet(&[tile.clone(), tile.clone(), tile], 2);
+        assert_eq!((w, h), (2 * 6 + 2, 2 * 6 + 2));
+        assert_eq!(pixels.len(), (w * h * 4) as usize);
+        let (hw, hh, half) = halve(4, 4, &[0x40_u8; 64]);
+        assert_eq!((hw, hh, half.len()), (2, 2, 16));
+        assert_eq!(&half[..4], &[0x40, 0x40, 0x40, 0xFF]);
+    }
+
+    #[test]
+    fn a_timeline_file_is_a_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.txt");
+        std::fs::write(&path, "2 -\n3 a,start\n").unwrap();
+        let script = load_script(path.to_str().unwrap()).unwrap();
+        assert_eq!(script.frames, 5);
+        assert!(!(script.inputs)(1).a && (script.inputs)(2).a && (script.inputs)(4).start);
+        assert!(!(script.inputs)(5).a, "released after the end");
+        assert!(load_script("nothing-like-this").is_err());
+    }
+}

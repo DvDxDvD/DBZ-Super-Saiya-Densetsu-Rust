@@ -1,0 +1,14 @@
+# The Cheats screen of the Remastered mode: open the command window, Menu (the fifth row), then Cheats (the sixth entry of the Menu list).
+menu open
+menu key down
+menu key down
+menu key down
+menu key down
+menu key a
+menu key down
+menu key down
+menu key down
+menu key down
+menu key down
+menu key a
+menu show cheats

@@ -1,0 +1,36 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+rustc-hash = { workspace = true }
+ssd-catalogue = { workspace = true }   # catalogue: the typed game data
+ssd-game = { workspace = true }     # make-replays: the input scripts; menu-test: the HD menus' driver
+ssd-hd = { workspace = true }       # hd-parity: the frame-end renderer
+ssd-hdpack = { workspace = true }   # hd-convert, hd-import: the HD pack of a ROM
+ssd-menus = { workspace = true }    # menu-test: the HD cursors and screens it checks
+ssd-oracle = { workspace = true }   # make-replays: recording and playback
+ssd-recomp = { workspace = true }   # recompile: the 65816 to Rust generator
+ssd-recomp-gen = { workspace = true, optional = true }   # recomp-cover, fuzz-recomp: the generated code
+ssd-rom = { workspace = true }      # make-replays: the cached ROM's CRC32
+ssd-save = { workspace = true }     # save-edit, replay-from-save: the battery save
+serde = { workspace = true }      # hd-pack: the overrides file
+serde_json = { workspace = true } # hd-import: the art indexes
+png = { workspace = true }        # hd-import: reading the art
+toml = { workspace = true }       # hd-pack: the overrides file
+zip = { workspace = true }        # hd-pack-public: the pack as a zip
+regex = { workspace = true }      # export-public: the rules of the scan
+webp = { workspace = true }       # hd-pack-public: the art as WebP
+
+[features]
+recomp = ["ssd-game/recomp", "dep:ssd-recomp-gen"]
+histogram = ["ssd-oracle/histogram"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,9 @@
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.webp binary
+*.ttf binary
+*.bat text eol=crlf
+*.ps1 text eol=lf
+*.sh text eol=lf
+tools/windows/QUICKSTART.txt text eol=crlf

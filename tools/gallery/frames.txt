@@ -1,0 +1,26 @@
+# The pictures of the README's comparison gallery:
+#   name | replay | classic frame | remastered frame | ui script
+#
+# Each line makes two pictures from the reference replay of that name (you make the replays from your
+# own ROM: `cargo run --release -p xtask -- make-replays`, and the `secret-*` ones with
+# `tools/saves/secrets.sh`), played for that many frames:
+#   cmp-<name>-classic.png      the original picture, as the Classic mode draws it
+#   cmp-<name>-remastered.png   the same frame in the Remastered mode (--mode enhanced --hd-scale 4)
+# The remastered frame is the classic one when it is left empty. A ui script (a file of
+# tools/gallery/) is applied to the Remastered picture only: it presses the new menus' keys from that
+# frame (the replay stops there) to show a screen that the original does not have. In the Remastered
+# mode the new menus also draw by themselves over a replay frame where the original has its menu open.
+#
+# name            | replay                 | classic | remastered | ui script
+01-title          | landing                | 1600    |            |
+02-flight         | landing                | 5250    |            |
+03-field          | secret-namek-zfighters | 2300    |            |
+04-dialogue       | secret-dende-rescue    | 2400    |            |
+05-command-menu   | story-1                | 9900    |            |
+06-cards          | battle                 | 4776    |            |
+07-cheats         | menus                  | 4350    | 3700       | cheats.txt
+08-battle-command | story-1                | 8400    |            |
+09-attack         | story-1                | 8900    |            |
+10-porunga        | secret-nail-porunga    | 8400    |            |
+11-story          | secret-ending-normal   | 6000    |            |
+12-ending         | secret-ending-normal   | 17500   |            |

@@ -1,0 +1,32 @@
+[package]
+name = "ssd-game"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ssd-oracle = { workspace = true }
+# The menus' names and draw types: the menu probe returns their view (pure Rust, no game code).
+ssd-menus = { workspace = true }
+# The battery save's slots: the keeper of the bag binds to the save the game runs on.
+ssd-save = { workspace = true }
+thiserror = { workspace = true }
+# The recompiled code (`cargo run --release -p xtask -- recompile`), registered as routines.
+ssd-recomp = { workspace = true, optional = true }
+ssd-recomp-gen = { workspace = true, optional = true }
+
+[features]
+# Registers every recompiled function as a routine in the hook table (hand-written routines
+# win on the same address). Without the generated file the table stays empty.
+recomp = ["dep:ssd-recomp", "dep:ssd-recomp-gen"]
+
+[build-dependencies]
+# build.rs reads re/symbols.toml with its own small struct (ssd-oracle is not a build dependency).
+serde = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+ssd-rom = { workspace = true }   # ROM normalisation in the real-ROM verification test
+
+[lints]
+workspace = true

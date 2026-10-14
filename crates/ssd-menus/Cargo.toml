@@ -1,0 +1,14 @@
+[package]
+name = "ssd-menus"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Pure Rust: the layout, the palette, the draw lists and the bag of the HD menus. No emulator, no egui.
+[dependencies]
+# The bag and its sidecar file (`saves/ssd.bag`): serde derives, encoded with bincode.
+bincode = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+
+[lints]
+workspace = true

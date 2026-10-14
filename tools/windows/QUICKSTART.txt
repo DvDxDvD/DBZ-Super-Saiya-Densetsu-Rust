@@ -1,0 +1,46 @@
+Dragon Ball Z: Super Saiya Densetsu - SNES Decomp / Classic / Remastered, Rewritten in Rust
+=========================================================================================
+
+This folder holds the game's program, not the game: you bring the game file (a ROM) from a
+cartridge you own. Nothing from the original game, and no ROM, is included or ever will be.
+
+WHAT YOU NEED
+  - Windows 10 or 11 (64-bit) with a graphics card that supports Vulkan or DirectX 12.
+  - Your own ROM of Dragon Ball Z: Super Saiya Densetsu (SNES), one of:
+      * the English version with the Klepto v1.02 translation applied
+        (checksum fixed: CRC-32 A8CF4F2A, or not fixed: CRC-32 3BB02A05), or
+      * the Japanese Rev 1 ROM (CRC-32 ADE7B968) together with the Klepto v1.02 patch (dbz102.ips).
+    The file may have a 512-byte copier header; the game removes it.
+  - For the Remastered mode: hd-pack.zip, from the same page you got this folder from.
+
+FIRST TIME (under a minute)
+  1. Drag your ROM file onto "Set up my ROM.bat" (for the Japanese ROM, select the ROM and
+     dbz102.ips together and drag both). The game checks the file and keeps a clean copy for itself
+     in %LOCALAPPDATA%\dbz-ssd-recompiled\. It does this once; you can delete your ROM copy later.
+  2. Remastered mode only: put hd-pack.zip in this folder, next to ssd-recompiled.exe, without
+     unpacking it.
+  3. Start "Play Classic.bat" (the original game) or "Play Remastered.bat" (HD art, 16:9, new
+     menus). The first Remastered start builds the HD data from your ROM and hd-pack.zip once,
+     with progress messages in the black window, then the game opens.
+
+KEYS
+  Arrows        D-pad              X = A, Z = B, S = X, A = Y, Q = L, W = R
+  Enter         Start              Right Shift = Select
+  Tab           speed x1 / x2 / x4 / x8           P  pause           Esc  quit
+  F5 / F9       save state / load state           1-4  state slot
+  F1            debug panel (routines, memory, debugger, replays)
+  A gamepad works too (SNES layout by position).
+
+WHERE THINGS ARE
+  Saves, save states and the cached ROM: %LOCALAPPDATA%\dbz-ssd-recompiled\
+  The in-game saves are the cartridge's own (three slots), plus a bag and cheats file per slot in
+  the Remastered mode. Delete that folder to start from nothing.
+
+NOT AFFILIATED
+  This is a fan project. It is not affiliated with, endorsed by or sponsored by Bandai Namco, Toei
+  Animation, Shueisha or Bird Studio. Dragon Ball and everything that belongs to it
+  are trademarks and works of their owners. No commercial use. Provided "as is", without warranty.
+
+LICENCES
+  The program is free software under the GNU GPL v3 (LICENSE), with third-party parts listed in
+  NOTICE.md and licenses\. Source code and the full README: see the project page.

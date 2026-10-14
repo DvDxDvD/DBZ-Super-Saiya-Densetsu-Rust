@@ -1,0 +1,22 @@
+[package]
+name = "ssd-hdpack"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+ssd-catalogue = { workspace = true }   # the ROM's streams (graphics::lz_decode) and tables
+ssd-hd = { workspace = true }          # the pack's formats and the art indexes
+ssd-rom = { workspace = true }         # crc32 of the ROM
+serde = { workspace = true }
+serde_json = { workspace = true }      # the art indexes
+toml = { workspace = true }            # the pack's manifests and indexes
+png = { workspace = true }             # the size of an art file
+zip = { workspace = true }             # a pack that comes as a zip
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

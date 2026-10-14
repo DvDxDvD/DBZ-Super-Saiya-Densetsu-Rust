@@ -1,0 +1,14 @@
+--- a/data/languages/658xx_memaccess.sinc
++++ b/data/languages/658xx_memaccess.sinc
+@@ -288,7 +288,10 @@
+ macro ref_direct(_out, _offset32) {
+     local _offset:4 = _offset32;
+     local address:3;
+-    if (($(EF) == 1) && (DPLow == 0)) goto <emu_read_direct>;
++    # DBZ patch: native mode only (E=0). The emulation wrap read contextreg at runtime and the
++    # decompiler does not know the context registers. The game leaves emulation mode at the 4th
++    # opcode of RESET (CLC; XCE) and never re-enters it (checked with the Mesen2 trace).
++    if (0:1 == 1:1) goto <emu_read_direct>;
+ 
+     # <not_emu_read_direct>
+     # Quote from manual p58:

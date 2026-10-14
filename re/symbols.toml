@@ -1,0 +1,1565 @@
+# re/symbols.toml — names are ours; code addresses are physical ($00–$1F banks).
+#
+# The single source of names and addresses (spec §5.2): Rust code refers to routines by name.
+# Read by ssd_oracle::Symbols; errors name this file and the line.
+#
+# [[routine]]                  hooked routines (added from M1a Task 8)
+# name = "advance_x_by_6"      Rust function name in ssd-game's registry ([a-z_][a-z0-9_]*)
+# address = 0x008B0E           physical PBR:PC of the entry (banks $00-$1F, offsets $8000-$FFFF)
+# returns = "rtl"              "rts" | "rtl"
+# timing = "pure"              "pure" | "mmio" | "sync"
+# mode = "verify"              "original" | "rust" | "verify"
+# entry_m8 = true              optional: required accumulator width at entry
+# entry_x8 = false             optional: required index width at entry
+# flags = "NZ"                 optional: compared flags, letters from NVMXDIZC, each once
+#                              (absent: all flags; "": no flags compared)
+# verify_sample = 1            optional, default 1 (every call)
+# cycles = 108                 optional: the routine's MAXIMUM cost over its paths, in CPU-busy
+#                              MASTER cycles from the hit to the return (measured by Verify; not
+#                              CPU cycles). Rust mode runs the routine only when no timing event
+#                              can come within it, and never without it; each call is charged
+#                              the exact cost its Rust function declares
+#
+# [[table]]                    a read-only region of the ROM (WRAM data is a [[variable]])
+# name = "id_category_table"
+# address = 0x0D8200           physical, like a routine's (banks $00-$1F, offsets $8000-$FFFF)
+# size = 128                   bytes; the table ends in its bank, tables do not overlap
+#
+# [[variable]]                 named memory; divergence reports name the bytes inside
+# name = "in_battle"
+# address = 0x7E0364           24-bit bus address of the first byte
+# size = 1                     optional, default 1
+#
+# [[sync_point]]               where lockstep compares two machines: the first arrival after
+# name = "main_loop_idle"      each NMI (ssd_oracle::Machine::run_until_sync)
+# address = 0x0080CE           physical code address, like a routine's; never a routine's
+#
+# Names are unique across routines, tables, variables and sync points. ssd-game's build script
+# turns every [[table]] and [[variable]] into the constants NAME (the address) and NAME_SIZE in
+# ssd_game::data, so Rust code never repeats these addresses. The direct-page scratch of
+# bin24_to_packed_bcd ($00-$08) is not named here: it is documented in the routine.
+
+# Routines: the M1 candidates of docs/re/m1-candidates.md (semantics, contracts, callers).
+
+[[routine]]
+name = "advance_x_by_6"            # X += 6
+address = 0x008B0E
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+flags = "NZ"
+cycles = 128                       # constant: measured in Verify
+
+[[routine]]
+name = "get_active_side_record"    # Y = $1400 or $1440 by bit 0 of $14C2
+address = 0x05B6B2
+returns = "rts"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+flags = "NZ"
+cycles = 154                       # maximum: side 1 (side 0: 136)
+
+[[routine]]
+name = "lookup_id_category"        # A = category table entry of the id; also via the JSL wrapper
+address = 0x05B572
+returns = "rts"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+flags = "NZ"
+cycles = 250                       # constant: measured in Verify
+
+[[routine]]
+name = "rng_next_a"                # s = s * 5 + $11 on rng_seed_a
+address = 0x0082A3
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true                    # X width any (seen with 8-bit X)
+flags = "NVZC"
+verify_sample = 64
+cycles = 264                       # constant: measured in Verify
+
+[[routine]]
+name = "rng_next_b"                # s = s * 5 + $11 on rng_seed_b
+address = 0x0082B5
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+flags = "NVZC"
+verify_sample = 64
+cycles = 264                       # constant: measured in Verify
+
+[[routine]]
+name = "entity_id_in_special_set"  # C = entity id at $0E01+Y in {$10, $11, $4C, $4D, $4F}
+address = 0x01F660
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+flags = "NZC"
+cycles = 262                       # maximum: id $4F, the last member (non-members: 256)
+
+[[routine]]
+name = "bin24_to_packed_bcd"       # DP $00-$02 to packed BCD in $03-$06 (suffix entries: original)
+address = 0x06E969
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+flags = ""                         # no caller reads them
+cycles = 20930                     # maximum: 15 999 990, the most subtractions (closed formula)
+
+# --- batch A ---
+
+[[routine]]
+name = "hide_sprites_from_index"   # shadow OAM Y bytes from the index in $55 up to $0200 = $F0
+address = 0x0086A0
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+flags = "NZC"
+cycles = 20234                     # maximum: 129 passes (an index that wraps past zero)
+
+[[routine]]
+name = "load_palette_from_pointer" # 16 words from the bank-$09 pointer at $00 to the slot of $03
+address = 0x01C885
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+flags = "NZC"
+cycles = 3556                      # constant: measured in Verify
+
+[[routine]]
+name = "fill_tilemap_4000"         # $00FF into the 2 KB tile-map buffer at $7E:4000
+address = 0x01B6AC
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+flags = "NZ"
+cycles = 100482                    # constant: measured in Verify
+
+[[variable]]
+name = "oam_next_index"            # byte index of the next free shadow OAM entry (provisional)
+address = 0x7E0055
+size = 2
+
+[[variable]]
+name = "shadow_oam_low"            # 128 entries of 4 bytes: x, y, tile, attributes
+address = 0x7E0400
+size = 0x200
+
+[[variable]]
+name = "tilemap_buffer_4000"       # 2 KB tile-map buffer
+address = 0x7E4000
+size = 0x800
+
+# --- batch B ---
+
+[[routine]]
+name = "lookup_bank2_pointer"      # DP $00 = index: long pointer $02:(table word) into $00-$02
+address = 0x009C6F
+returns = "rts"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+flags = ""                         # no caller reads a flag after the call
+cycles = 470                       # constant: measured in Verify
+
+[[table]]
+name = "bank2_pointer_table"       # 128 pointers of the lookup, read at twice the index
+address = 0x02DA16
+size = 256
+
+[[routine]]
+name = "fill_buffer_4800"          # $FFFF words over the 1 KB buffer at $7E:4800; word at DBR:0D7D cleared; A = $FFFF, X = $FFFE
+address = 0x008996
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 50346                     # constant: measured in Verify
+
+[[variable]]
+name = "buffer_4800"               # 1 KB buffer written by fill_buffer_4800
+address = 0x7E4800
+size = 0x400
+
+[[variable]]
+name = "word_0d7d"                 # word cleared by fill_buffer_4800 through DBR (its use is unknown)
+address = 0x7E0D7D
+size = 2
+
+[[routine]]
+name = "lookup_byte_pair"          # A low: pair of table bytes into $04/$06, doubled copies in $14/$16; $05/$07/$15/$17 cleared
+address = 0x039752
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+cycles = 568                       # constant: measured in Verify
+
+[[table]]
+name = "byte_pair_table"           # 64 pairs of bytes, indexed by twice the low six bits of the index
+address = 0x039AA8
+size = 128
+
+[[routine]]
+name = "clear_slot_plus_8"         # zero at DBR:0800 + X + 8 (byte or word by the accumulator width); X kept
+address = 0x008724
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+cycles = 260                       # constant: measured in Verify
+
+[[variable]]
+name = "slot_block_0800"           # slots cleared by clear_slot_plus_8 (callers use X = 0, 8, 16: offsets 8 to 24)
+address = 0x7E0800
+size = 0x20
+
+[[routine]]
+name = "lookup_0d40_scaled"        # A = Y = (X / 4 high byte) | (DBR:0D40 + X/4 byte, doubled); C = byte bit 7; $00-$02 set
+address = 0x01C943
+returns = "rts"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 304                       # constant: measured in Verify
+
+[[variable]]
+name = "index_table_0d40"          # bytes read by lookup_0d40_scaled (callers' indexes X/4 are 0 to 2)
+address = 0x7E0D40
+size = 3
+
+# --- batch C ---
+
+[[routine]]
+name = "copy_source_block"         # 16 words of ROM bank $0C, at the table offset picked by $4F, to copy_dest
+address = 0x06EBC1
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 3522                      # maximum: the bit-0 copy (original code): 3490 + an INC of $01 (38) - a BCC (6)
+
+[[variable]]
+name = "copy_gate"                 # bit 7 set: the copy is skipped (provisional name)
+address = 0x7E01A1
+size = 1
+
+[[variable]]
+name = "copy_select"               # bit 7 set: skipped; bit 0 set: source offset plus $100 (provisional)
+address = 0x7E01E7
+size = 1
+
+[[variable]]
+name = "copy_dest"                 # 32-byte destination of the copy
+address = 0x7E0280
+size = 0x20
+
+[[variable]]
+name = "copy_done"                 # set to 1 after each copy
+address = 0x7E0715
+size = 1
+
+[[table]]
+name = "copy_source_offsets"       # four 16-bit source offsets, indexed by bits 3-4 of $4F, doubled
+address = 0x06EC0A
+size = 8
+
+# r4: clear_map_menu_block
+[[routine]]
+name = "clear_map_menu_block"      # 96 bytes from map_menu_cursor to zero (48 word stores)
+address = 0x01C116
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 5880                      # constant: measured in Verify
+
+# r5: fill_word_block
+[[routine]]
+name = "fill_word_block"           # the word $3D40 at 320 positions of the block fill_block
+address = 0x01B647
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 39170                     # constant: measured in Verify
+
+[[variable]]
+name = "fill_block"                # $7E:3580 to $7E:37FF, filled by fill_word_block
+address = 0x7E3580
+size = 0x280
+
+# r7: lookup_scaled_entry
+[[routine]]
+name = "lookup_scaled_entry"       # A = 6 * scale_table[4 * (A & $7F)], X likewise
+address = 0x05BEAB
+returns = "rts"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 454                       # constant: measured in Verify
+
+[[table]]
+name = "scale_table"               # 512-byte table of the bank $1E, read at 4 * v
+address = 0x1ECB09
+size = 512
+
+# r8: store_map_menu_entry
+[[routine]]
+name = "store_map_menu_entry"      # map_menu_cursor + index := value, index from $0D66, value from $0D62
+address = 0x01B86A
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+cycles = 196                       # constant: measured in Verify
+
+[[variable]]
+name = "map_entry_index"           # the index byte of store_map_menu_entry (provisional name)
+address = 0x7E0D66
+size = 1
+
+[[variable]]
+name = "map_entry_value"           # the value byte of store_map_menu_entry (provisional name)
+address = 0x7E0D62
+size = 1
+
+# r9: follow_target_step
+[[routine]]
+name = "follow_target_step"        # moves follow_pos towards follow_target by at most 4, with the flags byte
+address = 0x06EE42
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+cycles = 1016                      # maximum: the clamped step with equal limit compare (measured)
+
+[[variable]]
+name = "follow_target"             # 16-bit target of follow_target_step (provisional name)
+address = 0x7E01A4
+size = 2
+
+[[variable]]
+name = "follow_pos"                # 16-bit position in the direct page (provisional name)
+address = 0x7E0035
+size = 2
+
+[[variable]]
+name = "follow_limit"              # limit byte of follow_target_step (provisional name)
+address = 0x7E0702
+size = 1
+
+[[variable]]
+name = "follow_flags"              # flags byte written by follow_target_step (provisional name)
+address = 0x7E0700
+size = 1
+
+# r10: record_position_step
+[[routine]]
+name = "record_position_step"      # steps the position at $0A or $0C by a table word chosen by the record at Y
+address = 0x059B91
+returns = "rts"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 816                       # maximum: the subtract route on $0C (measured); the bit-0 route runs the original
+
+[[table]]
+name = "position_step_bytes"       # 12 step bytes, read at the selector minus six
+address = 0x059C0B
+size = 12
+
+[[table]]
+name = "position_step_words"       # 32 step words, read at twice the index's low five bits
+address = 0x059C17
+size = 64
+
+# --- batch D ---
+
+[[routine]]
+name = "draw_tile_box"             # W x H tile words at the position in $02 (sizes in $00, $01); the bound gives each call its cost
+address = 0x01B55A
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 20391482                  # maximum over the sizes (255 by 255); the bound function replaces it for each call
+
+[[variable]]
+name = "box_interior_flag"         # byte at $07B4: nonzero skips the interior fill of a box (provisional name)
+address = 0x7E07B4
+size = 1
+
+[[routine]]
+name = "find_positive_slot"        # first slot byte at $0800 (steps of 8) with bit 7 clear: A low = the byte, X = its index
+address = 0x008711
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 504                       # maximum over the passes the replays take; the bound function replaces it per call
+
+[[routine]]
+name = "scan_record_table"         # ten-byte records from $074C to the $FFFF end word; only two passed records on bit 0 of $01BC clear
+address = 0x06EC76
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 1294                      # maximum over the two paths the replays take; the bound function replaces it per call
+
+[[routine]]
+name = "timer_mask_block"          # counts down the timer byte at $0029+Y and masks the block of words of the slot, by a table value
+address = 0x05C1EE
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 78890                     # maximum over the paths the replays take (400 passes); the bound function replaces it per call
+
+[[table]]
+name = "index_word_table"          # ROM words read at the caller's X: the slot index Y of a timer call (provisional name)
+address = 0x059B89
+size = 8
+
+[[table]]
+name = "mask_word_table"           # ROM mask words read at twice the shifted timer value (provisional name)
+address = 0x05C273
+size = 256
+
+[[variable]]
+name = "slot_index_table"          # WRAM words read at the caller's X: the record index of the block (provisional name)
+address = 0x7E15E9
+size = 8
+
+[[routine]]
+name = "skip_negative_records"     # five-byte records from $0C43: negative records far from $33 are skipped, the first positive one ends the scan
+address = 0x03994C
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 896                       # the replayed sequence (two skipped records, the end record); the bound function gives each call its cost
+
+# --- batch E ---
+
+[[routine]]
+name = "fill_bank7f_pattern"       # bank $7F: $FF at even offsets below $7F80, then $00FF words from $7F80 to $7FFE; pointer $73 = $7F:0000
+address = 0x04889E
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = false
+entry_x8 = false
+cycles = 1999596                   # constant: measured in Verify (both loops in full)
+budget_frames = 7
+
+[[routine]]
+name = "unpack_bitplanes_to_7f"    # planes of a 16-byte block (words at Y and Y+$10) unpacked to pixels at $7F:0001+X; reference call only (bound)
+address = 0x0483B2
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_x8 = false
+budget_frames = 5
+
+[[routine]]
+name = "decode_bit_tree_to_9000"   # node table at $00:FD49 walked by the bits of $00:F150; symbols written to $7E:9000+X; reference entry only (bound)
+address = 0x00FDB5
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = false
+entry_x8 = false
+budget_frames = 11
+
+[[routine]]
+name = "set_bit12_block_9000"      # bit 12 set in each word of $7E:9000 to $7E:97FE, from the last word down
+address = 0x00BC3E
+returns = "rts"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 174184                    # constant: measured in Verify (one path, the loop always runs in full)
+
+[[routine]]
+name = "entity_draw_pass_60_80"    # returns at once when bit 0 of gate_flag_01bc is set; else the original runs (bound)
+address = 0x01F9AC
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+
+[[variable]]
+name = "gate_flag_01bc"            # byte at $01BC: bit 0 gates entity_draw_pass_60_80 and picks the source of store_code_from_low_bits
+address = 0x7E01BC
+
+[[routine]]
+name = "blend_palette_slots"       # $4F and the index in A: copy $15E1+X to $0200+X, or blend the 16 slots at $0200+X with the table word (reference X only; bound)
+address = 0x05C116
+returns = "rts"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+
+[[table]]
+name = "blend_table_c1b8"          # four bytes per index: blend words read by blend_palette_slots; sized up to mask_word_table (higher indexes read into it)
+address = 0x05C1B8
+size = 187
+
+[[routine]]
+name = "bin_to_bcd_from_tens"      # tens step of the binary-to-BCD conversion: ones at $00 minus tens, tens at $03 plus $10, OR into $03
+address = 0x06EA0E
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+cycles = 5042                      # maximum: 25 passes of a borrow exit (194 per pass, 192 for the exit)
+
+[[routine]]
+name = "store_code_from_low_bits"  # A = code of the low nibble of $0048 (bit 0 of $01BC set) or $0044; code stored to $0D59
+address = 0x018401
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+cycles = 348                       # maximum: the source's lowest bit at bit 3 (the longest shift chain, flag set)
+
+[[variable]]
+name = "source_byte_0044"          # source byte of store_code_from_low_bits when bit 0 of $01BC is clear
+address = 0x7E0044
+
+[[variable]]
+name = "source_byte_0048"          # source byte of store_code_from_low_bits when bit 0 of $01BC is set
+address = 0x7E0048
+
+[[variable]]
+name = "code_byte_0d59"            # byte stored with the code of store_code_from_low_bits
+address = 0x7E0D59
+
+[[routine]]
+name = "split_index_table_lookup"  # $10 = A; $12 = A >> 3; $11 = table[A & 7]; A = that byte, X = A >> 3
+address = 0x03AEAC
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+cycles = 344                       # constant: one path, no loop
+
+[[table]]
+name = "index_table_9b9b"          # eight bytes read by split_index_table_lookup at the low three bits of its input
+address = 0x039B9B
+size = 8
+
+
+# --- batch F ---
+
+# r1: copy_four_words_to_dp
+[[routine]]
+name = "copy_four_words_to_dp"     # DBR:17D7, 17D9, 17DB, 17DD to the direct page at 37, 39, 33, 35
+address = 0x058321
+returns = "rts"
+timing = "pure"
+mode = "verify"
+entry_x8 = false
+cycles = 330                       # constant: measured in Verify
+
+[[variable]]
+name = "follow_block_17d7"         # four words copied to the direct page by copy_four_words_to_dp (provisional name)
+address = 0x7E17D7
+size = 8
+
+# r2: empty_return
+[[routine]]
+name = "empty_return"              # a routine that returns at once
+address = 0x05FDB8
+returns = "rts"
+timing = "pure"
+mode = "verify"
+cycles = 42                        # constant: measured in Verify
+
+# r3: follow_step_x
+[[routine]]
+name = "follow_step_x"             # X follower steps towards the leader, keeping $80 behind it (cost bound: the branch's cost)
+address = 0x06EDB3
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+
+[[variable]]
+name = "follow_pos_x"              # X position of the follower, a word at $33 (provisional name)
+address = 0x7E0033
+size = 2
+
+[[variable]]
+name = "follow_target_x"           # X position of the leader, a word (provisional name; the target of follow_step_x)
+address = 0x7E01A2
+size = 2
+
+[[variable]]
+name = "follow_limit_x"            # limit byte of the X follower (provisional name; $0702 is the Y one)
+address = 0x7E0703
+size = 1
+
+# r4: fill_tilemap_quad
+[[routine]]
+name = "fill_tilemap_quad"         # 4 x 4 tile words at tilemap_buffer_4000 + row base (in $20), values from $22 and pattern $02
+address = 0x01C6CB
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 5060                      # constant: measured in Verify
+
+# r5: write_slot_record
+[[routine]]
+name = "write_slot_record"         # eight bytes at slot_block_0800 + X: $80, word $00, word_0d77, $7E, $0100
+address = 0x01CAAB
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+cycles = 430                       # constant: measured in Verify
+
+[[variable]]
+name = "word_0d77"                 # word copied into the slot record by write_slot_record (provisional name)
+address = 0x7E0D77
+size = 2
+
+# r6: fill_word_run
+[[routine]]
+name = "fill_word_run"             # word at $10 stored at $7E:3000 + X, as many times as $0E (at least once); cost bound
+address = 0x01BC71
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+
+# r7: advance_x_and_count
+[[routine]]
+name = "advance_x_and_count"       # X up by one, and the two byte counters $071D and $071F up by one
+address = 0x01D00B
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+cycles = 150                       # constant: measured in Verify
+
+[[variable]]
+name = "counter_071d"              # byte counter incremented by advance_x_and_count (provisional name)
+address = 0x7E071D
+size = 1
+
+[[variable]]
+name = "counter_071f"              # byte counter incremented by advance_x_and_count (provisional name)
+address = 0x7E071F
+size = 1
+
+# r8: lookup_triple_index
+[[routine]]
+name = "lookup_triple_index"       # $01E3 := table byte at index 3 * $0D59 (mod 256); the table is bank1_index_table
+address = 0x018A0E
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+cycles = 258                       # constant: measured in Verify
+
+[[table]]
+name = "bank1_index_table"         # bank $01 bytes read at $83A0 + index (update_travel_and_follow) and $83BD + 3v (lookup_triple_index)
+address = 0x0183A0
+size = 285
+
+[[variable]]
+name = "table_result_01e3"         # byte stored by lookup_triple_index (provisional name)
+address = 0x7E01E3
+size = 1
+
+# r9: update_travel_and_follow
+[[routine]]
+name = "update_travel_and_follow"  # leader's X and Y travel steps and the follow flags (cost bound: the branch's cost)
+address = 0x0182E3
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+
+[[variable]]
+name = "travel_nibble"             # nibble path A of update_travel_and_follow keeps (provisional name)
+address = 0x7E0D5E
+size = 1
+
+[[variable]]
+name = "travel_step_y"             # Y step of the leader, a word (provisional name; the X step is the word at travel_mode)
+address = 0x7E0D57
+size = 2
+
+# r10: copy_bank9_block
+[[routine]]
+name = "copy_bank9_block"          # 64 bytes of bank $09 at $D200 to DBR:02C0 as words; copy_done up by one
+address = 0x008908
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 5528                      # constant: measured in Verify
+
+[[table]]
+name = "bank9_copy_block"          # 64 bytes copied by copy_bank9_block (provisional name)
+address = 0x09D200
+size = 64
+
+[[variable]]
+name = "copy_target_02c0"          # 64 bytes written by copy_bank9_block (provisional name)
+address = 0x7E02C0
+size = 64
+
+# r11: add_four_to_dp_word
+[[routine]]
+name = "add_four_to_dp_word"       # the direct-page word at $02 plus four, the sum in A
+address = 0x0395A4
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+cycles = 212                       # constant: measured in Verify
+
+# Sync points. Per-frame logic runs inside the NMI handler; the main loop then waits in the idle
+# loop, so the first arrival there after each NMI is the frame's end (a lag frame shows as an NMI
+# delta of 2). The mode/transition loop runs with NMI off: no event there.
+
+[[sync_point]]
+name = "main_loop_idle"        # the idle loop, the universal wait between frames
+address = 0x0080CE
+
+# ROM data tables.
+
+[[table]]
+name = "id_category_table"     # category of a character/card id, indexed by id & $7F
+address = 0x0D8200
+size = 128
+
+# Variables found by the trace work (the RNG seeds: docs/re/m1-candidates.md).
+
+[[variable]]
+name = "rng_seed_a"            # state of the first RNG
+address = 0x7E002F
+size = 2
+
+[[variable]]
+name = "rng_seed_b"            # state of the second RNG
+address = 0x7E0031
+size = 2
+
+[[variable]]
+name = "in_battle"             # $FF in battle
+address = 0x7E0364
+size = 1
+
+[[variable]]
+name = "travel_mode"           # 1 walk, 2 fly
+address = 0x7E0D55
+size = 1
+
+[[variable]]
+name = "map_menu_cursor"
+address = 0x7E1100
+size = 1
+
+# Battle sides and map entities.
+
+[[variable]]
+name = "active_side"           # bit 0 selects the active battle side (0 party attacks, 1 enemy attacks); bit 1 counter-attack (second card value); bit 3 special attack (docs/re/data/battle.md)
+address = 0x7E14C2
+size = 1
+
+[[variable]]
+name = "side_record_a"         # record of battle side 0
+address = 0x7E1400
+size = 0x40
+
+[[variable]]
+name = "side_record_b"         # record of battle side 1
+address = 0x7E1440
+size = 0x40
+
+[[variable]]
+name = "entity_ids"            # entity id bytes of the map's entity slots, stride $20
+address = 0x7E0E01
+size = 0x80
+
+# M2 catalogue: the data tables of the game's characters, enemies, cards and names (read by
+# ssd-catalogue; their layouts are in docs/re/data/). Bank $02 holds most of them.
+
+[[table]]
+name = "string_pointers"           # 44 words: pointers into bank $02 to length-prefixed strings; the first 13 name the characters
+address = 0x02AB66
+size = 88
+
+[[table]]
+name = "unit_name_pointers"        # 105 words: name of each unit id (enemies and the fighters of the story)
+address = 0x02ACE8
+size = 210
+
+[[table]]
+name = "attack_name_pointers"      # 69 words: name of each special attack
+address = 0x02AEA6
+size = 138
+
+[[table]]
+name = "object_name_pointers"      # 40 words: names of the people and objects of the story (Scouter, Radar, dragon balls...)
+address = 0x02B0D9
+size = 80
+
+[[table]]
+name = "unit_stats"                # 105 rows of 14 bytes, one per unit id: class, level, HP, BP, KI, reward
+address = 0x02B214
+size = 1470
+
+[[table]]
+name = "unit_command_pointers"     # 105 words: pointer to the command list of each unit id
+address = 0x02B7D2
+size = 210
+
+[[table]]
+name = "unit_command_lists"        # the command lists the pointers above lead to, back to back
+address = 0x02B8A4
+size = 1639
+
+[[table]]
+name = "encounter_groups"          # 112 groups of 5 unit ids ($FF: empty slot)
+address = 0x02BF0B
+size = 560
+
+[[table]]
+name = "character_level_pointers"  # 13 words: pointer to the level rows of each character id
+address = 0x02C13B
+size = 26
+
+[[table]]
+name = "character_level_rows"      # eight tables of 48 levels of 11 bytes (BP, EXP, HP, KI per level), then the 3 levels of the ninth
+address = 0x02C155
+size = 4257
+
+[[table]]
+name = "party_unit_ids"            # unit id of each of the 12 characters
+address = 0x008AE5
+size = 12
+
+[[table]]
+name = "card_value_weights"        # 32 bytes: the value (1 to 8) a dealt card gets is the byte picked by a random 5-bit number
+address = 0x01C28E
+size = 32
+
+[[variable]]
+name = "party_records"             # nine 32-byte character records (HP, KI, BP, EXP, level, id...)
+address = 0x7E0B00
+size = 0x120
+
+[[variable]]
+name = "encounter_group_index"     # index of the encounter group of the battle (encounter_groups)
+address = 0x7E0EA3
+size = 1
+
+[[variable]]
+name = "card_hand"                 # five cards of 6 bytes: position word, value, value, symbol, flag
+address = 0x7E0141
+size = 0x1E
+
+# --- batch G ---
+
+[[routine]]
+name = "load_state_1648"           # A low = the byte at $1648, N/Z of it; a negative byte runs the original code
+address = 0x03DD83
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 92                        # constant on the replayed path (a non-negative byte): measured in Verify
+
+[[variable]]
+name = "state_1648"                # the byte loaded by load_state_1648 (provisional name)
+address = 0x7E1648
+size = 1
+
+[[routine]]
+name = "advance_y_by_20"           # Y = A = Y + $20 (16 bits): N/Z of the sum in the index width, C/V of the add
+address = 0x008AF1
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 154                       # constant: measured in Verify
+
+[[routine]]
+name = "lookup_byte_pair_2"        # as lookup_byte_pair, with the pairs of byte_pair_table_2 ($03:9A28)
+address = 0x0395D2
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 568                       # constant: measured in Verify
+
+[[table]]
+name = "byte_pair_table_2"         # 64 pairs of bytes read by lookup_byte_pair_2, directly before byte_pair_table
+address = 0x039A28
+size = 128
+
+[[routine]]
+name = "derive_state_071a"         # $0719 = $0716 & $1F, $0718 = $29 & $0F, $071A = 2 if $0716 bit 7 else 1
+address = 0x0083E4
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 314                       # maximum: bit 7 of $0716 clear (298 when set)
+
+[[variable]]
+name = "control_0716"              # control byte: bits 0-4 go to field_0719, bit 7 picks state_071a (provisional name)
+address = 0x7E0716
+size = 1
+
+[[variable]]
+name = "state_0029"                # direct-page byte read by derive_state_071a; its low nibble goes to field_0718
+address = 0x7E0029
+size = 1
+
+[[variable]]
+name = "field_0718"                # low nibble of state_0029 (provisional name)
+address = 0x7E0718
+size = 1
+
+[[variable]]
+name = "field_0719"                # low five bits of control_0716 (provisional name)
+address = 0x7E0719
+size = 1
+
+[[variable]]
+name = "state_071a"                # 1 or 2, from bit 7 of control_0716 (provisional name)
+address = 0x7E071A
+size = 1
+
+[[routine]]
+name = "load_flag_01d6"            # A low = the byte at $01D6, N/Z of it; a negative byte runs the original code
+address = 0x1D8ABD
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 92                        # constant on the replayed path (a non-negative byte): measured in Verify
+
+[[variable]]
+name = "flag_01d6"                 # the byte loaded by load_flag_01d6 (provisional name)
+address = 0x7E01D6
+size = 1
+
+[[routine]]
+name = "load_counter_1570"         # A low = the byte at $1570, N/Z of it; a negative byte runs the original code
+address = 0x1D8843
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 92                        # constant on the replayed path (a non-negative byte): measured in Verify
+
+[[variable]]
+name = "counter_1570"              # the byte loaded by load_counter_1570 (provisional name)
+address = 0x7E1570
+size = 1
+
+[[routine]]
+name = "noop_9735"                 # a bare return: changes nothing
+address = 0x009735
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 44                        # constant: measured in Verify
+
+[[routine]]
+name = "clear_48_and_index_1220"   # $48 = $48 AND $7F; X = A = $1220 doubled (8 bits); C = bit 7 of $1220
+address = 0x04924A
+returns = "rts"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 202                       # constant: measured in Verify
+
+[[variable]]
+name = "value_1220"                # the byte doubled into the index by clear_48_and_index_1220 (provisional name)
+address = 0x7E1220
+size = 1
+
+[[routine]]
+name = "split_03_nibbles"          # digit_cells_0d6c = $80 OR the low/high nibble of the byte at $03
+address = 0x06EAA8
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 556                       # constant: measured in Verify
+
+[[variable]]
+name = "divisor_0003"              # the word at $03: the low byte is split by split_03_nibbles, the word divided by divide_24_by_16 (provisional name)
+address = 0x7E0003
+size = 2
+
+[[variable]]
+name = "digit_cells_0d6c"          # the two map-cell digits written by split_03_nibbles (low, then high)
+address = 0x7E0D6C
+size = 2
+
+[[routine]]
+name = "divide_24_by_16"           # $00-$02 (24 bits) / $03-$04 (16 bits): quotient in $00-$02, remainder in $05-$07
+address = 0x01C129
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 15434                     # maximum: 24 subtracting steps (11 786 + 152 per step); declared per call by a bound
+# Cost: 11 786 + 152 n master cycles for n subtracting steps (the quotient's set bits); the bound gives it per call.
+
+[[variable]]
+name = "dividend_0000"             # 24-bit dividend, replaced by the quotient (provisional name)
+address = 0x7E0000
+size = 3
+
+[[variable]]
+name = "remainder_0005"            # 24-bit remainder written by divide_24_by_16 (provisional name)
+address = 0x7E0005
+size = 3
+
+[[variable]]
+name = "scratch_0008"              # the difference bytes of the last step of divide_24_by_16 (provisional name)
+address = 0x7E0008
+size = 2
+
+[[routine]]
+name = "adjust_37_toward_ffd1"     # when $63 = $1A, the word at $37 moves towards $FFD1 (-1 above it, +8 below it)
+address = 0x00AC6B
+returns = "rts"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 322                       # maximum: the word below $FFD1 (126 when $63 is not $1A, 220 at $FFD1, 282 above)
+
+[[variable]]
+name = "mode_0063"                 # the byte compared with $1A by adjust_37_toward_ffd1 (provisional name)
+address = 0x7E0063
+size = 1
+
+[[variable]]
+name = "word_0037"                 # the word adjust_37_toward_ffd1 moves towards $FFD1 (provisional name)
+address = 0x7E0037
+size = 2
+
+[[routine]]
+name = "draw_map_entry_tiles"      # two tile bytes at $7E:3000 + a table word, for the map entry in $0D66 / $0D62
+address = 0x01B90F
+returns = "rtl"
+timing = "pure"
+mode = "verify"
+entry_m8 = true
+entry_x8 = false
+cycles = 1706                       # maximum of the routes Rust runs (index $26); the bound gives the cost per call
+# The routes the replays take are ported; the others (index $33, $28, $13, zero values after the special
+# indexes, and index $26 at 4 or more) run the original code. The cost is 328 to 1706 by the route.
+
+[[variable]]
+name = "map_entry_0d63"            # the byte that indexes map_byte_table (provisional name)
+address = 0x7E0D63
+size = 1
+
+[[variable]]
+name = "map_entry_0d64"            # the value the map entry routine stores first (provisional name)
+address = 0x7E0D64
+size = 1
+
+[[variable]]
+name = "map_flag_0d6a"             # flag of the map entry routine: bit 7 picks the word table view (provisional name)
+address = 0x7E0D6A
+size = 1
+
+[[variable]]
+name = "map_param_01bb"            # parameter byte of the index-2 and index-$14 routes (provisional name)
+address = 0x7E01BB
+size = 1
+
+[[variable]]
+name = "map_param_01b3"            # parameter byte of the index-$0B route (provisional name)
+address = 0x7E01B3
+size = 1
+
+[[variable]]
+name = "map_param_0c34"            # parameter byte of the index-$2D route (provisional name)
+address = 0x7E0C34
+size = 1
+
+[[table]]
+name = "map_record_table"          # per window entry, three bytes at 3 * entry: the choice count (bit 7: a variable), then the tile-map offset (bank $02; 79 entries)
+address = 0x02E232
+size = 237
+
+[[table]]
+name = "map_word_table"            # words read at twice the map value; the $BF79 view starts 24 bytes in (bank $01)
+address = 0x01BF61
+size = 280
+
+[[table]]
+name = "map_byte_table"            # bytes read at the $0D63 index of the map entry routine (bank $01)
+address = 0x01B9E3
+size = 256
+
+# --- battery save (M4): docs/re/data/save-format.md ---
+# The cartridge's SRAM ($70:0000-$70:1FFF) holds three save slots; a slot is a copy of the WRAM image
+# $7E:2800 ($3F0 bytes) and of the page $00:0100 ($100 bytes), the last word being the slot's checksum.
+# The slot is copied again $1000 bytes higher (the backup). The names below cover the SRAM regions
+# and the WRAM fields the save carries.
+
+[[variable]]
+name = "sram_slot_1"               # save slot 1 (menu "01"): image, page, checksum word at +$4EE
+address = 0x700100
+size = 0x4F0
+
+[[variable]]
+name = "sram_slot_2"               # save slot 2
+address = 0x700600
+size = 0x4F0
+
+[[variable]]
+name = "sram_slot_3"               # save slot 3
+address = 0x700B00
+size = 0x4F0
+
+[[variable]]
+name = "sram_backup_1"             # backup copy of slot 1, used when the checksum of the first fails
+address = 0x701100
+size = 0x4F0
+
+[[variable]]
+name = "sram_backup_2"
+address = 0x701600
+size = 0x4F0
+
+[[variable]]
+name = "sram_backup_3"
+address = 0x701B00
+size = 0x4F0
+
+[[variable]]
+name = "roster_records"            # twelve 32-byte character records, indexed by character id (the saved party records)
+address = 0x7E2800
+size = 0x180
+
+[[variable]]
+name = "save_scratch_copy"         # three bytes copied from $7E:4C00 at save time (a scratch buffer, no meaning)
+address = 0x7E2BD8
+size = 3
+
+[[variable]]
+name = "save_mark"                 # eight bytes that mark a slot as used (checked on load)
+address = 0x7E2BE0
+size = 8
+
+[[variable]]
+name = "item_list"                 # 24 entries of two bytes: object id, then an attribute byte copied from item_attributes (docs/re/data/menus.md)
+address = 0x7E0100
+size = 48
+
+[[variable]]
+name = "story_flags"               # 128 story flags, flag n at byte n / 8, bit n % 8: who is in the party (0 to 11, by character id), who was recruited (0x10 to 0x13), where the chapter is (docs/re/data/scenes.md); all sixteen bytes are saved
+address = 0x7E0170
+size = 16
+
+[[variable]]
+name = "event_bits"                # four bytes of the earlier chapters' events (counter, bits of the map-16 and map-22 logic; $0183 bit 0 forces a battle on map 22)
+address = 0x7E0180
+size = 4
+
+[[variable]]
+name = "party_order"               # character ids of the party in order, ended by $FF (sixteen bytes)
+address = 0x7E0190
+size = 16
+
+[[variable]]
+name = "map_id"                    # 0 on the world map, a place number in places with their own scene (provisional)
+address = 0x7E01A0
+size = 1
+
+[[variable]]
+name = "follower_saved"            # the follower's position (x, y words) as saved; restored to $33 and $35
+address = 0x7E01A6
+size = 4
+
+[[variable]]
+name = "leader_saved"              # the leader's position (x, y words) as saved; restored to $01A2 and $01A4
+address = 0x7E01AA
+size = 4
+
+[[variable]]
+name = "item_count"                # entries in use in item_list (0 to 24)
+address = 0x7E01B2
+size = 1
+
+[[variable]]
+name = "zeni"                      # the money, a word, at most 999
+address = 0x7E01B4
+size = 2
+
+[[variable]]
+name = "battle_counter"            # word: battles fought on this map ($01B0) and a sub-count that wraps at 4 ($01B1); the random-battle logic of maps 22 and 24 reads them
+address = 0x7E01B0
+size = 2
+
+[[variable]]
+name = "landing_spot"              # index of the landing spot or place the party travels to; with $01A1 bit 7 set the next frame's check starts a scene for some values (4, 9)
+address = 0x7E01BD
+size = 1
+
+[[variable]]
+name = "scene_id"                  # the scene (script of the story engine, 82 of them) being played or last played; saved
+address = 0x7E01D8
+size = 1
+
+[[variable]]
+name = "scene_op"                  # the opcode of the scene command being run
+address = 0x7E01D9
+size = 1
+
+[[variable]]
+name = "scene_op_state"            # the step of a multi-frame scene command (0 = not started)
+address = 0x7E01DA
+size = 1
+
+[[variable]]
+name = "scene_offset"              # word: offset of the next byte of the scene's script from its start
+address = 0x7E01DC
+size = 2
+
+[[variable]]
+name = "game_mode"                 # $24: what the main loop runs: 0 map, 2 and 4 battle, 7 story transition, $11 ending (docs/re/data/scenes.md)
+address = 0x7E0024
+size = 1
+
+[[variable]]
+name = "scene_pointer"             # direct page $A5: the scene's script in bank 6 (word; $A7 holds the bank)
+address = 0x7E00A5
+size = 2
+
+[[variable]]
+name = "transition_target"         # $121F: which story transition of bank 4 mode 7 runs
+address = 0x7E121F
+size = 1
+
+[[variable]]
+name = "story_step"                # $1228: index of the story caption and transition that is next
+address = 0x7E1228
+size = 1
+
+[[table]]
+name = "item_attributes"           # the attribute byte of each object id of the item list (bank $01), 40 entries
+address = 0x01C584
+size = 40
+
+# M4 menus (docs/re/data/menus.md): the input, the menu state machine, the item effects and the shop.
+
+[[variable]]
+name = "joy1_held_low"             # pad 1 held: A X L R in bits 7-4 ($44 = source_byte_0044 holds B Y Select Start Up Down Left Right)
+address = 0x7E0043
+size = 1
+
+[[variable]]
+name = "joy2_held"                 # pad 2 held (word, as the pad 1 pair)
+address = 0x7E0045
+size = 2
+
+[[variable]]
+name = "joy1_new_low"             # pad 1 newly pressed this frame: A X L R ($48 = source_byte_0048 holds B Y Select Start Up Down Left Right)
+address = 0x7E0047
+size = 1
+
+[[variable]]
+name = "joy2_new"                  # pad 2 newly pressed (word)
+address = 0x7E0049
+size = 2
+
+[[variable]]
+name = "joy1_prev"                 # pad 1 held in the previous frame (word)
+address = 0x7E004B
+size = 2
+
+[[variable]]
+name = "joy2_prev"                 # pad 2 held in the previous frame (word)
+address = 0x7E004D
+size = 2
+
+[[variable]]
+name = "field_state"               # $25: 0 free, $0F a menu is opening, 1 a menu is open, 3 and 5 other holds
+address = 0x7E0025
+size = 1
+
+[[variable]]
+name = "field_substate"            # $26: which routine the field frame handler runs (0 menu/field step, 1 closes the menu)
+address = 0x7E0026
+size = 1
+
+[[variable]]
+name = "context_61"                # $61: 0 on the map, 1 in a battle, 2 the second battle kind; decides which of INT and EXT an object needs
+address = 0x7E0061
+size = 1
+
+[[variable]]
+name = "menu_screen"               # $0D5F: the menu screen (jump table at 01:88AE): 0 commands, 2 Item, 4 Menu list, 6 Cards, 7 Status, 8 Order, 9 Text, 10 Save, 13 town commands
+address = 0x7E0D5F
+size = 1
+
+[[variable]]
+name = "menu_busy"                 # $0D60: 1 while the screen draws or an effect runs
+address = 0x7E0D60
+size = 1
+
+[[variable]]
+name = "menu_draw_done"            # $0D67: bit 7 = the window queue has drawn everything
+address = 0x7E0D67
+size = 1
+
+[[variable]]
+name = "menu_step"                 # $0D68: the step inside the screen (Item: 1 list, 2 Use/Drop, 4 effect, 5 member, 6 drop yes/no, 8 can't use)
+address = 0x7E0D68
+size = 1
+
+[[variable]]
+name = "menu_item_id"              # $0D7C: the object id chosen on the Item screen (the item in use or in the shop)
+address = 0x7E0D7C
+size = 1
+
+[[variable]]
+name = "menu_row"                  # $0C3F: the row inside the page of the chosen entry
+address = 0x7E0C3F
+size = 1
+
+[[variable]]
+name = "effect_pending"            # $073B: bit 7 = an item effect is running (01:DBDC), bit 6 = the screen is redrawn after it
+address = 0x7E073B
+size = 1
+
+[[variable]]
+name = "effect_step"               # $073C: the step of the running item effect
+address = 0x7E073C
+size = 1
+
+[[variable]]
+name = "effect_counter"            # $073D: a frame counter of the running item effect
+address = 0x7E073D
+size = 1
+
+[[variable]]
+name = "effect_target"             # $0748: word, offset of the target member's record in party_records (a multiple of $20)
+address = 0x7E0748
+size = 2
+
+[[variable]]
+name = "text_speed"                # $01D0: the choice of the Text speed screen (saved)
+address = 0x7E01D0
+size = 1
+
+[[variable]]
+name = "shop_mode"                 # $07AF: the shop's mode (0 off)
+address = 0x7E07AF
+size = 1
+
+[[variable]]
+name = "shop_step"                 # $07B0: the step of the shop's state machine (table at 03:A3D3)
+address = 0x7E07B0
+size = 1
+
+[[variable]]
+name = "shop_price"                # $07B2: the price of the object being bought or sold
+address = 0x7E07B2
+size = 1
+
+[[variable]]
+name = "shop_stock"                # $7E:2220: the stock of the shop (words: object id, attribute), or a copy of item_list while selling
+address = 0x7E2220
+size = 0x40
+
+[[variable]]
+name = "shop_stock_count"          # $7E:2261: entries in shop_stock
+address = 0x7E2261
+size = 1
+
+[[variable]]
+name = "item_extra"                # $7E:2BA0: one word per item_list entry (wishes left, used card choices); saved with the image
+address = 0x7E2BA0
+size = 0x30
+
+[[table]]
+name = "item_prices"               # price in Pt of each object id (0..39), $FF = none; used by the price box and the shop
+address = 0x01CB8B
+size = 40
+
+[[table]]
+name = "item_effect_table"         # a word per object id (0..32): the effect routine run by 01:DBDC
+address = 0x01DC1E
+size = 66
+
+[[table]]
+name = "window_set_pointers"       # 49 words (bank $02): a window set = a count and window entry numbers, queued by 01:BE70
+address = 0x02E322
+size = 98
+
+[[table]]
+name = "item_help_pointers"        # a word per object id (bank $07): the help text of the Item screen (the table goes on with battle messages)
+address = 0x078F2E
+size = 80
+
+[[table]]
+name = "shop_places"               # the 30 place numbers (landing_spot) that have a shop; the stock list pointer table is at 03:9851
+address = 0x03982F
+size = 30
+
+[[table]]
+name = "object_portrait_pointers"  # 3 bytes per object id (0..39): the 24-bit address of the compressed picture (word, then bank byte); read by 00:C559 (menus.md, "Portraits")
+address = 0x02A4EF
+size = 120
+
+[[table]]
+name = "object_portrait_halves"   # one bit per object id (0..39), least significant bit first: which of the two pictures of the object's shared set it shows (menus.md, "Portraits")
+address = 0x02A58F
+size = 5
+
+[[table]]
+name = "object_portrait_palettes"   # a word per object id (0..39): the address in bank $09 of its 16-colour palette (menus.md, "Portraits")
+address = 0x02A356
+size = 80
+
+# M5 cheats research (docs/re/data/battle.md): the battle's damage, EXP and encounter bytes and tables.
+
+[[variable]]
+name = "battle_party_offset"       # word: offset in party_records of the party fighter whose turn it is (its side record is side_record_a)
+address = 0x7E14C3
+size = 2
+
+[[variable]]
+name = "battle_enemy_offset"       # word: offset from $0E00 of the active enemy slot (its side record is side_record_b)
+address = 0x7E14C5
+size = 2
+
+[[variable]]
+name = "battle_hit_flag"           # $14CC: 0 = the attack is dodged (damage is computed, not applied), non-zero = it hits
+address = 0x7E14CC
+size = 1
+
+[[variable]]
+name = "battle_hit_class"          # $14CD: severity of a hit for the animation (2, 3, 4 by damage against maximum HP; 1 graze, 0 miss)
+address = 0x7E14CD
+size = 1
+
+[[variable]]
+name = "battle_damage"             # $14CF: the damage of the turn, 24 bits; computed by 05:B804, subtracted from HP by 05:BDDC
+address = 0x7E14CF
+size = 3
+
+[[variable]]
+name = "battle_repeat"             # $14DF: attacks in a row by the same side on the same target (1, 2, 3...); lowers the defender's card value
+address = 0x7E14DF
+size = 1
+
+[[variable]]
+name = "battle_exp_award"          # $14F3: the EXP of the battle so far, 24 bits (1D:8C33 adds each defeated enemy's reward, 05:8FAA gives it to every fighter)
+address = 0x7E14F3
+size = 3
+
+[[variable]]
+name = "battle_drops"             # $14F6: the three objects the enemies drop, $FF = none (05:8F4D)
+address = 0x7E14F6
+size = 3
+
+[[variable]]
+name = "enemy_count"               # $0EA0: enemies in the battle (set by 01:F692, lowered by the KO routine 05:A9AA)
+address = 0x7E0EA0
+size = 1
+
+[[variable]]
+name = "enemy_formation"           # $0EA5: the screen formation of the group, derived from the count by 01:B8DE
+address = 0x7E0EA5
+size = 1
+
+[[variable]]
+name = "encounter_timer"           # $AA: counts down once a frame while walking or flying; at a negative value 02:D1F6 rolls for a battle and reloads $3B
+address = 0x7E00AA
+size = 1
+
+[[variable]]
+name = "encounter_level"           # $0D8A: the zone's encounter level (0 none), plus the failed rolls; a battle starts when it is at least the roll (1 to 16)
+address = 0x7E0D8A
+size = 1
+
+[[variable]]
+name = "encounter_zone"            # $0D8B: the encounter zone the leader stands in on this map (0 none)
+address = 0x7E0D8B
+size = 1
+
+[[table]]
+name = "encounter_zone_pointers"   # 48 words (bank $02): per map, a list of rectangles (x range, y range, zone number) read by 02:D38B
+address = 0x02D4A4
+size = 96
+
+[[table]]
+name = "encounter_zone_levels"     # 4 bytes per map, at map * 4 + zone: the encounter level of the zone (0 or 1)
+address = 0x02D62A
+size = 192
+
+[[table]]
+name = "encounter_group_pointers"  # 48 words (bank $02): per map, rows of 8 encounter group numbers per zone (one picked by $51 & 7 at 02:D34A)
+address = 0x02D6EA
+size = 96

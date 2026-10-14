@@ -1,0 +1,16 @@
+# The classes of the HD remaster whose art is done, for `cargo xtask hd-tour` (README, "hd-tour").
+#
+# The tour exits 1 when a class listed in `done` draws less than `threshold` percent of its
+# visible pixels from the HD art (palette variants count when the art index recolours them; the
+# text counts where the HD font draws it). Its report lists what is missing and where it was first
+# seen. Add a class here when its art is approved and complete; take it out while art is still
+# being made. The classes are portraits, fighters, effects, field_sprites, map, battle_bg,
+# pictures, text and cards_ui.
+#
+# Classes 1 and 2 of the art plan (portraits and faces; battle poses and effects) are the ones
+# that have art, and the map tiles are drawn from the maps' art for all the field's layers (the
+# part of the class that is not is the scenes that are not the field: the cutscenes' pictures); the
+# class is not marked done until the tour reaches the threshold.
+
+threshold = 99.5
+done = ["portraits", "fighters", "effects"]

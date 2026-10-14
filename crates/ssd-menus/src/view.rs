@@ -1,0 +1,227 @@
+//! What an HD screen shows, as plain values: the menu state read from the game (`ssd-game`'s
+//! `MenuProbe`) joined with the names, prices and help texts of the catalogue. The screens of
+//! [`crate::screens`] draw it; nothing here reads the game or the ROM.
+
+use crate::cheats::{Cheats, Row};
+
+/// The names and texts the view needs, by id: the characters (by character id) and the objects
+/// (by object id, the item list's ids). Built from the catalogue by the application.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Labels {
+    /// One entry per character id.
+    pub characters: Vec<CharacterLabel>,
+    /// One entry per object id.
+    pub objects: Vec<ObjectLabel>,
+}
+
+/// A playable character.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CharacterLabel {
+    pub name: String,
+    /// The object whose picture is the character's face, when there is one of the same name.
+    pub face: Option<u8>,
+}
+
+/// A named object of the item list.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ObjectLabel {
+    pub name: String,
+    /// The price in Pt; `None` for an object that is not sold (its box shows no figure).
+    pub price: Option<u8>,
+    /// The first page of the help text, one string per line.
+    pub help: Vec<String>,
+    /// The attribute byte of the object (`item_attributes`): the flags below are its bits.
+    pub attribute: u8,
+    /// Usable in a battle (bit 7 of the attribute byte).
+    pub battle: bool,
+    /// Usable on the map (bit 6 of the attribute byte).
+    pub field: bool,
+    /// A story helper, never used from the menu (bit 5 of the attribute byte).
+    pub story: bool,
+    /// Cannot be dropped (bit 2 of the attribute byte).
+    pub fixed: bool,
+    /// Asks for a party member to use it on (bit 3 of the attribute byte).
+    pub member: bool,
+    /// Asks for a card of the hand (bit 4 of the attribute byte): the original's card screen does it.
+    pub card: bool,
+    /// The object is a person of the story (its name is a character's): listed under Allies.
+    pub ally: bool,
+}
+
+/// Which HD screen the view is of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Screen {
+    /// The command window of the field (or of a town, or while flying).
+    #[default]
+    Command,
+    /// The Menu list: Cards, Status, Order, Text, Save, Cheats, and Options greyed out.
+    Menu,
+    /// The bag: the HD Item screen.
+    Items,
+    /// The cheats: the choices of the run (M5).
+    Cheats,
+}
+
+/// The Cheats screen as it shows: the choices of the run, the row under the cursor, and the names of the
+/// characters the "For" row offers (by character id).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheatsView {
+    pub cheats: Cheats,
+    /// The row under the cursor.
+    pub row: Row,
+    pub names: Vec<String>,
+}
+
+/// The tabs of the bag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tab {
+    /// Every stack.
+    #[default]
+    All,
+    /// The people of the story (Bulma, Roshi, Vegeta...).
+    Allies,
+    /// Everything else: the Dragon Balls, the Scouter, the Radar...
+    Tools,
+}
+
+impl Tab {
+    /// The label of the tab.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Allies => "Allies",
+            Self::Tools => "Tools",
+        }
+    }
+
+    /// Whether a stack of `ally` (a person or not) is listed under this tab.
+    #[must_use]
+    pub const fn shows(self, ally: bool) -> bool {
+        match self {
+            Self::All => true,
+            Self::Allies => ally,
+            Self::Tools => !ally,
+        }
+    }
+}
+
+/// Where the Item screen is: the bag's list, or one of the sheets that act on the stack under the
+/// cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Sheet {
+    /// The list of stacks.
+    #[default]
+    Browse,
+    /// Use or Drop for the stack under the cursor.
+    Choose,
+    /// The party, with LV, HP, KI and BP: the member the object is used on.
+    Members,
+    /// The quantity: the units to use or to drop, from 1 to the most that can be.
+    Quantity,
+    /// Drop the units? Yes or No.
+    Confirm,
+}
+
+/// One stack of the Item screen, as the screen shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackView {
+    /// The stack's id in the bag.
+    pub id: u32,
+    pub object: u8,
+    pub name: String,
+    pub count: u16,
+    /// Usable here (on the map) and not a story helper: grey otherwise.
+    pub usable: bool,
+    /// Can be dropped: not a key item and not fixed.
+    pub droppable: bool,
+    /// Listed under Allies.
+    pub ally: bool,
+}
+
+/// The bag as the Item screen shows it: the stacks of the tab, the cursor and the sheet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BagView {
+    pub tab: Tab,
+    /// The stacks the tab lists, in bag order (key items first).
+    pub stacks: Vec<StackView>,
+    /// Stacks in use and the slots of the bag.
+    pub used: usize,
+    pub slots: usize,
+    /// The bag has no free slot: a new object is refused.
+    pub full: bool,
+    /// The stack under the cursor can be used here, and can be dropped (the Choose sheet's rows).
+    pub usable_here: bool,
+    pub droppable_here: bool,
+    /// The sheet over the list.
+    pub sheet: Sheet,
+    /// On the Choose sheet: 0 Use, 1 Drop. On Confirm: 0 Yes, 1 No.
+    pub choice: u8,
+    /// On the Members sheet: the party row the cursor is on.
+    pub member: u8,
+    /// On the Quantity sheet: the units chosen; the most that can be chosen.
+    pub units: u16,
+    pub most: u16,
+    /// A line the screen shows at its foot: a refusal, a notice.
+    pub notice: Option<&'static str>,
+}
+
+/// The menu as the HD screens show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuView {
+    pub screen: Screen,
+    /// The bag, on the Item screen (the list of the original is not what the screen shows).
+    pub bag: Option<BagView>,
+    /// The town's commands: no Fly.
+    pub town: bool,
+    /// The flying commands: Land instead of Fly.
+    pub flying: bool,
+    /// The cursor: the command under it, or the row of the item list on the page (0 to 7).
+    pub cursor: u8,
+    /// The page of the item list, from 0.
+    pub page: u8,
+    /// The money.
+    pub zeni: u16,
+    /// The party, in party order.
+    pub party: Vec<Member>,
+    /// The item list, in order (at most 24 entries).
+    pub items: Vec<Slot>,
+    /// The object under the cursor on the item list, if there is one.
+    pub selected: Option<Selected>,
+}
+
+/// A party member: a corner of the field menu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Member {
+    pub name: String,
+    pub level: u8,
+    pub hp: u16,
+    pub max_hp: u16,
+    pub ki: u16,
+    pub max_ki: u16,
+    /// The battle power (24 bits in the record).
+    pub bp: u32,
+    /// The object whose picture is the member's face.
+    pub face: Option<u8>,
+}
+
+/// One entry of the item list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Slot {
+    /// The object id.
+    pub object: u8,
+    /// The attribute byte of the entry (bit 7 battle, bit 6 field).
+    pub attribute: u8,
+    pub name: String,
+}
+
+/// The object under the cursor of the item list: its picture, price and help.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Selected {
+    pub object: u8,
+    pub name: String,
+    pub price: Option<u8>,
+    pub help: Vec<String>,
+    pub battle: bool,
+    pub field: bool,
+}

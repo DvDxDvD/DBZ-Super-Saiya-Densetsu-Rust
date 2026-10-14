@@ -1,0 +1,365 @@
+# Menus, items and the shop
+
+How the map menus, the Item screen and the shop work, found for milestone M4 (HD menus). Everything was read from the
+code of banks `$00`, `$01`, `$02`, `$03` and `$05` and checked by playing the reference replays (`menus`, `shop`) and
+crafted saves headless (`xtask shots`, `save-edit`, `replay-from-save`; the commands are at the end). Certainty: "seen" =
+a run shows it, "code" = read in the code only. Tables are named as in `re/symbols.toml`; routines have no symbol (the
+file only holds routines that have a Rust function) and are written as bank:address. Names of things the game draws
+(Talk, Look, Item...) are the English patch's.
+
+**Corrections to earlier notes.** The item list holds **24** entries, not 10 (`item_list` is `$0100`-`$012F`; three pages of
+eight on screen; pickups, the shop and the battle drop refuse the 25th). `xtask save-edit --set items=` and `save-dump` stop
+at ten, which is where the "ten" came from. Seen: a crafted save with 24 entries shows all three pages.
+
+## Input
+
+The NMI handler calls the joypad reader (`00:82D4`, called at `00:8120`): it waits for the auto-read to finish, then for each
+pad stores the held buttons, the buttons newly pressed this frame (held now and not in the previous frame) and keeps the
+held value for the next frame. Each pad is a 16-bit word; the low byte is `$4218` (A, X, L, R in bits 7 to 4) and the high
+byte `$4219` (B, Y, Select, Start, Up, Down, Left, Right in bits 7 to 0).
+
+| Pad 1 | Held | Newly pressed | Previous |
+|---|---|---|---|
+| word | `$43` (`$44` = `source_byte_0044`) | `$47` (`$48` = `source_byte_0048`) | `$4B` |
+
+Pad 2 is the same at `$45`, `$49`, `$4D`. Menus read only the newly-pressed bytes and have no auto-repeat: `$47` bit 7 is A
+(confirm), `$48` bit 7 is B (cancel), `$48` bit 3 up, bit 2 down, bit 1 left, bit 0 right, bit 4 Start. A press is seen by
+the frame handler of the frame it happens in. The replays hold a key for 4 frames and wait 14 (the timeline files); seen:
+a hold of 1 frame and a gap of 1 frame move the cursor and confirm just as well (the same screen, byte for byte), so
+presses can be fed fast.
+
+## Where the menus run
+
+The map has three modes that matter (`game_mode`, `$24`): `$06` the field (a chapter map walked or flown), `$01` a town or
+interior (the shop), `$02` a battle. The field's frame handler is `00:984F`; it calls the story, the object and the menu code
+every frame. Two bytes of the direct page say what the field is doing:
+
+| Byte | Meaning |
+|---|---|
+| `$25` | 0 free (the party walks or flies), `$0F` the menu is opening (about 18 frames), 1 a menu is open, 3 and 5 other holds (a landing, a scene; `$1648` bit 7 forces 5) |
+| `$26` | which routine the frame handler runs: 0 the menu/field step, 1 closes the menu (`00:98B9`: clears `$25`, `$26`, `$0D00` and `clear_map_menu_block`) |
+| `$61` | the context: 0 the map, 1 a battle, 2 the second battle kind (set by the mode routines at `00:8F72` and `00:91B8`; zeroed at `00:8BD0`) |
+
+**Opening** (`00:97FD`, seen): when `$25` is 0 and A is newly pressed, the routine sets `$25` and `$27` to `$0F`, clears the
+cursor (`map_entry_value`, `map_entry_0d63`), clears the menu block (`clear_map_menu_block`), plays sound 2 (`04:85B6`) and
+refreshes the attribute bytes of the item list (`01:C535`). From then on the menu is a state machine run by `01:881F` each
+frame. The field does not move while the menu is open; the map behind it does not scroll.
+
+**The menu state machine** keeps its state in a few bytes of bank 0:
+
+| Byte | Meaning |
+|---|---|
+| `$0D5F` | the *screen*: an index into a jump table at `01:88AE` (30 words), see below |
+| `$0D68` | the step inside the screen (each screen has its own table, dispatched by the routine at `01:BF44`) |
+| `$0D60` | 1 while the screen is being drawn or an effect runs; the frame handler then skips the sound for an unused press |
+| `$0D62`, `$0D63` | the cursor (`map_entry_value`) and the page (`map_entry_0d63`) of the list being worked |
+| `$0D66` | the *window entry* being drawn or touched (`map_entry_index`) |
+| `$0D7C` | the id of the object chosen (the item in use) |
+| `$0C3F` | the cursor inside the page (written when A is pressed on an item) |
+| `$1100`... | one cursor byte per window entry (`map_menu_cursor`; 96 bytes, bit 7 = redraw the cursor) |
+
+Screens (`$0D5F`), seen unless marked:
+
+| `$0D5F` | Handler | What |
+|---|---|---|
+| 0 | `01:8908` | the command menu: Talk, Look, Fly, Item, Menu (flying: Land, Item, Menu; a town: Talk, Look, Item, Menu, on screen 13) |
+| 1 | `01:89C7` | Fly: the take-off (steps 0, 1, 2, 4, 5, 6, about 60 frames); `travel_mode` becomes 2 and the menu closes by itself (seen, M4 task 2) |
+| 2 | `01:8A8C` | the Item screen (steps below); the battle's Item command opens the same screen with `$61` = 1 |
+| 3 | `01:894A` | the screen after the last A of a Talk or Look message (the message itself is drawn on screen 0 with `$0D60` = 1), then the field (seen) |
+| 4 | `01:8F4B` | the Menu list: Cards, Status, Order, Text, Save |
+| 5 | `01:8F81` | Land: the landing, with the same steps as 1; `travel_mode` becomes 1 and the menu closes (seen, M4 task 2; not a use-on-member list) |
+| 6 | `01:903F` | Cards |
+| 7 | `01:90C4` | Status (the full-screen status page, `game_mode` 3) |
+| 8 | `01:939B` | Order (the party order; copies `party_records` to `$7E:3800`, swaps, writes back, rebuilds the order list with `01:967A`) |
+| 9 | `01:96AD` | Text speed: five speeds, the choice is saved in `$01D0` |
+| 10 | `01:96CD` | Save: the question (step 0), the slot list (step 1, the slot in `$0D62`), `03:E556` (the battery save of `save-format.md`) on the A that chooses the slot, then "Completed!" (step 2) |
+| 13 | `01:970F` | the town command menu (Talk, Look, Item, Menu: no Fly); the shop runs on top of it |
+| 17, 21 | | battle command and the battle's item effect (seen: 17 with the battle command window, `$15` while a battle item works) |
+
+The other numbers of the table (11, 12, 14 to 16, 18 to 20, 22 to 29) are the battle's and the story's small screens; not
+decoded. The command menu's choice goes through `01:BE70`: the table at `01:89B6` turns the cursor (Talk, Look, Fly, Item,
+Menu) into a *window set* (0, 1, 80 = fly, 2, 3); Item with no items opens set `$25` (a "no items" message) instead.
+
+### The window engine
+
+Every box on screen is a *window entry* (0 to `$4E`), drawn as a block of tiles into the tile-map buffer `tilemap_buffer`
+`$7E:3000`... which the NMI copies to VRAM (`$7E:4000` is the second buffer). `01:BE70(set)` appends a *window set* (a list of
+entry numbers, bank 2 at `$E322`, 49 words, each pointing at a count byte and the entries) to a queue at `buffer_4800`
+(`$7E:4800`); `01:A48F` draws one entry per frame, and when the queue is empty it sets `$0D67` bit 7 and takes the next screen
+number from `01:B50A` (entry number to screen). Each entry has a *handler* (word table at `01:A4F5`, indexed by the entry
+number: a draw routine, a cursor routine or both) and a *geometry record* of three bytes in `map_record_table`
+(bank 2 `$E232`: the number of choices, bit 7 = the count is a variable, and the tile-map offset of the first row).
+
+The text blocks (frames, words, digits) are in `bank2_pointer_table` (bank 2 `$DA16`, 128 words): a block is a width, a height
+and tile pairs (a tile number and its attribute), blitted into the buffer by `00:9C67`, `00:9CD8` and `00:9CDE`. Seen:
+block 0 the five commands, 1 the five Menu entries, 2 the flying menu, 3 Yes/No, 4 the Text speed list, 6 the INT/EXT/AID
+label, 7 Use/Drop, `$32` "this item is not usable", `$33` "this item is useful", `$34` "can't use / you are at max".
+
+Entries met in the field and the Item screen (seen from the order the Item screen draws them):
+
+| Entry | What |
+|---|---|
+| `$00` | the command list (5 rows) |
+| `$17` | the Menu list (5 rows) |
+| `$02`, `$14` | the party list (rows = party size, `$01BB`) with HP, KI, BP columns: the "use on" list |
+| `$0B` | the item list (8 rows a page; `$01B3` rows are filled on the last page) |
+| `$0C` | the INT/EXT/AID label with its three arrows |
+| `$0D` | the portrait of the chosen object and its price box |
+| `$0E` | the Use / Drop window |
+| `$15`, `$16` | the message and the confirmation inside battle |
+| `$18` | the Zeni window (`string_pointers` entry 22: the word, the money, a `P`) |
+| `$08`, `$09` | the Talk and Look message boxes |
+
+The money is shown in **Pt**: the `P` after the zeni (300P) is the unit, and every price below is in the same unit.
+
+## The item list
+
+`item_list` is 24 entries of two bytes from `$0100`: the object id and an *attribute byte*. `item_count` (`$01B2`) is how many
+are in use (0 to 24; the screens, the shop and the save read it). The list is **not sorted and not stacked**: two Bulmas
+are two entries. Slot `n` also has a word at `$7E:2BA0 + 2n` (`item_extra`; 48 bytes, saved with the image): it follows
+the entry when the list is compacted; the objects that read it are the wish-granting object (Porunga: a count of wishes
+left) and the card-changing ones (a mask of the three choices already used, `01:F2C7`). Added by `01:C671` (the id comes from `$1640`; the caller has
+already checked the room), removed and compacted by `01:C639` (called by 12 effect and sale routines).
+
+Who adds: the field object pickup (`01:D6D5`: refuses at 24), the battle drop (`05:8F4D`: refuses at 24, up to three drops in
+`$14F6`) and the shop (`03:A914`: refuses at 24 with "you can't carry any more"). The story reads the list too (the Dragon
+Balls, the scenes that give or take an object), so the list stays the source of truth for the original code.
+
+### The attribute byte (INT, EXT, AID)
+
+`item_attributes` (`01:C584`, 40 bytes, one per object id) is copied into the second byte of each entry by `01:C535`
+whenever a menu opens. The bits (seen on the screen and by using items):
+
+| Bit | Label | Meaning |
+|---|---|---|
+| 7 | **INT** | usable **in a battle** (the label on the Item screen is INT; code: `$61` non-zero) |
+| 6 | **EXT** | usable **on the map** (outside a battle; `$61` = 0) |
+| 5 | **AID** | an object that is only helped by the story (the Dragon Balls, the story's Gohan): never usable from the menu |
+| 4 | | the effect asks for a card of the hand (Yemma, Baba, ChiChi and Oolong change cards) |
+| 3 | | the effect asks for a party member to use it on (healing, stat boosts) |
+| 2 | | cannot be dropped |
+| 1 | | a variant of 3 and 4 (an object that works on everyone or on the enemy) |
+| 0 | | set at run time by `01:C535`: "not usable now" |
+
+`01:C535` sets bit 0 when the entry's usable bits (7 and 6) equal only the one that is wrong for the context: on the map
+(`$61` = 0) an object with INT only gets bit 0, in a battle an object with EXT only does. An object with both is usable in
+both. Seen, on the map: Bulma (both) heals; Yajirobe, Vegeta (INT only) and a Dragon Ball answer "can't use"; the Scouter and
+Bubbles (EXT only) work. Seen, in a battle: the Scouter (EXT only) answers "can't use", Yajirobe (INT only) goes on to the
+battle's effect screen. The attribute of the story's Gohan object is replaced by "INT, cannot drop" when the encounter group
+is 5 (the first Raditz battle), where he can be called. The three arrows on the Item screen show the bits that are set on the
+chosen object (the arrow is drawn by `01:C5AC` for each of bits 7, 6, 5).
+
+### Where names, portraits, prices and effects come from
+
+| What | Where |
+|---|---|
+| Name | `object_name_pointers` (`02:B0D9`, 40 entries, `names.md`): the objects are the story's people. The English patch repeats and misses a few (the same name twice at 16/17 and 24/25, a quote-marked "Kaio") |
+| Help text | a word table at `07:8F2E` (indexed by object id; the table goes on with the battle messages after id 39): pages of text of up to three lines, lines ended by `$FF`; `$FD`, `$FA`, `$FB`, `$F8`, `$FC` are slots a message fills in |
+| Price (Pt) | `item_prices` (`01:CB8B`, 40 bytes, `$FF` = no price): bought and sold at the same figure (`03:A797` adds it to the zeni when selling) |
+| Effect | `item_effect_table` (`01:DC1E`, 33 words for ids 0 to 32): run by `01:DBDC` every frame while `$073B` bit 7 is set |
+| Portrait | graphics in the ROM, compressed (below): `object_portrait_pointers` (`02:A4EF`, three bytes an object) and `object_portrait_palettes` (`02:A356`) |
+
+Seen prices: Bulma 3, Puar 4, Roshi 6, MrPopo 10, Shenron 60. The price box is drawn by `01:CACB` with the figure from the
+price table; the objects without a price (Dragon Balls, Korin?, the story objects) show a small kanji for "aid" in the
+box instead of the figure. The Porunga object shows the number of wishes it has left (`item_extra`) in the same box.
+
+**Portraits (found by the M4 spike).** The picture of object `n` (0 to 39) is at the 24-bit pointer of `object_portrait_pointers`:
+three bytes an object, the word first and the bank byte last. `01:8B00` stores the chosen object in `$0D01` and sets `$0D75`
+to `$90`; the routine at `01:C98E` reads the pointer of that id from the table `$0D75` selects, `01:CA98` sets `$83`/`$85`
+from it, and `00:C559` decompresses it into `$7E:9000`. The stream: a 16-bit output size (1024 bytes for every object), then groups of eight items
+led by a flag byte read least-significant bit first. A set bit is a literal byte. A clear bit is a two-byte back reference:
+the low nibble of the first byte is the length code, and the copy is that code plus three bytes (the routine stores the code
+plus two and its loop copies one byte more); the other twelve bits, the high byte and the high nibble of the first, are the
+distance back from the output. A source before the start of the output reads as zero. `00:C68C` then regroups each 16-byte
+block from bitplane pairs into the SNES tile layout, so the 1024 bytes are 32 tiles of 4 bits a pixel, 32 bytes each.
+The first picture of a set is tiles 0 to 7 and 16 to 23 in a 4 by 4 grid, rows `0 1 2 3`, `16 17 18 19`, `4 5 6 7` and `20 21 22 23`
+(32 by 32 pixels); tiles 8 to 15 and 24 to 31 make a second picture in the same arrangement. **Which of the two an object shows**
+is one bit per object in a table of five bytes, `object_portrait_halves` (`02:A58F`, least significant bit first: object `n` is
+bit `n mod 8` of byte `n / 8`; `01:C9ED` reads it with the object id shifted right by three): 0 the first picture, 1 the second.
+Two objects usually share a set and take one half each, not in the order of their numbers (objects 10 and 13 share one: Yemma
+shows the second half and Oolong the first; 23, 24 and 32 share one: the Dragon Radar shows the second half, the frog the
+first). Checked against the original's Item screen for objects 0 to 32 (the picture box of a frame matched pixel by pixel
+against both halves). The palette is the sixteen words at the bank-`$09` address that `object_portrait_palettes` gives the object;
+colour 0 is transparent. Checked against the original's screen: for four objects, every colour in the portrait box lies in
+the palette of that object, and the grid reproduces Bulma's picture.
+
+**Corner faces (not mapped).** The party's corner faces of the field menu come from a table that is not found yet. The HD
+draws the picture of the object of the same name (Goku 28, Piccolo 29, Gohan 26, Vegeta 19); a character without such an
+object shows a placeholder. Piccolo's corner matches object 29's picture on the frame.
+
+**Help text.** `item_help_pointers` (bank `$07`) gives the text of each object: lines of tiles, each line ended by `$FF`, a
+page ended by an empty line. The help window shows the first page (at most three lines). The codes the catalogue cannot
+spell (`$FC`, `$FD` and the like, filled in by messages at run time) show as an ellipsis.
+
+### The item effects
+
+The effect routine of an object is the word at `item_effect_table[id]`. `01:DBDC` first runs the helper of bit 3
+(`01:F128`, the member) or bit 4 (`01:F13B`, the card), then jumps to the effect. An effect is a state machine
+on `$073C` (the step) with `$073D` as a counter, `$0748` (the offset of the target's record in `party_records`, a multiple
+of `$20`) and `$0740` (the value being reached); a heal counts up 11 points a frame and stops at the maximum
+(`01:DD2A`). When it is done it removes the entry (`01:C639`) and the menu closes. Seen: Bulma on a member with 50 HP gives
+75 HP (25 more), `item_count` goes from 10 to 9, the screen returns to the field, all in about 25 frames.
+
+The help texts say what each does; the groups:
+
+| Ids | Effect |
+|---|---|
+| 0 to 2 | restore HP: all, 50, 25 |
+| 3, 4 | restore KI: all, 10 |
+| 5, 6 | raise battle power 25 and 50 percent (battle) |
+| 7 | paralyses an enemy for one attack (battle) |
+| 8 | restores HP and KI |
+| 9 to 13 | change a card or the whole hand (10 to 13 ask for a card, bit 4; 9 asks for a member by its attribute although its text speaks of a card: not understood; `$7E:2BA0` keeps a mask of the three choices already used) |
+| 14 | restores HP and KI for the whole party |
+| 15 | Porunga's three wishes |
+| 16, 17 | the Scouter: information on the enemy |
+| 18, 19, 26 | call Yajirobe, Vegeta, Gohan to help in a battle |
+| 20 | Oozaru transformation (battle) |
+| 21 | Bubbles: no random battles for a while |
+| 22 | Escape: go to a place to rest, or leave a cave (`01:8CAD`) |
+| 23 | the Dragon Radar (`01:8C9F`) |
+| 24, 32 | the Namekian Frog |
+| 25 | evens out the cards between attack and defence |
+| 27 to 31 | story objects with effects in battle |
+| 33 to 39 | the seven Dragon Balls: no effect |
+
+## The Item screen (`$0D5F` = 2)
+
+Steps of `$0D68` (seen from the watch of the variable; handlers in the table at `01:8A92`):
+
+| Step | What |
+|---|---|
+| 0 | opens the windows: the list, the label, the portrait, the Zeni window, the help window |
+| 1 | the list: up/down move `$0D62` (8 rows a page, `$0D63` the page, page edges in the table at `01:8B74`: 8, 16, 24 entries), A chooses the entry (stores `$0D7C` = id, `$0C3F` = row, `$0D63`) and asks Use or Drop (set 4), B leaves |
+| 2 | the Use/Drop choice (`$0D62` 0 = Use, 1 = Drop). Use: refused with "can't use" if bit 0 is set (step 8), else bit 3 goes to the member list (`01:F202` walks the party from the last member down, `$20` bytes a step) or bit 4 to the card choice (`01:F22F` walks the five cards of the hand, six bytes a step), otherwise the effect runs at once (`$073B` = `$80`). Drop: refused if bit 2 is set; else the "Drop item?" Yes/No (step 6) |
+| 3 | the message after a use, then back to step 1 |
+| 4 | an effect is running (`$073B` bit 7); the screen waits |
+| 5 | the member list: the party with LV, HP, KI, BP columns; A starts the effect on that member |
+| 6 | the Yes/No of Drop; Yes removes the entry (`01:C639`) |
+| 8 | the "can't use" message, then back to step 1 |
+
+On the map the whole screen leaves with B (back to the command menu, screen 0) and after an effect it closes the menu.
+
+## The shop
+
+The shop is a state machine in bank 3 (`03:A3B0`), over the town command menu. Its state: `$07AF` (the mode), `$07B0` (the
+step, table at `03:A3D3`), `$07B2` (the price of the object being bought or sold), the stock at `$7E:2220` (words: id and
+attribute; the stock list of the shop or, when selling, a copy of `item_list`) and its length at `$7E:2261`.
+
+- **Which shop.** `03:97C0` looks the place number `landing_spot` (`$01BD`) up in a list of 30 places at `03:982F`; the
+  index picks a pointer in the table at `03:9851` to a stock list (object ids ended by `$FF`; about a dozen different
+  lists; the places repeat them). Seen: the Baba's house of the first town sells Kami, Roshi, Bulma, MrPopo, Puar and
+  Shenron on the first page.
+- **Flow.** BUY or SELL, then the list (six rows a page with the portrait and price box of the chosen object, the buyer's
+  money under Baba's face), "What do you want?", "That'll be 10 Zeni." (the figure from `item_prices`), Yes/No, "Thank
+  you!" and "Anything else?". Refusals: "You can't carry any more" (24 entries), "You don't have enough money", and "You
+  have nothing to sell" when the list is empty.
+- **Buy** (`03:A914`): refuses at 24; subtracts the price from `zeni` (the money cannot go below 0: a carry refuses), appends
+  the stock entry (`$7E:2220`) to `item_list`. **Sell** (`03:A790`): adds the price to `zeni` (capped at 999 = `$03E7`), removes
+  the entry (`01:C639`). The price is the same for both. Seen: with 30 zeni, buying MrPopo (10 Pt) leaves 20 and `item_count`
+  goes from 9 to 10.
+
+## Facts for the HD menus
+
+- The game's menu logic reads only `$47`/`$48` (newly pressed): feeding virtual joypad presses is a complete way to drive it.
+- State to read for drawing, all in WRAM: `$25` (a menu is open), `$0D5F` and `$0D68` (screen and step), `map_menu_cursor`
+  and `$0D62`/`$0D63` (cursors), `party_records` (names by `$7E:2800` ids; HP at +3, KI +5, BP +7, max HP +10, max KI +12),
+  `zeni`, `item_list`, `item_count`, `item_extra`, `text speed` (`$01D0`).
+- A screen takes ~3 frames to open and the queue draws one window a frame; presses made before the windows are drawn are
+  not lost (a replay with 1-frame presses matches the slow one), but a macro should check `$0D5F` after each move.
+  Measured in M4 task 2: the queue is empty when bit 7 of `$0D67` is set, about two frames after the menu opens; a Down
+  press 17 frames after the opening did not move the cursor, so a macro waits for that bit before each press.
+- Cursors (seen): the list's cursor starts at 0 when a list opens (a choice of the command window resets it); B on a
+  sub-screen returns to the command window with the cursor on the row that was chosen (Item stays on 3); B on the command
+  window closes the menu. The flying window has three rows and Down wraps from the last to the first; the field's five
+  rows wrap the same way, and so does the Menu list.
+- Messages (seen): after Talk or Look the message is drawn on screen 0 with `$0D60` = 1 and waits for A; it takes about
+  200 frames to finish its text, and A then closes it. The town's shopkeeper talks in several messages, one A each.
+- Save (seen, M5 check on the `menus` replay and the cheats scenarios): the Save opens on step 0 (its question); the first A
+  goes to the slot list (step 1), where the cursor `$0D62` (`map_entry_value`) holds the slot, 0 to 2. The A that chooses the
+  slot writes it, and the completion (step 2, "Completed!") shows one frame later, with the cursor back at 0. The third A
+  returns to the field: the menu closes by itself. A fourth A on the free field opens the menu again.
+- The Item list keeps `$0D60` = 1 while it is shown; its step (`$0D68`) is 1 when the list takes presses.
+- The corner portraits of the party and the Zeni box are drawn by the original; the HP/KI bars under the portraits and the
+  help window of the command menu do not exist in the original.
+
+## The bag and the capacity spike (M4, task 3)
+
+The Enhanced mode keeps the items in a bag of 60 stacks of up to 99 units (`ssd-menus::bag`, both options
+in `Ruleset`). The original list is a projection of it, written by `ssd-game`'s keeper after every change.
+
+**Capacity spike: decided by the count, no hooks.** The three checks that refuse an add compare `item_count`
+with 24 (`01:D6D5` the field pickup, `05:8F4D` the battle drop, `03:A914` the shop: `CMP #$18` then `BCC` to the
+add, else the refusal). The projection keeps the count at most 21 while the bag has a free slot, so the three
+checks never refuse a pickup, a drop or a purchase that the bag can take, and a battle's three drops still fit.
+When the bag is full (60 stacks) the projection shows 24 entries, so the same checks refuse every add by the
+original's own code (its "can't carry any more" in the shop, its refusal on the field); the item stays where it
+was. A hook would have needed the recorder to allow hooks (`Recorder` refuses a hooked machine), so the count is
+the simplest rule that keeps Classic untouched. Known difference: while the bag is full the refusal is by count,
+so a unit that would only join a stack that has room is refused too.
+
+**What the keeper does.** It diffs the list it last wrote with the list in work RAM (a longest common
+subsequence over object and state word): an added entry is a unit for the bag, a removed one is a unit gone from
+its stack (a use, a drop, a sale, the story). The list is then written back as the bag projects it, with the
+stack the HD staged first. The state word of an entry (`item_extra`, `$7E:2BA0`) travels with its stack; the
+objects 9 to 13 (card changers) and 15 (Porunga) keep one stack per unit, since their word is their own state.
+Dragon Balls (33 to 39) and the story objects (attribute bit 5) are key items: listed first, never dropped.
+
+**The original's Use, from the Item list (seen with `menu-test items`).** Choose the entry (A on the list, the
+Use/Drop window is step 2). A window takes its next press only after it has settled: a press in the first
+frames after it is drawn is lost, so the plan waits about two seconds. Use (cursor 0) then shows either the
+party list (step 5) or goes on to a message (step 3). The party list is shown for some objects only (Turtle
+asks; Bulma, whose attribute has bit 3 set, does not), so the plan takes it only when it appears. The message
+waits for A (busy 1 means it waits, busy 3 that it is still written); A starts the effect (step 4), whose result
+may wait for another A (step 7). After the effect the menu closes by itself, or stays on the command window,
+which B closes. Each unit of a multi-unit use reopens the menu from the field after a short pause.
+
+**Drop.** Drop (cursor 1) asks Drop? with Yes and No (step 6); Yes removes the entry and the list comes back
+(step 1), so a drop of several units stays on the list.
+
+**The Dragon Radar (found in M4 task 4).** Its use is not like the others: with Use chosen on step 2 the effect
+(`01:8C9F`, then `$073B` = `$80`) runs at once on the choice step, with no party list and no message, and the screen it
+draws is its own (effect 23 at `01:EBE4`: step 0 sets `$133E` = `$80`, step 1 runs the radar's states of `1A:F11A` until
+`$133E` is clear, then it clears `$25`, `$0D60`, `$0D68`, `$073B` and `$073C` itself and the menu is closed). In its
+interactive state a new press of A (`$47` bit 7) only changes the view and a new press of B (`$48` bit 7) leaves it. The
+Radar is a keepsake (attribute `%01000100`: usable on the map, cannot be dropped) and nothing in its effect removes its
+entry, so it stays in the bag. The HD's plan therefore takes the Use when the effect runs on step 2, waits for the
+screen to be drawn and leaves it with B. Bubbles also runs from step 2 (`$073B` goes `$80`, then `$C0` while its message
+shows) and the menu closes back to the command window or the field by itself.
+
+**Stale `menu_screen` while the menu opens.** `menu_screen` (`$0D5F`) is not cleared when a menu closes: the Radar's
+exit leaves it at 2, and the next opening shows `$25` = `$0F` with that 2 for a couple of frames before it is set to 0. A
+probe that reads the screen at `$0F` sees the Item screen; the curtain therefore goes up on `$0F` itself (a menu opened
+from the field always opens on its command window) and reads the screen only once the menu is open.
+
+**The party's BP.** A record of `party_records` holds the battle power in three bytes at `+7` to `+9` (24 bits); the
+use-on list shows it as its BP column.
+
+**Sidecar.** `saves/ssd.bag` (bincode, versioned) holds one bag per save slot with the slot's checksum word. A
+bag binds to the save the game runs on when the slot's list, count and money equal work RAM (after a Continue
+the two are the same). The sidecar's bag is taken when its checksum equals the slot's; a save changed by another
+way rebuilds the bag from the list. A save writes its bag when the slot's checksum changes. The cheats of a save are
+written at every Save's completion, also when the checksum is the same (README, "Cheats").
+
+**Replays (format 2).** A replay of the Enhanced mode is format 2: the mode byte, then for each frame the joypad
+and its host events (a work RAM write, or an application event: the bind, which carries the bag's bytes). The
+replay is re-played with the same keeper; the final state (work RAM and the bag) is compared by hash.
+
+## Open
+
+- What `$25` = `$0F` counts (about 18 frames, then 1) and `$0D67`/`$0D60` precisely; screens 5, 11 to 16 and 18 to 29.
+- The table of the party's corner faces (see "Corner faces"), and the use of the second picture of each object (tiles 8 to 15
+  and 24 to 31).
+- The effects of ids 27 to 31 and the battle side of the Item screen (`$61` = 1, screens 17 and `$15`).
+- What the second kanji-like icon in the price box means for each object (a "no price" mark, seen on the Dragon Balls,
+  Gohan and Korin).
+
+## How to see it again
+
+    cargo run --release -p xtask -- shots menus --every 150 --upto 6900 --sheet 6       # the field menu and its screens
+    cargo run --release -p xtask -- shots .work/replays/shop.ssdreplay --every 1000 --sheet 10   # the shop (about 8 minutes)
+    xtask save-edit in.sav out.sav --set items=bulma,scouter,yajirob --set page:B2=18   # a crafted item list (page:00= for 24)
+    xtask replay-from-save out.sav timeline.txt out.ssdreplay; xtask shots out.ssdreplay --frames ... --peek 0x7E0D5F,0x7E0D68
+
+`--peek` takes the variables of `re/symbols.toml` or hex bus addresses, `--watch` prints the writes of a byte (with the
+program counter after `--watch-from N`), which is how the routine of each write above was found.

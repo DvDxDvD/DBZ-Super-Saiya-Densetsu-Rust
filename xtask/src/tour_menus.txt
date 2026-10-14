@@ -1,0 +1,191 @@
+# The tour's walk through the map menus, from the field (on foot, no menu open, after Continue).
+# Every part ends with enough B presses to leave all menus; the extra ones do nothing.
+10 -
+# Talk, Look: the first two entries of the map menu.
+4 a
+20 -
+4 a
+14 -
+40 -
+4 a
+40 -
+4 a
+20 -
+4 down
+14 -
+4 a
+14 -
+40 -
+4 a
+40 -
+# Item: the list, the Use/Drop window of an object, the drop question.
+4 a
+20 -
+repeat 3
+4 down
+14 -
+end
+4 a
+14 -
+60 -
+4 down
+14 -
+4 a
+30 -
+4 down
+14 -
+4 a
+30 -
+repeat 4
+4 b
+40 -
+end
+# Item > Use: the first object, then the party list it is used on.
+4 a
+20 -
+repeat 3
+4 down
+14 -
+end
+4 a
+14 -
+60 -
+4 a
+30 -
+4 a
+30 -
+60 -
+repeat 4
+4 b
+40 -
+end
+# Menu > Cards.
+4 a
+20 -
+repeat 4
+4 down
+14 -
+end
+4 a
+30 -
+4 a
+14 -
+60 -
+4 a
+40 -
+repeat 4
+4 b
+40 -
+end
+# Menu > Status: the page, and the next member.
+4 a
+20 -
+repeat 4
+4 down
+14 -
+end
+4 a
+30 -
+4 down
+14 -
+4 a
+14 -
+60 -
+4 down
+14 -
+4 a
+60 -
+repeat 4
+4 b
+40 -
+end
+# Menu > Order: swap two members.
+4 a
+20 -
+repeat 4
+4 down
+14 -
+end
+4 a
+30 -
+repeat 2
+4 down
+14 -
+end
+4 a
+14 -
+60 -
+4 down
+14 -
+4 a
+60 -
+repeat 4
+4 b
+60 -
+end
+# Menu > Text: another speed.
+4 a
+20 -
+repeat 4
+4 down
+14 -
+end
+4 a
+30 -
+repeat 3
+4 down
+14 -
+end
+4 a
+14 -
+30 -
+repeat 2
+4 right
+14 -
+end
+4 a
+60 -
+repeat 4
+4 b
+40 -
+end
+# Menu > Save: slot 01.
+4 a
+20 -
+repeat 4
+4 down
+14 -
+end
+4 a
+30 -
+repeat 4
+4 down
+14 -
+end
+4 a
+40 -
+4 a
+40 -
+4 a
+60 -
+4 a
+60 -
+repeat 4
+4 b
+40 -
+end
+# Fly: take off, hover, the flight menu, land.
+4 a
+20 -
+repeat 2
+4 down
+14 -
+end
+4 a
+200 -
+20 -
+4 a
+20 -
+4 a
+14 -
+110 -
