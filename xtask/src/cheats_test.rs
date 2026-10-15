@@ -1458,6 +1458,47 @@ pub fn spike(rom: &[u8], dir: &Path, out: &mut String) -> anyhow::Result<()> {
             "  end: Classic map {} mode {}, cheats map {} mode {}",
             classic.final_map, classic.final_mode, cheat.final_map, cheat.final_mode,
         );
+        // A fight that ends at another frame with the cheats leaves the recorded presses out of step with the story.
+        // The recording is played on from the cheat run's end of the last fight, as the player would press the same
+        // buttons then: the story should come to the same map, mode and party as Classic.
+        let ends = classic
+            .battles
+            .last()
+            .and_then(|b| b.end)
+            .zip(cheat.battles.last().and_then(|b| b.end));
+        if let Some((classic_end, cheat_end)) = ends
+            && classic_end != cheat_end
+            && (classic.final_map, classic.final_mode) != (cheat.final_map, cheat.final_mode)
+        {
+            let shift = |frame: u64| {
+                if frame < cheat_end {
+                    frame
+                } else {
+                    (frame + classic_end).saturating_sub(cheat_end)
+                }
+            };
+            let delta = cheat_end.abs_diff(classic_end);
+            let mut machine = replay.power_on(rom.to_vec())?;
+            let mut table = HookTable::new();
+            cheats::install(&mut table);
+            machine.set_hook_table(Some(table));
+            let plan = Plan { start: Some(extreme), ..Plan::default() };
+            let frames = if cheat_end > classic_end {
+                replay.frames() + delta
+            } else {
+                replay.frames() - delta
+            };
+            let moved =
+                run_frames(&mut machine, &plan, |frame| replay.input(shift(frame)), frames)?;
+            let last = |t: &Trace| t.snaps.last().map(|s| (s.ids, s.map, s.mode));
+            let _ = writeln!(
+                out,
+                "  continued from the cheat run's end of the fight: map {} mode {}, party {}",
+                moved.final_map,
+                moved.final_mode,
+                if last(&moved) == last(&classic) { "as Classic" } else { "DIFFERS from Classic" },
+            );
+        }
     }
     Ok(())
 }

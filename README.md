@@ -338,12 +338,10 @@ This is a young project; these are the things we know are not right yet.
 
 - **Field sprites are about 99 % covered** by HD art; a few effects of the field are still drawn from the original's
   pixels, made bigger.
-- **Frieza's first form (enemy group `$53`)** with strong cheats on ends later than it should; it is not a stall and
-  is not gated like the scripted Nail fight, which suspends the cheats.
 
 **Both modes**
 
-- **Fast-forward**: x8 tops out near x5.5 on the development machine (x4 holds its speed).
+- **Fast-forward**: x8 needs 480 emulated frames a second and holds it on the development machine when nothing else loads it (about 570); on a slower or busy machine it can top out lower (x4 needs 240 and holds).
 - **Japanese Rev 1 plus `--ips`** is implemented and unit-tested, but has not been tried end to end with a real
   Japanese ROM.
 - **Windows only.** Other platforms have not been tried.
@@ -372,7 +370,6 @@ goes from polish to new content. Dates are not promised; each milestone ships wh
 ### M8: HD polish
 
 - **Field sprites** to full coverage (the last effects of the field).
-- An optional **money from battles** switch (the original pays no zeni for a battle).
 - **Palette-exact recolouring** of every layer in every colour variant, checked on all replays.
 - A **faster fast-forward** (x8 at full speed).
 - Frieza's first form with cheats (group `$53`).

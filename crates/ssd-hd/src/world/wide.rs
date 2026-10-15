@@ -1186,8 +1186,9 @@ impl WideRun {
 
     /// [`WideRun::redraw_hd`] drawn in the background, for a run whose pictures are shown a window
     /// frame late (a fast-forward): the frame is handed to a thread and the call returns the
-    /// picture of the frame handed over by the call before, waiting for it if it is not done
-    /// (it has had a whole batch of frames to be). `None` is the first call after the run's other
+    /// picture of the frame handed over by the call before if it is done; if it is not (a batch of
+    /// frames is shorter than the drawing, or the machine is loaded), the call returns `None` and
+    /// draws nothing, so the run never waits for a picture. `None` is the first call after the run's other
     /// calls (nothing was handed over before it), a frame the renderer refuses, or no frame to
     /// draw (as for [`WideRun::redraw_hd`]; then the picture of the call before is still
     /// returned). Any other call of the run waits for the picture in the background first and
@@ -1197,6 +1198,12 @@ impl WideRun {
     ///
     /// The thread cannot be started, or the drawing in the background panicked.
     pub fn redraw_hd_pipelined(&mut self, log: Option<&FrameLog>, hd: HdOptions) -> Option<WideHd> {
+        // A picture still being drawn is not waited for: this frame is not drawn (the window keeps
+        // the last picture it has, and the next frame of the run is drawn instead). The skipped
+        // frame stays for the next call, which finds the thread done.
+        if self.drawing.as_ref().is_some_and(|handle| !handle.is_finished()) {
+            return None;
+        }
         let previous = self.finish_drawing();
         let started = self
             .skipped

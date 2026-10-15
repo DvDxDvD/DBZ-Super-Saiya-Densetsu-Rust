@@ -30,6 +30,10 @@ impl ArtState {
     /// and adds it to the frame's background slots; call it after [`ArtState::begin_bg`].
     pub(crate) fn begin_field(&mut self, field: Option<&FieldState>) {
         let Some(entry) = self.field_entry(field) else { return };
+        // The map's layer takes BG2's place and leaves room in the records (a frame can match a
+        // background class of the pack besides: it keeps the layers behind the map)
+        self.lookup.bg_slots.retain(|slot| slot.bg != 1);
+        self.lookup.bg_slots.truncate(crate::bgart::MAX_SLOTS - 1);
         self.stats.field_map.bound = Some(entry as u32);
         let (width, height) = self.pack.maps.layer[entry].size();
         self.lookup.bg_slots.push(Slot {

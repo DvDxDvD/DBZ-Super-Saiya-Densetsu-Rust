@@ -230,7 +230,7 @@ numbers from a 32-byte block of work RAM at `$7F:FF00` (outside the save image),
 and at a neutral block every wrapper is the original routine, so Classic stays byte-exact (`verify-replays
 --cheats-identity` installs the wrappers at a neutral block and checks the replays are still identical). Fights the story
 expects the party to lose (`SCRIPTED_LOSS`, today Nail against Frieza) suspend the battle cheats: the screen shows "Cheats
-off for this fight" for about two seconds and "Cheats back on" on the map. `docs/re/data/battle.md` has the hook points and
+off for this fight" for about two seconds and "Cheats back on" on the map. Other story fights are not gated: Frieza's first form on map 22 is won and followed by the same scenes with the cheats (a recording made for Classic ends at another frame there). `docs/re/data/battle.md` has the hook points and
 the group verdicts.
 
 Each save slot keeps its cheats in `saves/ssd.cheats` beside the bag (keyed by the slot's checksum word: Continue restores
@@ -561,7 +561,7 @@ most 8 ms).
 checks the fast-forward's shortcuts: at a speed above 1 the app runs the frames of a batch before the last without drawing
 the PPU's pixels, without the render log and without resampling their sound, follows the 16:9 view with the last two only
 (`ssd_hd::world::WideRun::skip`), and draws the picture of the last (`redraw_hd`, in the app in the background and shown a
-window frame late: `redraw_hd_pipelined`). Each replay (default `battle` and `wander`) is played with the render log on and
+window frame late, and skipped when the picture before is still being drawn: `redraw_hd_pipelined`). Each replay (default `battle` and `wander`) is played with the render log on and
 drawn frame by frame (the reference); for each batch of 2, 4, 7, 8 and 16 frames a second machine plays it the app's way, and
 at the end of every batch its Enhanced picture, its PPU frame, its work RAM, CPU registers and master cycles must be the
 reference's. Exit 0 when everything is equal.

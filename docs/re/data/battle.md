@@ -266,11 +266,23 @@ battle that leaves the battle states before the replay ends):
 | `$38` (`$39`) | Zarbon | `secret-zarbon-vegeta-joins` | not finished in the replay | not finished in the replay | no break shown; cheats apply (`$39` is played by no replay) |
 | `$51` | Ginyu | `secret-ginyu-goku-duel` | not finished in the replay | not finished in the replay (map 16 in both) | no break shown; cheats apply (unproven) |
 | `$56` | final Frieza | `secret-ending-normal`, `-super-vegeta`, `secret-ssj-frieza` | the ending (map 24, mode `$11`) at 4575 and 5005 | the ending in both, at 5613 and 5077 | no break shown; cheats apply |
-| `$53` | Frieza's first form (not on the plan's list) | `secret-piccolo-returns` | finished at 7659, end mode 3 | finished at 8349, end mode 8 | open: the fight ends later with cheats; not a stall; not looked at further |
+| `$53` | Frieza's first form (not on the plan's list) | `secret-piccolo-returns` | finished at 7659 | finished at 8349 (the replay ends in mode 3 in Classic, in mode 8 with the cheats) | no break; cheats apply (explained: the recording's presses are out of step, not the story; see below) |
 
 The `$57` row is the one that needed the gate: the first gate, which came off on the first non-battle state, came
 off in the middle of the fight (frame 4104), and the cheats then changed the fight (see above). The gate now stays
 through every battle state and comes off on the map.
+
+The `$53` row was a false alarm, found by reading the "end mode" column right. It is the mode byte at the *end of the
+replay*, not the mode a battle leaves: in both runs the battle ends the same way (`$82` fade, then mode 8, the
+victory state, then the map, a fade, and mode 3 for the scene). The recording's presses were made for the Classic fight,
+so with the cheats the fight is won at another frame (damage x10 and enemy power x5 together: 8349 against 7659), and
+the recording ends in the middle of the post-battle script (mode 8) instead of at its scene (mode 3, 690 frames
+later in the cheat run). Played on with the same presses shifted by the 690 frames (`cheat-spike` prints this as
+"continued from the cheat run's end of the fight"), the extreme cheats reach the same mode sequence, the same map and the same party as
+Classic (Piccolo, Tien, Yamcha, Chiaotzu): the story does not expect a loss and the cheats do not break it, so the
+group is not gated. Single cheats on the same recording: damage x10 (ends 7194), defence x10 (7656), EXP x10 (7659) and the
+Easy preset (5176) all continue to the same state; enemy power x2 (Hard) and x5 end in mode 13 (not the victory path; taken to be a lost fight), because the
+recorded presses do not win against stronger enemies; a player who wins the fight gets the same continuation.
 
 ### Identity verdicts of three secret replays (found 2026-10-15)
 
