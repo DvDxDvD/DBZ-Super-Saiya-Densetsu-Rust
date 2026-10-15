@@ -11,6 +11,13 @@
   <img alt="Bring your own ROM" src="https://img.shields.io/badge/ROM-bring%20your%20own-red.svg">
 </p>
 
+> [!WARNING]
+> **Yes, this project is AI-assisted. Heavily.**
+> It was built with AI and tool assistance from start to finish, and I, the owner, didn't write a single line of
+> the code myself. I steered it, tested it, played it to death and made every call. If you're about to drop the
+> tired old "AI slop" line, go right ahead: I honestly don't give a fuck. Everyone else, just enjoy it. Fork it,
+> open issues, propose fixes and features.
+
 A from-scratch Rust rewrite of *Dragon Ball Z: Super Saiya Densetsu* (SNES, 1992), the card-battle RPG
 of the Saiyan and Frieza sagas. It runs **your own copy of the game** three ways: **Classic**, the original
 game exactly as the cartridge plays it, verified frame by frame; **Recompiled**, the same game with its 65816
