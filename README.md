@@ -336,8 +336,8 @@ This is a young project; these are the things we know are not right yet.
 <!-- KNOWN-BUGS:BEGIN -->
 **Remastered (HD)**
 
-- **Field sprites are about 99 % covered** by HD art; a few effects of the field are still drawn from the original's
-  pixels, made bigger.
+- A few **effects in battle** (about 0.3 % of their pixels) and some figures that the original draws merged together for a
+  frame are still drawn from the original's pixels, made bigger.
 
 **Both modes**
 
@@ -366,14 +366,7 @@ goes from polish to new content. Dates are not promised; each milestone ships wh
 | **M5** | **Cheats** | The Cheats screen (damage, defence, EXP, Z cards, zeni, endless items, random battles, enemy count and power) with per-slot persistence and the scripted-fight safety. |
 | **M6** | **HD graphics and widescreen** | The frame-end HD renderer (pixel-exact against the PPU), 16:9, HD text, soft shadows, card tooltips, and the HD art: portraits and faces, fighters and effects, field sprites, maps, battle backgrounds, title and story pictures, cards, Mode 7 flights. |
 | **M7** | **Options and difficulty** | The Options screen in the original's style: difficulty presets over the cheats' numbers, gameplay (text speed, message auto-run, battle animation speed, random encounters), video (fullscreen, scale, look, 16:9 or 4:3, scanlines, CRT, V-sync, Keep or Revert), audio (volume, mono or stereo), keyboard and gamepad remapping, accessibility (larger text, high contrast, a colour-blind-safe cursor); saved with the game or kept for the PC. |
-
-### M8: HD polish
-
-- **Field sprites** to full coverage (the last effects of the field).
-- **Palette-exact recolouring** of every layer in every colour variant, checked on all replays.
-- A **faster fast-forward** (x8 at full speed).
-- Frieza's first form with cheats (group `$53`).
-- A tool to find any picture the game shows that has no HD art yet, so the last gaps can be closed.
+| **M8** | **HD polish** | HD art for the last field sprites and the town rooms, story scenes checked by an audit of every replay (flicker, faces, margins, missing art), palette-exact recolouring of every layer, a fast-forward that keeps x8, and the scripted fights checked with cheats. |
 
 ### M9: Android port of the HD Remastered edition
 
