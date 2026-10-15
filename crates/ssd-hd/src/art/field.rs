@@ -29,15 +29,8 @@ impl ArtState {
     /// Finds the art of the map a field frame shows (by the size and data pointers of its layer)
     /// and adds it to the frame's background slots; call it after [`ArtState::begin_bg`].
     pub(crate) fn begin_field(&mut self, field: Option<&FieldState>) {
-        let Some(field) = field else { return };
-        if self.pack.maps.layer.is_empty() {
-            return;
-        }
-        let (grid, metatiles) = field.map.layout();
-        let Some(entry) = self.pack.maps.find(field.map.blocks, grid, metatiles, field.map_id)
-        else {
-            return;
-        };
+        let Some(entry) = self.field_entry(field) else { return };
+        self.stats.field_map.bound = Some(entry as u32);
         let (width, height) = self.pack.maps.layer[entry].size();
         self.lookup.bg_slots.push(Slot {
             entry: entry as u32,
@@ -53,6 +46,16 @@ impl ArtState {
             field: true,
             field_size: (width as u16, height as u16),
         });
+    }
+
+    /// The layer of the maps' index that the map data of `field` names, if the pack has art for it.
+    pub(crate) fn field_entry(&self, field: Option<&FieldState>) -> Option<usize> {
+        let field = field?;
+        if self.pack.maps.layer.is_empty() {
+            return None;
+        }
+        let (grid, metatiles) = field.map.layout();
+        self.pack.maps.find(field.map.blocks, grid, metatiles, field.map_id)
     }
 
     /// The source picture of layer `at` of the maps' index (the layer at 1x in the colours the art

@@ -52,6 +52,8 @@ pub struct Args {
     pub start: Start,
     /// The scenarios to run (all of the suite when empty).
     pub only: Vec<String>,
+    /// `items` only: where the Use flow's replays for the snapshots are written.
+    pub snapshots: Option<PathBuf>,
 }
 
 /// Parses `field|town|diff --save <file.sav> [--slot N] | --replay <file> --frames N [scenario...]`.
@@ -72,9 +74,11 @@ pub fn parse_args(args: &[&str]) -> Result<Args, String> {
     let mut replays = None;
     let mut data_out = None;
     let mut only = Vec::new();
+    let mut snapshots = None;
     while let Some(&arg) = it.next() {
         match arg {
             "--save" => save = it.next().map(PathBuf::from),
+            "--snapshots" => snapshots = it.next().map(PathBuf::from),
             "--replays" => replays = it.next().map(PathBuf::from),
             "--data-out" => data_out = it.next().map(PathBuf::from),
             "--slot" => {
@@ -104,7 +108,7 @@ pub fn parse_args(args: &[&str]) -> Result<Args, String> {
         (_, None, Some(path), Some(frames)) => Start::Replay { path, frames },
         _ => return Err("give --save <file.sav>, or --replay <file> with --frames N".to_owned()),
     };
-    Ok(Args { suite, start, only })
+    Ok(Args { suite, start, only, snapshots })
 }
 
 /// The checks of one scenario: each is a line of the report, and a failed one fails the suite.
@@ -489,7 +493,7 @@ fn cancel_menu(h: &mut Harness, r: &mut Report) -> anyhow::Result<()> {
 }
 
 /// The Menu list's Cheats opens the HD cheats screen: nothing is sent to the original, which keeps its Menu list
-/// under it, and B goes back to the Menu list. Options is greyed out and chooses nothing.
+/// under it, and B goes back to the Menu list. Options opens the HD options screen the same way.
 fn menu_cheats(h: &mut Harness, r: &mut Report) -> anyhow::Result<()> {
     menu_list(h)?;
     for _ in 0..5 {
@@ -505,7 +509,16 @@ fn menu_cheats(h: &mut Harness, r: &mut Report) -> anyhow::Result<()> {
     r.check(h.driver.nav().cursor() == 5, "the Menu list keeps its cursor on Cheats");
     h.key(Key::Down)?;
     h.key(Key::Confirm)?;
+    r.check(
+        h.driver.nav().screen() == ssd_menus::Screen::Options,
+        "Options opens the options screen",
+    );
     r.check(h.byte(d::MENU_SCREEN) == 4 && !h.driver.busy(), "nor for Options");
+    h.key(Key::Cancel)?;
+    r.check(
+        h.driver.nav().screen() == ssd_menus::Screen::Menu,
+        "B goes back to the Menu list from the options",
+    );
     Ok(())
 }
 
@@ -544,7 +557,7 @@ fn abort(h: &mut Harness, r: &mut Report) -> anyhow::Result<()> {
         };
         match pad {
             Next::Frame(pad) => h.machine.run_frame(pad, &mut NullAudio)?,
-            Next::Stage(_) => {}
+            Next::Stage(_) | Next::Lift => {}
             Next::Done(outcome) => break outcome,
         }
     };
@@ -960,6 +973,9 @@ pub fn run(rom: &[u8], args: &Args, out: &mut dyn std::io::Write) -> anyhow::Res
             };
             let base =
                 std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+            if let Some(dir) = &args.snapshots {
+                record_snapshots(rom, &base, dir, &mut text)?;
+            }
             let ok = items_suite(rom, &base, &args.only, &mut text);
             // Whatever the suite wrote is removed, whether it ran or failed.
             let _ = std::fs::remove_dir_all(scratch_dir());
@@ -1005,8 +1021,18 @@ fn bag_harness(rom: &[u8], starts: &Starts, sidecar: &Sidecar) -> anyhow::Result
         ssd_catalogue::menu_labels(&catalogue),
         ssd_menus::bag::Rules::default(),
         sidecar.clone(),
-    );
+    )
+    .with_cheats(ssd_menus::cheats::CheatSidecar::empty());
+    enhanced_hooks(&mut h.machine);
     Ok(h)
+}
+
+/// The hook table of an Enhanced run as the window installs it: the cheat wrappers are on it, so the menus are
+/// played on the same routines the window runs (a Classic harness has none).
+fn enhanced_hooks(machine: &mut Machine) {
+    let mut table = machine.hook_table().cloned().unwrap_or_else(ssd_oracle::HookTable::new);
+    ssd_game::cheats::install(&mut table);
+    machine.set_hook_table(Some(table));
 }
 
 /// The save item of object `id`, with the attribute byte the game keeps for the object.
@@ -1122,8 +1148,8 @@ fn bag_start(
     start_of(rom, &Start::Save { path, slot: 0 })
 }
 
-/// Use Bulma ×2 from a stack of 5: the first member heals 25 per unit (+50), the stack keeps 3, and
-/// the original's list is the bag's projection.
+/// Use Bulma from a stack of 5: one unit on the first member (the use-on list asks for the member, and A
+/// chooses it), so the first member heals 25 and the stack keeps 4. The original's list is the bag's projection.
 fn bag_use(h: &mut Harness, r: &mut Report) -> anyhow::Result<()> {
     let hp_before = first_member_hp(h);
     open_items(h)?;
@@ -1131,11 +1157,6 @@ fn bag_use(h: &mut Harness, r: &mut Report) -> anyhow::Result<()> {
     r.check(h.driver.nav().screen() == ssd_menus::Screen::Items, "the HD shows the bag");
     h.key(Key::Confirm)?;
     r.check(h.driver.nav().sheet() == Sheet::Choose, "Use or Drop for the stack");
-    h.key(Key::Confirm)?;
-    r.check(h.driver.nav().sheet() == Sheet::Members, "the use asks for the member");
-    h.key(Key::Confirm)?;
-    r.check(h.driver.nav().sheet() == Sheet::Quantity, "the quantity follows");
-    h.key(Key::Right)?;
     h.key(Key::Confirm)?;
     h.until_idle()?;
     h.frames(SETTLE)?;
@@ -1150,10 +1171,10 @@ fn bag_use(h: &mut Harness, r: &mut Report) -> anyhow::Result<()> {
             h.byte(d::MENU_BUSY)
         ),
     );
-    r.check(h.byte(d::FIELD_STATE) == 0, "the menu closed after the uses");
+    r.check(h.byte(d::FIELD_STATE) == 0, "the menu closed after the use");
     let hp_after = first_member_hp(h);
-    r.check(hp_after == hp_before + 50, &format!("+50 HP: {hp_before} to {hp_after}"));
-    r.check(stacks.contains(&(2, 3)), &format!("a stack of 3 Bulma is left: {stacks:?}"));
+    r.check(hp_after == hp_before + 25, &format!("one unit: +25 HP, {hp_before} to {hp_after}"));
+    r.check(stacks.contains(&(2, 4)), &format!("a stack of 4 Bulma is left: {stacks:?}"));
     r.check(list_is_projection(h), "the original's list is the bag's projection");
     Ok(())
 }
@@ -1186,22 +1207,24 @@ fn bag_shop(h: &mut Harness, r: &mut Report, rom: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Drop two Bulma from the stack: the bag and the list follow, and the Scouter stays.
+/// Drop one Bulma from the stack of two: Drop one? asks Yes or No, the bag and the list follow, the Scouter
+/// stays, and the Item screen is back.
 fn bag_drop(h: &mut Harness, r: &mut Report) -> anyhow::Result<()> {
     open_items(h)?;
     h.key(Key::Confirm)?;
     h.key(Key::Down)?;
     h.key(Key::Confirm)?;
-    h.key(Key::Right)?;
-    h.key(Key::Confirm)?;
-    r.check(h.driver.nav().sheet() == Sheet::Confirm, "Drop 2? asks for a Yes");
+    r.check(h.driver.nav().sheet() == Sheet::Confirm, "Drop one? asks for a Yes");
     h.key(Key::Up)?;
     h.key(Key::Confirm)?;
     h.until_idle()?;
     h.frames(SETTLE)?;
     let (stacks, list) = bag_summary(h);
-    r.check(stacks == vec![(16, 1)], &format!("the Bulma is gone, the Scouter stays: {stacks:?}"));
-    r.check(list == vec![16], "the list shows the Scouter");
+    r.check(
+        stacks == vec![(2, 1), (16, 1)],
+        &format!("one Bulma is dropped, the Scouter stays: {stacks:?}"),
+    );
+    r.check(list == vec![2, 16], "the list shows both");
     r.check(h.driver.nav().screen() == ssd_menus::Screen::Items, "the Item screen is back");
     Ok(())
 }
@@ -1290,12 +1313,427 @@ fn full_sidecar(rom: &[u8], base: &[u8]) -> anyhow::Result<Sidecar> {
     Ok(sidecar)
 }
 
+/// The party's size: the entries of the party order in use.
+fn party_len(h: &Harness) -> usize {
+    (0..16_u32).take_while(|&i| h.byte(d::PARTY_ORDER + i) != 0xFF).count()
+}
+
+/// The record of the party's member in `row`: the record in use of the character the party order gives the row.
+fn member_record(h: &Harness, row: u8) -> Option<u32> {
+    let character = h.byte(d::PARTY_ORDER + u32::from(row));
+    (0..9_u32)
+        .map(|index| d::PARTY_RECORDS + 32 * index)
+        .find(|&record| h.byte(record) & 0x80 != 0 && h.byte(record + 0x1C) == character)
+}
+
+/// The HP of the party's member in `row`.
+fn member_hp(h: &Harness, row: u8) -> u16 {
+    member_record(h, row).map_or(0, |record| h.word(record + 3))
+}
+
+/// Sets the HP and the maximum HP of the party's member in `row` (its record in work RAM), so a heal has room.
+fn set_member_hp(h: &mut Harness, row: u8, hp: u16) -> anyhow::Result<()> {
+    let record = member_record(h, row).context("a party member")?;
+    h.machine.write_wram(record + 3, &hp.to_le_bytes())?;
+    h.machine.write_wram(record + 10, &200_u16.to_le_bytes())?;
+    Ok(())
+}
+
+/// Sets the KI and the maximum KI of the party's member in `row` (its record in work RAM), so a KI heal has room.
+fn set_member_ki(h: &mut Harness, row: u8, ki: u16) -> anyhow::Result<()> {
+    let record = member_record(h, row).context("a party member")?;
+    h.machine.write_wram(record + 5, &ki.to_le_bytes())?;
+    h.machine.write_wram(record + 12, &200_u16.to_le_bytes())?;
+    Ok(())
+}
+
+/// A key of the HD that may start a plan: the original's (screen, step) of each frame of the plan.
+fn key_traced(h: &mut Harness, key: Key) -> anyhow::Result<Vec<(u8, u8)>> {
+    h.driver.key(key, h.machine.wram());
+    let mut seen = Vec::new();
+    for _ in 0..CHOICE_LIMIT {
+        if !h.driver.busy() {
+            return Ok(seen);
+        }
+        seen.push((h.byte(d::MENU_SCREEN), h.byte(d::MENU_STEP)));
+        h.frame(Joypad::default())?;
+    }
+    bail!("a choice did not end in {CHOICE_LIMIT} frames (curtain {:?})", h.driver.curtain())
+}
+
+/// The Dragon Radar from the bag, as one use: the use is taken at once (no quantity, no member), the radar's
+/// own screen stays up for the player (the curtain lifts for it), B leaves it, and the Radar stays in the bag.
+fn bag_radar(h: &mut Harness, r: &mut Report) -> anyhow::Result<()> {
+    h.frames(1)?;
+    open_items(h)?;
+    h.key(Key::Confirm)?;
+    r.check(h.driver.nav().sheet() == Sheet::Choose, "Use or Drop for the Radar");
+    let trace = key_traced(h, Key::Confirm)?;
+    r.check(h.driver.nav().sheet() == Sheet::Browse, "the Radar's use is taken at once");
+    r.check(
+        !trace.is_empty() && trace.iter().all(|&(screen, _)| screen == 2),
+        &format!("the original's Item screen takes the use: {trace:?}"),
+    );
+    h.frames(SETTLE)?;
+    r.check(
+        h.driver.last_outcome() == Some(Outcome::Reached),
+        &format!("the plan: {:?}", h.driver.last_outcome()),
+    );
+    r.check(
+        h.driver.curtain() == Curtain::Lifted,
+        "the radar's own screen is up: the curtain lifts for it",
+    );
+    r.check(h.byte(d::FIELD_STATE) != 0, "the menu is still open on the radar's screen");
+    h.press(b())?;
+    h.frames(SETTLE)?;
+    r.check(h.byte(d::FIELD_STATE) == 0, "B leaves the radar: the field is free");
+    r.check(h.driver.curtain() == Curtain::Down, "the curtain comes down with it");
+    let (stacks, _) = bag_summary(h);
+    r.check(stacks == vec![(23, 1)], &format!("the Radar stays in the bag: {stacks:?}"));
+    Ok(())
+}
+
+/// A healing item from the bag, as the original takes it: Roshi (50 HP) heals the first fighter, the stack keeps two,
+/// and the second fighter is left alone. The original asks for no fighter on the map.
+fn bag_heal(h: &mut Harness, r: &mut Report) -> anyhow::Result<()> {
+    h.frames(1)?;
+    let party = party_len(h);
+    r.check(party >= 2, &format!("the party has two fighters: {party}"));
+    if party < 2 {
+        return Ok(());
+    }
+    set_member_hp(h, 0, 10)?;
+    set_member_hp(h, 1, 10)?;
+    let before: Vec<u16> = (0..party as u8).map(|row| member_hp(h, row)).collect();
+    open_items(h)?;
+    h.key(Key::Confirm)?;
+    r.check(h.driver.nav().sheet() == Sheet::Choose, "Use or Drop for the stack");
+    h.key(Key::Confirm)?;
+    h.until_idle()?;
+    h.frames(SETTLE)?;
+    let after: Vec<u16> = (0..party as u8).map(|row| member_hp(h, row)).collect();
+    r.check(
+        after[0] == before[0] + 50,
+        &format!("the first fighter heals 50: {} to {}", before[0], after[0]),
+    );
+    r.check(
+        after[1] == before[1],
+        &format!("the second fighter keeps its HP: {} to {}", before[1], after[1]),
+    );
+    let (stacks, _) = bag_summary(h);
+    r.check(stacks.contains(&(1, 2)), &format!("a stack of 2 Roshi is left: {stacks:?}"));
+    r.check(h.byte(d::FIELD_STATE) == 0, "the menu closed after the use");
+    Ok(())
+}
+
+/// An ally from the Allies tab on the map: Vegeta is a fighter of the story whose object is for battles, so the Allies
+/// tab lists him and his use is greyed out: A says why, and the bag is the same afterwards.
+fn bag_ally(h: &mut Harness, r: &mut Report) -> anyhow::Result<()> {
+    h.frames(1)?;
+    open_items(h)?;
+    h.key(Key::Tab)?;
+    r.check(h.driver.nav().tab() == ssd_menus::view::Tab::Allies, "the Allies tab is shown");
+    h.key(Key::Confirm)?;
+    r.check(
+        h.driver.nav().sheet() == Sheet::Choose && h.driver.nav().choice() == 1,
+        "Vegeta is greyed for use: A opens his Drop, the only choice on the map",
+    );
+    h.key(Key::Cancel)?;
+    h.key(Key::Cancel)?;
+    r.check(
+        h.driver.nav().screen() == ssd_menus::Screen::Command,
+        "B goes back to the command window",
+    );
+    let (stacks, _) = bag_summary(h);
+    r.check(stacks.contains(&(19, 1)), &format!("Vegeta stays in the bag: {stacks:?}"));
+    Ok(())
+}
+
+/// Every key of the Item screen does something: A on a tab with no stacks says so, the tabs move on, A on a stack
+/// opens its sheet, B closes each level, and the menu closes at the command window. (The unit tests of
+/// `ssd_menus::nav` walk the other screens and sheets.)
+fn bag_dead_input(h: &mut Harness, r: &mut Report) -> anyhow::Result<()> {
+    open_items(h)?;
+    h.key(Key::Tab)?;
+    r.check(
+        h.driver.nav().tab() == ssd_menus::view::Tab::Allies,
+        "the Allies tab has no stack in this bag",
+    );
+    h.key(Key::Confirm)?;
+    r.check(h.driver.notice() == Some("Nothing on this tab."), "A on the empty tab says so");
+    h.key(Key::Tab)?;
+    h.key(Key::Tab)?;
+    h.key(Key::Confirm)?;
+    r.check(h.driver.nav().sheet() == Sheet::Choose, "A on a stack opens its Use or Drop");
+    h.key(Key::Cancel)?;
+    r.check(h.driver.nav().sheet() == Sheet::Browse, "B closes the sheet");
+    h.key(Key::Cancel)?;
+    r.check(
+        h.driver.curtain() == Curtain::Up && h.driver.nav().screen() == ssd_menus::Screen::Command,
+        "B from the list goes back to the command window",
+    );
+    h.key(Key::Cancel)?;
+    r.check(
+        h.driver.curtain() == Curtain::Down && h.byte(d::FIELD_STATE) == 0,
+        "B closes the menu",
+    );
+    Ok(())
+}
+
+/// Each object the HD offers for use, used once from its own bag, the party hurt (so a heal has room). The original
+/// takes every use the HD offers: no "can't use" (step 8). A card's use leaves the original's card list to the
+/// player, the Radar's own screen too, and every other use is taken, so the menu closes.
+fn bag_kinds(_h: &mut Harness, r: &mut Report, rom: &[u8], base: &[u8]) -> anyhow::Result<()> {
+    let catalogue = ssd_catalogue::Catalogue::from_rom(rom)?;
+    let labels = ssd_catalogue::menu_labels(&catalogue);
+    for item in &catalogue.items {
+        let id = item.id;
+        let Some(label) = labels.objects.get(usize::from(id)) else { continue };
+        // The HD offers the object exactly when the rule of the driver says so (the battle effects are 27 to 31).
+        if !label.field || label.story || label.attribute & 0x01 != 0 || (27..=31).contains(&id) {
+            continue;
+        }
+        let starts = bag_start(rom, base, &format!("kind-{id}"), &[id], None)?;
+        let mut h = bag_harness(rom, &starts, &Sidecar::empty())?;
+        h.frames(1)?;
+        for row in 0..party_len(&h) as u8 {
+            set_member_hp(&mut h, row, 30)?;
+            set_member_ki(&mut h, row, 5)?;
+        }
+        open_items(&mut h)?;
+        h.key(Key::Confirm)?;
+        let trace = key_traced(&mut h, Key::Confirm)?;
+        h.frames(SETTLE)?;
+        r.check(
+            !trace.contains(&(2, 8)),
+            &format!(
+                "{} ({id}): the original takes the use, no \"can't use\": {trace:?}",
+                label.name
+            ),
+        );
+        let left =
+            bag_summary(&h).0.iter().find(|&&(object, _)| object == id).map_or(0, |&(_, c)| c);
+        r.check(
+            h.driver.last_outcome() == Some(Outcome::Reached),
+            &format!(
+                "{} ({id}): the plan reaches its answer: {:?}",
+                label.name,
+                h.driver.last_outcome()
+            ),
+        );
+        if label.card {
+            r.check(
+                h.driver.curtain() == Curtain::Lifted,
+                &format!("{} ({id}): the card list is the player's", label.name),
+            );
+        } else if id == DRAGON_RADAR_ID {
+            r.check(
+                h.driver.curtain() == Curtain::Lifted && left == 1,
+                &format!(
+                    "{} ({id}): its screen is the player's and it stays in the bag ({left})",
+                    label.name
+                ),
+            );
+        } else {
+            r.check(
+                h.byte(d::FIELD_STATE) == 0 && left == 0,
+                &format!(
+                    "{} ({id}): the use is taken (stack {left}) and the menu closes: {trace:?}",
+                    label.name
+                ),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The Dragon Radar's object id: its screen is the player's to leave (see [`bag_radar`]).
+const DRAGON_RADAR_ID: u8 = 23;
+
+/// The save `base` with the items `ids` in slot 1 and the party's fighter in row `row` at `hp` (its record's current HP).
+fn craft_save_with_hp(
+    rom: &[u8],
+    base: &[u8],
+    ids: &[u8],
+    row: usize,
+    hp: u16,
+) -> anyhow::Result<Vec<u8>> {
+    let mut file = ssd_save::SaveFile::from_bytes(base)?;
+    let mut slot = file.slot(0)?;
+    let items = ids.iter().map(|&id| save_item(rom, id)).collect::<anyhow::Result<Vec<_>>>()?;
+    slot.set_items(&items)?;
+    let character = *slot.party().get(row).context("a fighter of the party")?;
+    let mut record = slot.record(character)?;
+    record.set_hp(hp);
+    slot.set_record(character, &record)?;
+    file.set_slot(0, &slot)?;
+    Ok(file.as_bytes().to_vec())
+}
+
+/// The Use of the Dragon Radar, from the bag, as a recording: the Choose sheet, then the use.
+fn flow_radar(h: &mut Harness, out: &mut String) -> anyhow::Result<()> {
+    h.frames(30)?;
+    open_items(h)?;
+    h.key(Key::Confirm)?;
+    writeln!(out, "radar: the Use or Drop sheet at frame {}", h.machine.frame_count())?;
+    h.key(Key::Confirm)?;
+    writeln!(
+        out,
+        "radar: the use is over at frame {}, curtain {:?}",
+        h.machine.frame_count(),
+        h.driver.curtain()
+    )?;
+    h.frames(SETTLE)?;
+    writeln!(out, "radar: the radar's screen at frame {}", h.machine.frame_count())?;
+    Ok(())
+}
+
+/// A healing item on the second fighter, as a recording: the use-on list, the fighter, the use.
+fn flow_heal(h: &mut Harness, out: &mut String) -> anyhow::Result<()> {
+    h.frames(30)?;
+    open_items(h)?;
+    h.key(Key::Confirm)?;
+    writeln!(out, "heal: the Use or Drop sheet at frame {}", h.machine.frame_count())?;
+    h.key(Key::Confirm)?;
+    writeln!(out, "heal: the use started at frame {}", h.machine.frame_count())?;
+    h.until_idle()?;
+    h.frames(SETTLE)?;
+    writeln!(
+        out,
+        "heal: the menu is {:?} at frame {}",
+        h.driver.curtain(),
+        h.machine.frame_count()
+    )?;
+    Ok(())
+}
+
+/// Records the Enhanced sessions the UI snapshots of the Use flow play back (`--snapshots DIR`): a Dragon Radar's use
+/// and a healing item on the second fighter, each from the Continue of a crafted save. The sessions are recorded
+/// unhooked (a recorder needs that) and played with the window's hooks, as the window plays them. Writes
+/// `radar.ssdreplay` and `heal.ssdreplay` in `dir` and prints the frame of each step, so that a snapshot can be taken
+/// at it (`ssd-recompiled --mode enhanced --replay FILE --headless-frames N --hd-scale 4 --ui-size 1488x956`).
+/// A recorded Use flow: it plays the item menu's keys on the harness and writes its notes.
+type Flow = fn(&mut Harness, &mut String) -> anyhow::Result<()>;
+
+fn record_snapshots(rom: &[u8], base: &[u8], dir: &Path, out: &mut String) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let radar = craft_save(rom, base, &[23], None)?;
+    let heal = craft_save_with_hp(rom, base, &[1, 1, 1], 0, 10)?;
+    let catalogue = ssd_catalogue::Catalogue::from_rom(rom)?;
+    let labels = ssd_catalogue::menu_labels(&catalogue);
+    let flows: [(&str, Vec<u8>, Flow); 2] =
+        [("radar", radar, flow_radar), ("heal", heal, flow_heal)];
+    for (name, crafted, flow) in flows {
+        let mut saves = MemorySaveStore::default();
+        saves.0.insert("sav".to_owned(), crafted);
+        let machine = Machine::new(rom.to_vec(), Box::new(saves))?;
+        let recorder = Recorder::start(&machine)?.in_mode(MODE_ENHANCED);
+        let mut h = Harness {
+            machine,
+            driver: Driver::with_bag(labels.clone(), Rules::default(), Sidecar::empty())
+                .with_cheats(ssd_menus::cheats::CheatSidecar::empty()),
+            tape: None,
+            recorder: Some(recorder),
+        };
+        let continued =
+            scripts::parse_timeline(&save::continue_prefix(0)).map_err(anyhow::Error::msg)?;
+        for pad in continued {
+            h.frame(pad)?;
+        }
+        flow(&mut h, out)?;
+        let replay = h.recorder.take().context("the recording")?.into_replay();
+        let path = dir.join(format!("{name}.ssdreplay"));
+        std::fs::write(&path, replay.to_bytes(CORE_VERSION))?;
+        writeln!(out, "recorded {} ({} frames)", path.display(), replay.frames())?;
+    }
+    Ok(())
+}
+
+/// The object whose help text has a run-time slot (`$FC`, `$43`): the original's message fills it in, so the menu shows
+/// an ellipsis there until that message is traced (`docs/re/data/menus.md`, "Help text").
+const RUNTIME_HELP: [u8; 4] = [10, 11, 27, 28];
+/// The objects with no price: the original's price box holds a kanji mark there, which the menu does not draw yet.
+const NO_PRICE: [u8; 11] = [23, 24, 26, 32, 33, 34, 35, 36, 37, 38, 39];
+/// The characters whose corner face is not measured yet (Nail, Tsumuri and Maima: no party seen with them).
+const UNSEEN_FACES: [usize; 3] = [8, 9, 10];
+
+/// The pictures, prices and help the item and corner menus show, checked against the ROM: every object has its
+/// picture and a help text with no placeholder in it, and every character with a measured face has its corner
+/// picture. The named gaps are printed; any other gap fails the check.
+fn pictures_check(rom: &[u8], out: &mut String) -> anyhow::Result<bool> {
+    let catalogue = ssd_catalogue::Catalogue::from_rom(rom)?;
+    let labels = ssd_catalogue::menu_labels(&catalogue);
+    let view = ssd_catalogue::RomView::new(rom)?;
+    let mut report = Report::default();
+    for (id, object) in (0_u8..).zip(&labels.objects) {
+        let name = &object.name;
+        report.check(
+            ssd_catalogue::object_portrait(view, id).is_ok(),
+            &format!("object {id} ({name}): a picture"),
+        );
+        report.check(!object.help.is_empty(), &format!("object {id} ({name}): a help text"));
+        let ellipsis = object.help.iter().any(|line| line.contains('\u{2026}'));
+        report.check(
+            !ellipsis || RUNTIME_HELP.contains(&id),
+            &format!("object {id} ({name}): help text with a placeholder"),
+        );
+        let no_price = NO_PRICE.contains(&id);
+        report.check(
+            object.price.is_some() != no_price,
+            &format!("object {id} ({name}): a price figure"),
+        );
+        if no_price {
+            writeln!(
+                out,
+                "gap: object {id} ({name}): no price figure (the original's kanji mark is not drawn)"
+            )?;
+        }
+        if RUNTIME_HELP.contains(&id) {
+            writeln!(
+                out,
+                "gap: object {id} ({name}): help with a run-time slot shows an ellipsis"
+            )?;
+        }
+    }
+    for (index, character) in labels.characters.iter().enumerate() {
+        let name = &character.name;
+        match character.face {
+            Some(face) => report.check(
+                ssd_catalogue::face_portrait(view, face).is_ok(),
+                &format!("character {index} ({name}): its corner face {face:02X}"),
+            ),
+            None => {
+                report.check(
+                    UNSEEN_FACES.contains(&index),
+                    &format!("character {index} ({name}): a corner face"),
+                );
+                if UNSEEN_FACES.contains(&index) {
+                    writeln!(out, "gap: character {index} ({name}): corner face not measured yet")?;
+                }
+            }
+        }
+    }
+    let ok = report.passed();
+    writeln!(out, "{} pictures", if ok { "ok  " } else { "FAIL" })?;
+    for (passed, what) in &report.lines {
+        if !passed {
+            writeln!(out, "       - {what}")?;
+        }
+    }
+    Ok(ok)
+}
+
 /// The bag's scenarios from the base save: each builds its own crafted start.
 type BagScenario = fn(&mut Harness, &mut Report, &[u8], &[u8]) -> anyhow::Result<()>;
 
-const BAG_SCENARIOS: [(&str, BagScenario); 8] = [
+const BAG_SCENARIOS: [(&str, BagScenario); 13] = [
     ("original-items", |h, r, _, _| original_items(h, r)),
     ("use-bulma", |h, r, _, _| bag_use(h, r)),
+    ("radar", |h, r, _, _| bag_radar(h, r)),
+    ("heal", |h, r, _, _| bag_heal(h, r)),
+    ("ally", |h, r, _, _| bag_ally(h, r)),
+    ("dead-input", |h, r, _, _| bag_dead_input(h, r)),
+    ("kinds", |h, r, rom, base| bag_kinds(h, r, rom, base)),
     ("pickup", |h, r, rom, _| bag_pickup(h, r, rom)),
     ("shop", |h, r, rom, _| bag_shop(h, r, rom)),
     ("drop", |h, r, _, _| bag_drop(h, r)),
@@ -1318,6 +1756,10 @@ fn items_suite(rom: &[u8], base: &[u8], only: &[String], out: &mut String) -> an
             }
         };
         all_ok &= ok;
+    }
+    if only.is_empty() || only.iter().any(|o| o == "pictures") {
+        ran += 1;
+        all_ok &= pictures_check(rom, out)?;
     }
     for &(name, scenario) in &BAG_SCENARIOS {
         if !only.is_empty() && !only.iter().any(|o| o == name) {
@@ -1356,6 +1798,10 @@ fn bag_scenario(
 ) -> anyhow::Result<()> {
     let ids: Vec<u8> = match name {
         "use-bulma" => vec![2, 2, 2, 2, 2],
+        "ally" => vec![19],
+        "heal" => vec![1, 1, 1],
+        "radar" => vec![23],
+        "dead-input" => vec![16, 16],
         "original-items" => vec![21, 22, 23],
         "pickup" | "save-continue" | "classic-rebuild" | "bag-full" => (0..21).collect(),
         "shop" => (0..20).collect(),
@@ -1448,26 +1894,31 @@ fn round_trip(rom: &[u8], base: &[u8], out: &mut String) -> anyhow::Result<bool>
     Ok(same)
 }
 
-/// Bubbles, Escape and the Dragon Radar are used through the original's own effects: each is used
-/// from the bag and the menu comes back to the field. Bubbles and Escape are consumed; the Radar is
-/// a keepsake (it cannot be dropped and its effect never removes its entry): it shows its own
-/// screen, which only B leaves, and stays in the bag.
+/// Bubbles, Escape and the Dragon Radar are used through the original's own effects, one unit each, from the
+/// bag. Bubbles and Escape are consumed and the menu comes back to the field by itself. The Radar is a keepsake
+/// (it cannot be dropped and its effect never removes its entry): its own screen stays up for the player, who
+/// leaves it with B, and the Radar stays in the bag.
 fn original_items(h: &mut Harness, r: &mut Report) -> anyhow::Result<()> {
     // The bag binds on the first frame of the start.
     h.frames(1)?;
     for name in ["Bubbles", "Escape", "D.Radar"] {
         let before = bag_summary(h).0.len();
         open_items(h)?;
-        for _ in 0..3 {
-            h.key(Key::Confirm)?;
-        }
-        if h.driver.nav().sheet() == Sheet::Members {
-            h.key(Key::Confirm)?;
-        }
+        // Use or Drop, then Use: none of the three asks for a member, so the use is taken at once.
+        h.key(Key::Confirm)?;
+        h.key(Key::Confirm)?;
         h.until_idle()?;
         h.frames(SETTLE)?;
-        let after = bag_summary(h).0.len();
         let kept = name == "D.Radar";
+        if kept {
+            r.check(
+                h.driver.curtain() == Curtain::Lifted,
+                "the radar's own screen is up for the player: the curtain lifts for it",
+            );
+            h.press(b())?;
+            h.frames(SETTLE)?;
+        }
+        let after = bag_summary(h).0.len();
         r.check(
             (if kept { after == before } else { after + 1 == before })
                 && h.byte(d::FIELD_STATE) == 0

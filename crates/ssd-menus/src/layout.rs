@@ -78,10 +78,6 @@ pub mod palette {
     pub const KI: Color = Color::rgb(0x52, 0x4A, 0xFF);
     /// The text of the entries that are greyed out (their label and their "coming soon").
     pub const GREY: Color = Color::rgb(0x8E, 0x82, 0x72);
-    /// A portrait box with no picture.
-    pub const EMPTY_PORTRAIT: Color = Color::rgb(0x21, 0x31, 0x52);
-    /// The text of an empty portrait box.
-    pub const EMPTY_PORTRAIT_TEXT: Color = Color::rgb(0x8F, 0xA0, 0xC8);
 }
 
 /// The width in pixels of `text` set in `size` pixels of Share Tech Mono.

@@ -28,7 +28,7 @@
 //! objects.
 
 use super::check::check_tiles;
-use super::map::{FieldState, GAME_MODE, Rom};
+use super::map::{FieldState, GAME_MODE, Rom, is_field_mode};
 use super::objects::{ObjectPart, Part, drop_anchors};
 use crate::art::poses::{ExtraSprite, View};
 use crate::art::{ArtPixel, ArtState, Lookup};
@@ -254,6 +254,10 @@ pub struct WideRenderer {
     trust_field: bool,
     /// The objects the original drops, as the last frame composed placed them.
     extras: Vec<Extra>,
+    /// The frame being drawn is a picture (a window with black beside it) that shows the field's
+    /// map on BG2 (a menu, a scripted scene, a town's room): its map layer is found by the world
+    /// position like the field's.
+    mapped: bool,
 }
 
 /// A part of an object the original drops, as a wide frame draws it.
@@ -351,6 +355,7 @@ impl WideRenderer {
             text: TextCapture::default(),
             trust_field: false,
             extras: Vec::new(),
+            mapped: false,
         }
     }
 
@@ -436,12 +441,28 @@ impl WideRenderer {
         check_width(options.width)?;
         check_frame(log)?;
         let scene = classify_with(rom, game_mode, field, log, self.trust_field);
+        self.mapped =
+            scene == Scene::Bordered && field.is_some_and(|state| shows_map(rom, state, log));
         let scale = hd.scale as usize;
         let mut art = self.art.take().filter(|art| art.has_art());
         if let Some(art) = art.as_mut() {
             art.begin(options.width, usize::from(log.height), scale);
             art.begin_bg(log);
-            if scene == Scene::Field {
+            art.field_frame = Some(matches!(game_mode & 0x7F, 0x00 | 0x01 | 0x03 | 0x05 | 0x06));
+            // Whether the frame shows the field's map in any main loop state: a field the original
+            // draws that the art does not take for the field is a frame the art misses
+            let in_any_state = field.map(|state| FieldState { game_mode: 0, ..state.clone() });
+            // (a frame the game shows dark, in forced blanking or at brightness 0 on every line,
+            // has no map to draw: the fade around a battle keeps the map in VRAM)
+            if !dark_frame(log)
+                && (scene == Scene::Field
+                    || self.mapped
+                    || classify_with(rom, 0, in_any_state.as_ref(), log, self.trust_field)
+                        == Scene::Field)
+            {
+                art.stats.field_map.available = art.field_entry(field).map(|at| at as u32);
+            }
+            if scene == Scene::Field || self.mapped {
                 art.begin_field(field);
             }
             art.active = true;
@@ -699,7 +720,8 @@ impl WideRenderer {
             binder.update(&log.vram);
         }
 
-        let world = field.map(|state| World { rom, state });
+        let world =
+            field.or_else(|| state.filter(|_| self.mapped)).map(|state| World { rom, state });
         let font = if self.text_on { self.font.clone() } else { None };
         let shared = Shared {
             log,
@@ -1240,7 +1262,9 @@ impl WideRun {
 
     /// Notes the work RAM at the end of a frame: the state the frame just run started from.
     fn advance(&mut self, wram: &[u8]) -> (u8, Option<FieldState>) {
-        let current = (wram[GAME_MODE], FieldState::from_wram(wram));
+        let rom = Rom(&self.rom);
+        let current =
+            (wram[GAME_MODE], FieldState::from_wram(wram).map(|state| state.in_room(rom)));
         self.ended.replace(current.clone()).unwrap_or(current)
     }
 }
@@ -1262,7 +1286,7 @@ fn classify_with(
     log: &FrameLog,
     trust_map: bool,
 ) -> Scene {
-    let field_mode = matches!(game_mode & 0x7F, 0x00 | 0x06);
+    let field_mode = is_field_mode(game_mode);
     if let Some(state) = field
         && field_mode
         && check_field(log, state).is_ok()
@@ -1285,6 +1309,12 @@ fn is_plane(regs: &LineRegs) -> bool {
 
 fn check_width(width: usize) -> Result<(), WideError> {
     if (WIDTH..=MAX_WIDTH).contains(&width) { Ok(()) } else { Err(WideError::BadWidth) }
+}
+
+/// Whether the game shows nothing in the frame: every line is in forced blanking or at brightness
+/// 0 (the fade around a battle, with the field's map still in VRAM).
+fn dark_frame(log: &FrameLog) -> bool {
+    log.entries.iter().all(|entry| entry.regs.forced_blanking || entry.regs.brightness == 0)
 }
 
 /// What every frame needs to be drawn wide: a complete log, and a frame the plain renderer models.
@@ -1329,6 +1359,27 @@ fn check_field(log: &FrameLog, state: &FieldState) -> Result<(), WideError> {
         return Err(WideError::NotField(NotField::OamWrites));
     }
     Ok(())
+}
+
+/// Whether a picture frame (not the field's own scene) shows the field's map: BG2 of mode 1 holds
+/// the tiles the map lookup gives at the world position the scroll registers and the camera say.
+/// A menu laid over the map, a scripted scene on it, or a town's room, are such frames.
+fn shows_map(rom: Rom<'_>, state: &FieldState, log: &FrameLog) -> bool {
+    if check_frame(log).is_err() {
+        return false;
+    }
+    let mut shown = false;
+    for entry in &log.entries {
+        let regs = &entry.regs;
+        if regs.forced_blanking {
+            continue;
+        }
+        shown = true;
+        if regs.bg_mode != 1 || regs.bg_large_tiles[1] || !(regs.main_bg[1] || regs.sub_bg[1]) {
+            return false;
+        }
+    }
+    shown && check_tiles(rom, state, log).is_map()
 }
 
 /// What the world layers are read from.
@@ -1476,6 +1527,17 @@ impl Chunk {
                 stats.outside_skipped += u64::from(count);
                 continue;
             }
+            // Beside a flight's window the plane goes on where it has texels; where it has none
+            // (a picture on the plane, such as the speed lines of a cutscene, ends at its edge)
+            // the backdrop is not drawn: the sides of a picture are black
+            if scene == Scene::Flight
+                && !(0..WIDTH as i32).contains(&window_x)
+                && self.renderer.main.rendered[v].layer == crate::screen::Layer::Backdrop
+            {
+                *out = Color::BLACK;
+                stats.outside_skipped += u64::from(count);
+                continue;
+            }
             *out = line[v];
             // A pixel outside the window is the map's: check it is a tile of the map
             if let (Some(World { state, .. }), true) = (world, count)
@@ -1505,7 +1567,7 @@ impl Chunk {
                 let layer_index = |bg| renderer.bg_index(regs, bg, v);
                 // The world pixel the map layer shows here (what the field map's art is found by)
                 let world_at = world
-                    .filter(|_| scene == Scene::Field && !outside[v])
+                    .filter(|_| !outside[v])
                     .map(|w| map_sample(regs, w.state.camera, entry.scanline, window_x, mosaic[1]));
                 let probe = Probe {
                     rendered: &renderer.main.rendered[v],
@@ -1687,6 +1749,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_frame_the_game_fades_to_black_is_dark() {
+        let mut log = empty_log();
+        assert!(dark_frame(&log));
+        let lit = LineRegs { brightness: 15, ..LineRegs::default() };
+        let blanked = LineRegs { brightness: 15, forced_blanking: true, ..LineRegs::default() };
+        let faded = LineRegs { brightness: 0, ..LineRegs::default() };
+        let entry = |regs| LineEntry { scanline: 1, regs, ..LineEntry::default() };
+        log.entries = vec![entry(blanked), entry(faded)];
+        assert!(dark_frame(&log));
+        log.entries.push(entry(lit));
+        assert!(!dark_frame(&log));
+    }
     #[test]
     fn the_window_sits_in_the_middle_of_a_wide_view() {
         // Mid-map: 58 pixels either side at 372, 116 at 488, none at 256
@@ -2160,6 +2235,31 @@ mod tests {
     }
 
     #[test]
+    fn a_picture_that_shows_the_map_has_its_art_in_the_window_and_black_beside_it() {
+        let rom = rom();
+        let state = state(2, CAMERA, &[]);
+        let log = field_log(&rom, &state, &[]);
+        let hd = HdOptions { scale: 2, look: crate::Look::Crisp };
+        let options = WideOptions { width: 372, hud: HudPlacement::Window };
+        let source = vec![0_u8; 512 * 256 * 4];
+        let dir = tempfile::tempdir().unwrap();
+        let pack = map_art_pack(dir.path(), &source, [10, 200, 30, 255]);
+        let mut renderer = WideRenderer::new();
+        renderer.set_art(Some(pack));
+        // A menu laid over the map: the main loop is not in a field state
+        let art = renderer.render_hd(Rom(&rom), 0x03, Some(&state), &log, options, hd).unwrap();
+        assert_eq!(art.scene, Scene::Bordered);
+        let (width, height) = (art.picture.width as usize, art.picture.height as usize);
+        let logical = art.picture.logical;
+        let at =
+            |x: usize, y: usize| &art.picture.rgba[(y * width + x) * 4..(y * width + x) * 4 + 3];
+        let (x, y) = (logical.x as usize + 20, 20);
+        assert_eq!(at(x, y), [10, 200, 30], "the map's art shows in the window");
+        assert_eq!(at(2, y), [0, 0, 0], "a picture has nothing beside its window");
+        assert!(height > y);
+    }
+
+    #[test]
     fn a_wider_view_keeps_the_window_and_continues_the_map() {
         let rom = rom();
         // The window is 200..456 of a 512-pixel map: at 372 the view stops at the map's end
@@ -2366,16 +2466,17 @@ mod tests {
     /// matrix, BG1 alone, and `lines` as the frame's lines (their registers).
     fn plane(lines: u16) -> FrameLog {
         let mut log = empty_log();
-        for tile in 0..32_usize {
-            for row in 0..8 {
-                for col in 0..8 {
-                    log.vram[64 * tile + 8 * row + col] = (((tile % 15) + 1) as u16) << 8;
-                }
-            }
-        }
+        // The map is the low bytes of the words, the characters their high bytes
         for tile_row in 0..128_usize {
             for tile_column in 0..128_usize {
                 log.vram[tile_row * 128 + tile_column] = (tile_column % 32) as u16;
+            }
+        }
+        for tile in 0..32_usize {
+            for row in 0..8 {
+                for col in 0..8 {
+                    log.vram[64 * tile + 8 * row + col] |= (((tile % 15) + 1) as u16) << 8;
+                }
             }
         }
         for colour in 1..16 {
@@ -2432,6 +2533,10 @@ mod tests {
         let log = field_log(&rom, &state, &[]);
         assert_eq!(classify(Rom(&rom), 0x00, Some(&state), &log), Scene::Field);
         assert_eq!(classify(Rom(&rom), 0x06, Some(&state), &log), Scene::Field);
+        // The map the party walks back to after a building ($01) is $05, until the next battle
+        assert_eq!(classify(Rom(&rom), 0x05, Some(&state), &log), Scene::Field);
+        assert_eq!(classify(Rom(&rom), 0x85, Some(&state), &log), Scene::Field);
+        assert_eq!(classify(Rom(&rom), 0x01, Some(&state), &log), Scene::Bordered, "the building");
         // A picture of the game's own on BG2 is not the map, even in the field's mode
         let mut picture = log.clone();
         for (index, word) in picture.vram[BG2_MAP..BG2_MAP + 0x800].iter_mut().enumerate() {
@@ -2485,6 +2590,35 @@ mod tests {
             }
         }
         assert_eq!(view.stats.outside_drawn, 0);
+    }
+
+    #[test]
+    fn a_picture_on_the_plane_has_black_sides_where_the_plane_has_no_texel() {
+        let rom = rom();
+        let mut log = plane(224);
+        // The plane's columns past the first 32 hold the empty tile: nothing is drawn there, the
+        // backdrop shows (a picture on the plane, as a cutscene's speed lines)
+        for tile_row in 0..128_usize {
+            for tile_column in 32..128_usize {
+                log.vram[tile_row * 128 + tile_column] = 100;
+            }
+        }
+        log.cgram_start[0] = 0x7C00;
+        let classic = Renderer::new().render(&log).unwrap();
+        let options = WideOptions { width: 372, hud: HudPlacement::Window };
+        let view = WideRenderer::new().render_view(Rom(&rom), 0x07, None, &log, options).unwrap();
+        assert_eq!(view.scene, Scene::Flight);
+        for y in 0..224 {
+            assert_eq!(
+                row_slice(&view.frame, y, 58, 256),
+                row_slice(&classic, y, 0, 256),
+                "row {y}"
+            );
+            // The sides: the plane's texels where it has some, black where it shows the backdrop
+            for q in (0..58).chain(314..372) {
+                assert_eq!(view.frame.pixels[y * 372 + q], Color::BLACK, "column {q}, row {y}");
+            }
+        }
     }
 
     #[test]

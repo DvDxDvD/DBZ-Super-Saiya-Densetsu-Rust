@@ -8,20 +8,24 @@ use std::path::Path;
 use std::process::Command;
 
 /// The frames: the name of the PNG, the replay, the frames played before the picture, and the
-/// CRC-32 of the PNG.
+/// CRC-32 of the PNG. All twelve took new values on 2026-10-15 for one reason that is not a code
+/// change: the GPU path now rounds the texture filtering one step differently (a channel off by
+/// one on 0.1 to 0.5 percent of the pixels, never more than two), and the same CRCs come out of the
+/// previous recording's own commit. If a CRC moves again with no change to the picture, compare
+/// the PNG with the last one pixel by pixel before taking the new value.
 const FRAMES: [(&str, &str, u64, u32); 12] = [
-    ("01-title", "landing", 1600, 0x4AC9_F043),
-    ("02-flight", "landing", 500, 0x2C68_EC04),
-    ("03-field", "story-1", 9500, 0x5AF6_9BA1),
-    ("04-message", "landing", 2400, 0x1D41_EEC1),
-    ("05-command-menu", "story-1", 9900, 0x772B_ADF4),
-    ("06-menu-list", "secret-namek-zfighters", 2700, 0x2722_7FD2),
-    ("07-menu-status", "secret-namek-zfighters", 3000, 0xC7F3_802D),
-    ("08-battle-command", "story-1", 8400, 0xE641_D7D9),
-    ("09-attack", "story-1", 8900, 0x303F_E058),
-    ("10-ending-story", "secret-ending-normal", 6000, 0x8B79_134D),
-    ("11-ending-credits", "secret-ending-normal", 9000, 0xA106_E9EA),
-    ("12-ending-end", "secret-ending-normal", 15000, 0xDC5D_23C3),
+    ("01-title", "landing", 1600, 0x60B3_5869),
+    ("02-flight", "landing", 500, 0xC8CC_2E4D),
+    ("03-field", "story-1", 9500, 0x3059_AECE),
+    ("04-message", "landing", 2400, 0x25B6_20FC),
+    ("05-command-menu", "story-1", 9900, 0xB8E5_1A62),
+    ("06-menu-list", "secret-namek-zfighters", 2700, 0x117F_A86D),
+    ("07-menu-status", "secret-namek-zfighters", 3000, 0xE50A_6715),
+    ("08-battle-command", "story-1", 8400, 0xF17A_97F7),
+    ("09-attack", "story-1", 8900, 0x0169_0AEB),
+    ("10-ending-story", "secret-ending-normal", 6000, 0x797C_BD77),
+    ("11-ending-credits", "secret-ending-normal", 9000, 0x605A_B5DA),
+    ("12-ending-end", "secret-ending-normal", 15000, 0x8009_262D),
 ];
 
 #[test]
@@ -33,6 +37,7 @@ fn the_twelve_reference_frames_at_four_times_match_their_crcs() {
     let out_dir = root.join(".work").join("hd");
     std::fs::create_dir_all(&out_dir).unwrap();
     let data = tempfile::tempdir().unwrap();
+    let mut mismatches = Vec::new();
     for (name, replay, frames, crc) in FRAMES {
         let out = out_dir.join(format!("{name}.png"));
         let run = Command::new(env!("CARGO_BIN_EXE_ssd-recompiled"))
@@ -47,6 +52,10 @@ fn the_twelve_reference_frames_at_four_times_match_their_crcs() {
         let stderr = String::from_utf8_lossy(&run.stderr);
         assert_eq!(run.status.code(), Some(0), "{name}: stderr: {stderr}");
         let actual = ssd_rom::crc32(&std::fs::read(&out).unwrap());
-        assert_eq!(actual, crc, "{name}: the picture's CRC-32 is {actual:08X}");
+        if actual != crc {
+            mismatches
+                .push(format!("{name}: the picture's CRC-32 is {actual:08X}, expected {crc:08X}"));
+        }
     }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
 }

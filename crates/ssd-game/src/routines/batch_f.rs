@@ -908,6 +908,8 @@ const SOURCE_BYTE_0048: u16 = (data::SOURCE_BYTE_0048 & 0xFFFF) as u16;
 const TRAVEL_BYTE_44: u16 = (data::SOURCE_BYTE_0044 & 0xFFFF) as u16;
 /// The copy gate (`copy_gate`), read for its bit 7 only: the cost depends on it.
 const COPY_GATE: u16 = (data::COPY_GATE & 0xFFFF) as u16;
+/// The copy select (`copy_select`), read for bit 1: the cost depends on it.
+const COPY_SELECT: u16 = (data::COPY_SELECT & 0xFFFF) as u16;
 /// The nibble path A keeps (`travel_nibble`), through the data bank.
 const TRAVEL_NIBBLE: u16 = (data::TRAVEL_NIBBLE & 0xFFFF) as u16;
 /// The Y limit byte (`follow_limit`), through the data bank.
@@ -930,6 +932,9 @@ pub(crate) struct TravelInput {
     pub byte_44: u8,
     /// The copy gate (`$01A1`); only its bit 7 matters, and only for the cost.
     pub gate: u8,
+    /// The copy select (`$01E7`); with the gate clear, bit 1 of it sets the carry the branch after the
+    /// copy tests, and a branch not taken costs one cycle less.
+    pub select: u8,
     /// The byte path A takes as its value when its nibble is zero (`$0D5E`).
     pub stored_nibble: u8,
     /// The X and the Y limit bytes (`$0703` and `$0702`).
@@ -984,6 +989,8 @@ pub(crate) struct TravelKey {
     pub nibble_zero: bool,
     /// Bit 7 of `$01A1` clear (the copy branch that reads `$01E7`).
     pub gate_clear: bool,
+    /// The gate clear and bit 1 of `$01E7` set: the branch after the copy is not taken (6 cycles less).
+    pub copy_carry: bool,
 }
 
 /// What `update_travel_and_follow` leaves for its inputs.
@@ -1040,6 +1047,7 @@ pub(crate) fn plan_travel(input: TravelInput) -> TravelOutput {
             path_b,
             nibble_zero: false,
             gate_clear: input.gate & 0x80 == 0,
+            copy_carry: input.gate & 0x80 == 0 && input.select & 0x02 != 0,
         },
         bc: None,
         stored_nibble: None,
@@ -1162,7 +1170,7 @@ pub(crate) fn travel_cost(key: TravelKey) -> Option<u64> {
         (YUp, true, false) => 998,
         _ => return None,
     };
-    Some(cost)
+    Some(if key.copy_carry { cost - 6 } else { cost })
 }
 
 /// The inputs of [`plan_travel`] read from the machine (reads with no side effects).
@@ -1173,6 +1181,7 @@ fn travel_input(ctx: &Ctx<'_>) -> TravelInput {
         nibble: ctx.peek_db8(SOURCE_BYTE_0048) & 0x0F,
         byte_44: ctx.peek_db8(TRAVEL_BYTE_44),
         gate: ctx.peek_db8(COPY_GATE),
+        select: ctx.peek_db8(COPY_SELECT),
         stored_nibble: ctx.peek_db8(TRAVEL_NIBBLE),
         limit_x: ctx.peek_db8(FOLLOW_LIMIT_X),
         limit_y: ctx.peek_db8(FOLLOW_LIMIT),
@@ -1267,6 +1276,7 @@ mod update_travel_and_follow_tests {
             nibble: 0,
             byte_44: 0,
             gate: 0,
+            select: 0,
             stored_nibble: 0,
             limit_x: 9,
             limit_y: 11,
@@ -1314,8 +1324,13 @@ mod update_travel_and_follow_tests {
 
     #[test]
     fn the_instruction_counts_follow_the_path_and_the_route() {
-        let key =
-            |route, path_b, nibble_zero| TravelKey { route, path_b, nibble_zero, gate_clear: true };
+        let key = |route, path_b, nibble_zero| TravelKey {
+            route,
+            path_b,
+            nibble_zero,
+            gate_clear: true,
+            copy_carry: false,
+        };
         assert_eq!(travel_instructions(key(TravelRoute::Early, false, true)), 11);
         assert_eq!(travel_instructions(key(TravelRoute::Idle, true, false)), 23);
         assert_eq!(travel_instructions(key(TravelRoute::XBlocked, false, true)), 33);
@@ -1331,14 +1346,17 @@ mod update_travel_and_follow_tests {
             path_b: false,
             nibble_zero: true,
             gate_clear: true,
+            copy_carry: false,
         };
         assert_eq!(travel_cost(early), Some(272));
+        assert_eq!(travel_cost(TravelKey { copy_carry: true, ..early }), Some(266));
         assert_eq!(travel_cost(TravelKey { gate_clear: false, ..early }), None);
         let unseen = TravelKey {
             route: TravelRoute::YLow,
             path_b: false,
             nibble_zero: false,
             gate_clear: true,
+            copy_carry: false,
         };
         assert_eq!(travel_cost(unseen), None);
     }

@@ -39,6 +39,8 @@ The frame counts include the 2 304 frames of title screen and Continue that `rep
 | `secret-ending-normal` | 19 302 | E-01, E-03: the ending without the hidden boss | the same without Vegeta in the party (E-03: he must be there): the captions, the credits and the END screen, no hidden fight |
 | `secret-piccolo-dende-fusion` | 4 294 | F-03: the Piccolo fusion | map 24, talking to the two Namekians with Piccolo, Gohan, Vegeta and Dende in the party: the flash, "Fuse with me, too!", Piccolo's power-up (level 40 to 48) and Dende gone from the party (the Status screen shows three records) |
 | `secret-piccolo-returns` | 8 560 | N-14: Piccolo back in the party | map 22: Frieza's first form (group `$53`) is fought until it ends, then scene `$38` ("I've arrived!") makes the party Piccolo, Tien, Yamcha and Chiaotzu (the Status screen at the end) |
+| `secret-piccolo-snake-way` | 6 084 | S-06: Gohan's practice fight against Piccolo, then Goku's way to King Kai | map 3 (Piccolo's cave): talking to Piccolo starts scene `$04` ("Six months have passed", "Now, you will fight me!"), the practice fight (group `$1D`, a cave background) won by Gohan at level 30, Piccolo's last words, the Snake Way picture (Goku with his halo on the road), the flight to King Kai's planet and the arrival there (map 7) |
+| `secret-king-kai-planet` | 6 954 | S-05: Goku at King Kai's | map 7, Goku dead with his halo: he walks left, right, up and down on the little planet, King Kai (from above) greets him ("Bravo, small one"), the fight against King Kai in the sky (Goku at level 40 wins), the Shenron picture, Goku's flight and the Earth chapter's first battle |
 
 ## Save recipes
 
@@ -70,13 +72,17 @@ clearing all (`none`); `lvl` is `<character>.level`; `scene=0` is always set.
 | ending-normal | mash-17000 | the same without Vegeta: `party=gohan,piccolo,goku`, `flags=none,+0,+1,+2,+8`, `image:2A0=0102FF` |
 | piccolo-dende-fusion | talk-fusion | `party=piccolo,gohan,vegeta,dende` lvl 40, 40, 40, 3, `map=24 flags=none,+1,+7,+0xB leader=1664,1172 follower=1536,1052` (flag 2 must be clear, flag 3 clear so that Dende leaves; the script turns up one frame and talks) |
 | piccolo-returns | frieza-flees | `party=gohan,krillin,tien,yamcha,chiaotzu,vegeta` lvl 35, 32, 30, 28, 26, 36 then `party=gohan,krillin,vegeta` (the three others keep a record), `piccolo.level=40 map=22 flags=none,+1,+3,+7 page:83=01 page:B0=0500 leader=1500,1500 follower=1372,1380 image:1A0=040506FF` (the list the set-up would have kept; without it the party after the scene is garbage). Dende must not be in the party: the mash gets stuck on his "He's resting" command |
+| piccolo-snake-way | talk-piccolo | `party=gohan` lvl 30, `map=3 flags=none,+1 leader=128,52 follower=128,90` (the script turns up and talks; Piccolo stands at x 128, y 32) |
+| king-kai-planet | talk-king-kai | `party=goku` lvl 40, `map=7 flags=none,+0 leader=128,60 follower=128,60` (King Kai stands at x 128, y 80 and blocks the road: talk to him from above or from the left; from below the game says "Nothing there!") |
+
 
 ## Not reached
 
 - **N-10, Captain Ginyu** (the body swap), **N-15** (the Porunga card), **F-01** (Nail's fusion), **F-07** (the
   Guru card on Goku): need long battle states; not tried.
-- **S-05 to S-07, TR-08, TR-09, N-05** (King Kai's and the gravity room's trials): scenes `$43`-`$4C` and the
-  training maps were not entered.
+- **S-07, TR-08, TR-09, N-05** (Goku's arrival timing, the gravity room's trials, Piccolo's training on map 1):
+  scenes `$43`-`$4C` and the gravity-room maps were not entered. King Kai's planet itself is reached
+  (`secret-king-kai-planet`), but Goku's fight against King Kai is the only trial it plays.
 - **S-09, S-10, S-12** (Piccolo's level 9, the deadlines, Piccolo's death): the level rule lives in the map 5
   routine (code read, not run); the death is inside the Saiyan scene `$11`, which `secret-saiyan-nappa` only
   starts.

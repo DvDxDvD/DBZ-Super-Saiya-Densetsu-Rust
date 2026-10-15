@@ -15,17 +15,15 @@ pub enum Hotkey {
     Quit,
 }
 
-pub(crate) fn key_to_hotkey(sc: Scancode) -> Option<Hotkey> {
+/// The keys that belong to the window and cannot be remapped: the panel, the four state slots and Esc. The
+/// other shortcuts (speed, pause, save and load state) are the Controls page's (`Bindings::key_hotkey`).
+pub(crate) fn fixed_hotkey(sc: Scancode) -> Option<Hotkey> {
     Some(match sc {
-        Scancode::F5 => Hotkey::SaveState,
-        Scancode::F9 => Hotkey::LoadState,
         Scancode::F1 => Hotkey::TogglePanel,
         Scancode::_1 => Hotkey::Slot(1),
         Scancode::_2 => Hotkey::Slot(2),
         Scancode::_3 => Hotkey::Slot(3),
         Scancode::_4 => Hotkey::Slot(4),
-        Scancode::Tab => Hotkey::CycleSpeed,
-        Scancode::P => Hotkey::Pause,
         Scancode::Escape => Hotkey::Quit,
         _ => return None,
     })
@@ -88,14 +86,14 @@ mod tests {
     }
 
     #[test]
-    fn hotkeys_map() {
+    fn the_fixed_hotkeys_are_the_panel_the_slots_and_quit() {
         use sdl3::keyboard::Scancode;
-        assert_eq!(key_to_hotkey(Scancode::F5), Some(Hotkey::SaveState));
-        assert_eq!(key_to_hotkey(Scancode::F9), Some(Hotkey::LoadState));
-        assert_eq!(key_to_hotkey(Scancode::_2), Some(Hotkey::Slot(2)));
-        assert_eq!(key_to_hotkey(Scancode::F1), Some(Hotkey::TogglePanel));
-        assert_eq!(key_to_hotkey(Scancode::F2), None, "the slots moved to the digit keys");
-        assert_eq!(key_to_hotkey(Scancode::Tab), Some(Hotkey::CycleSpeed));
-        assert_eq!(key_to_hotkey(Scancode::X), None);
+        assert_eq!(fixed_hotkey(Scancode::_2), Some(Hotkey::Slot(2)));
+        assert_eq!(fixed_hotkey(Scancode::F1), Some(Hotkey::TogglePanel));
+        assert_eq!(fixed_hotkey(Scancode::Escape), Some(Hotkey::Quit));
+        assert_eq!(fixed_hotkey(Scancode::F2), None, "the slots moved to the digit keys");
+        for remappable in [Scancode::F5, Scancode::F9, Scancode::Tab, Scancode::P, Scancode::X] {
+            assert_eq!(fixed_hotkey(remappable), None, "{remappable:?} is the Controls page's");
+        }
     }
 }

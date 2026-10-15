@@ -411,7 +411,14 @@ fn plan(reference: &Path, with_masks: bool, maps_quality: f32) -> anyhow::Result
         let mut tiles = Vec::new();
         for entry in &index.tile {
             let (base, roles) = (layer(&entry.base), layer(&entry.roles));
-            tiles.push(serde_json::json!({ "code": entry.code, "base": base, "roles": roles }));
+            let mut tile = serde_json::json!({ "code": entry.code, "base": base, "roles": roles });
+            if let Some(set) = &entry.set {
+                tile["set"] = serde_json::json!(set);
+            }
+            if entry.carve {
+                tile["carve"] = serde_json::json!(true);
+            }
+            tiles.push(tile);
         }
         let mut tips = Vec::new();
         for tip in &index.tip {

@@ -40,11 +40,11 @@ use ssd_oracle::{CgramWrite, Color, FrameLog, LineEntry, OamWrite, VramWrite};
 use std::sync::Arc;
 
 pub use art::{
-    ArtSource, ArtStats, Drawn, DrawnPose, Fate, FrameTally, Image, ItemKey, KindPixels, PoseShape,
-    PoseStat, TallyCount, TallyItem, TallyLayer,
+    ArtSource, ArtStats, COLOUR_CLASSES, Drawn, DrawnPose, Fate, FrameTally, Image, ItemKey,
+    KindPixels, PoseShape, PoseStat, TallyCount, TallyItem, TallyLayer, colour_class,
 };
 pub use binding::Binder;
-pub use cards::CardArt;
+pub use cards::{CardArt, Preview as CardPreview};
 pub use enhanced::{HdFrame, HdOptions, Look, Rect};
 pub use font::{Font, FontError};
 pub use menu_art::MenuPicture;

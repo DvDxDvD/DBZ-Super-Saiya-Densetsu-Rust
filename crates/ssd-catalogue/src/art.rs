@@ -31,6 +31,16 @@ const SECOND_PICTURE: [usize; 16] = [8, 9, 10, 11, 24, 25, 26, 27, 12, 13, 14, 1
 const PALETTE_BANK: u8 = 0x09;
 /// The bank of the picture pointers is the third byte of each entry of `object_portrait_pointers`.
 const PICTURE_ENTRY: u32 = 3;
+/// The face indexes whose corner face is the second picture of their set (measured in video memory on the
+/// field menu: Gohan, Krillin, Yamcha, Vegeta and Dende); the other faces show the first picture.
+const SECOND_FACE_PICTURES: [u8; 5] = [0x09, 0x0A, 0x0C, 0x50, 0x61];
+/// The object whose palette a corner face is drawn with: the colour row 6 of the field menu, which holds object 28's
+/// palette, for every face measured on the Namek party and on Goku.
+const FACE_PALETTE_OBJECT: u8 = 28;
+/// Piccolo's corner face is drawn in object 29's palette instead (colour row 7 of the field menu, measured on the
+/// starting party with Piccolo in the second corner).
+const PICCOLO_FACE: u8 = 0x01;
+const PICCOLO_PALETTE_OBJECT: u8 = 29;
 
 /// The picture of an object: palette indexes of its pixels, and its palette.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,35 +124,71 @@ fn half_of(rom: RomView<'_>, object: u8) -> Result<u8, CatalogueError> {
     Ok((byte >> (object % 8)) & 1)
 }
 
-/// The picture of object `object`: its set decoded, the half of it the object shows, and its
-/// palette read.
+/// The picture of an object: its set (the second picture when its half bit is set), in its palette.
 ///
 /// # Errors
 ///
-/// [`CatalogueError::OutOfRom`] for an object without a pointer in the ROM, or a set that is
-/// shorter than its two pictures.
+/// [`CatalogueError`] when the picture, its palette or its set leaves the ROM, or the set is short.
 pub fn object_portrait(rom: RomView<'_>, object: u8) -> Result<Portrait, CatalogueError> {
     let entry = d::OBJECT_PORTRAIT_POINTERS + PICTURE_ENTRY * u32::from(object);
     let bank = rom.u8(entry + 2)?;
     let set = lz_decode(rom, rom.pointer(entry, bank)?)?;
+    let palette = rom.pointer(d::OBJECT_PORTRAIT_PALETTES + 2 * u32::from(object), PALETTE_BANK)?;
+    let half = half_of(rom, object)?;
+    let cells = if half == 0 { &PICTURE } else { &SECOND_PICTURE };
+    picture(rom, &set, ("object_portrait_pointers", object), palette, cells, half)
+}
+
+/// The corner face of face index `face` (`face_portrait_pointers`): the first or second picture of its set, as
+/// [`SECOND_FACE_PICTURES`] gives, in the palette every corner face is drawn with.
+///
+/// # Errors
+///
+/// [`CatalogueError`] when the face index has no entry, or its set or palette leaves the ROM or is short.
+pub fn face_portrait(rom: RomView<'_>, face: u8) -> Result<Portrait, CatalogueError> {
+    if u32::from(face) >= d::FACE_PORTRAIT_POINTERS_SIZE / PICTURE_ENTRY {
+        return Err(CatalogueError::Malformed {
+            table: "face_portrait_pointers",
+            message: format!("face {face}: no entry"),
+        });
+    }
+    let entry = d::FACE_PORTRAIT_POINTERS + PICTURE_ENTRY * u32::from(face);
+    let bank = rom.u8(entry + 2)?;
+    let set = lz_decode(rom, rom.pointer(entry, bank)?)?;
+    let palette_object =
+        if face == PICCOLO_FACE { PICCOLO_PALETTE_OBJECT } else { FACE_PALETTE_OBJECT };
+    let palette =
+        rom.pointer(d::OBJECT_PORTRAIT_PALETTES + 2 * u32::from(palette_object), PALETTE_BANK)?;
+    let half = u8::from(SECOND_FACE_PICTURES.contains(&face));
+    let cells = if half == 0 { &PICTURE } else { &SECOND_PICTURE };
+    picture(rom, &set, ("face_portrait_pointers", face), palette, cells, half)
+}
+
+/// A picture laid out from a decoded set by `cells` (tile numbers of the set, row by row of the 4 by 4 grid), in the
+/// sixteen colours at `palette`. `source` names the table and the index the set came from, for the errors.
+fn picture(
+    rom: RomView<'_>,
+    set: &[u8],
+    source: (&'static str, u8),
+    palette: u32,
+    cells: &[usize; 16],
+    half: u8,
+) -> Result<Portrait, CatalogueError> {
     if set.len() < TILES * TILE_BYTES {
         return Err(CatalogueError::Malformed {
-            table: "object_portrait_pointers",
+            table: source.0,
             message: format!(
-                "object {object}: a set of {} bytes, expected {}",
+                "{}: a set of {} bytes, expected {}",
+                source.1,
                 set.len(),
                 TILES * TILE_BYTES
             ),
         });
     }
-    let palette_address =
-        rom.pointer(d::OBJECT_PORTRAIT_PALETTES + 2 * u32::from(object), PALETTE_BANK)?;
-    let mut palette = [0_u16; COLOURS];
-    for (index, colour) in palette.iter_mut().enumerate() {
-        *colour = rom.u16(palette_address + 2 * index as u32)?;
+    let mut colours = [0_u16; COLOURS];
+    for (index, colour) in colours.iter_mut().enumerate() {
+        *colour = rom.u16(palette + 2 * index as u32)?;
     }
-    let half = half_of(rom, object)?;
-    let cells = if half == 0 { &PICTURE } else { &SECOND_PICTURE };
     let mut pixels = vec![0_u8; SIDE * SIDE];
     let mut characters = Vec::with_capacity(cells.len());
     for (cell, &tile) in cells.iter().enumerate() {
@@ -166,7 +212,7 @@ pub fn object_portrait(rom: RomView<'_>, object: u8) -> Result<Portrait, Catalog
             }
         }
     }
-    Ok(Portrait { half, characters, pixels, palette })
+    Ok(Portrait { half, characters, pixels, palette: colours })
 }
 
 #[cfg(test)]

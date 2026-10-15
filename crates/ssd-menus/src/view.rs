@@ -3,6 +3,7 @@
 //! [`crate::screens`] draw it; nothing here reads the game or the ROM.
 
 use crate::cheats::{Cheats, Row};
+use crate::options::Category;
 
 /// The names and texts the view needs, by id: the characters (by character id) and the objects
 /// (by object id, the item list's ids). Built from the catalogue by the application.
@@ -18,8 +19,19 @@ pub struct Labels {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CharacterLabel {
     pub name: String,
-    /// The object whose picture is the character's face, when there is one of the same name.
+    /// The face index of the character's corner picture (the field menu's `face_portrait_pointers`), when it
+    /// has one.
     pub face: Option<u8>,
+}
+
+/// The picture a portrait box shows: an object's (the item screen's picture box) or a corner face of the field
+/// menu, by its face index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Picture {
+    /// The picture of an object, by its id.
+    Object(u8),
+    /// The corner face of a face index.
+    Face(u8),
 }
 
 /// A named object of the item list.
@@ -60,6 +72,8 @@ pub enum Screen {
     Items,
     /// The cheats: the choices of the run (M5).
     Cheats,
+    /// The options: the categories and their rows (M7).
+    Options,
 }
 
 /// The Cheats screen as it shows: the choices of the run, the row under the cursor, and the names of the
@@ -70,6 +84,50 @@ pub struct CheatsView {
     /// The row under the cursor.
     pub row: Row,
     pub names: Vec<String>,
+}
+
+/// The Options screen as it shows: the category and the row under the cursor, the value of each row of the
+/// category (an index of its choices), and Reset all's question while it is open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionsView {
+    pub category: Category,
+    /// The row under the cursor: an index of the category's rows.
+    pub row: usize,
+    /// The value of each row of the category.
+    pub values: Vec<usize>,
+    /// Reset all's question: the choice under the cursor, 0 Yes and 1 No.
+    pub confirm: Option<u8>,
+    /// "Apply video changes?" while it asks.
+    pub video: Option<VideoAsk>,
+    /// The Controls page's state while it waits for a key or shows a refusal (none on the other pages).
+    pub controls: Option<ControlsView>,
+}
+
+/// The question "Apply video changes?" of the Video page: the choice under the cursor (0 Keep, 1 Revert), the
+/// tenths of the ten seconds still left (100 down to 0) and what the video would be if kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoAsk {
+    pub choice: u8,
+    pub tenths: u32,
+    pub summary: String,
+}
+
+/// The Controls page's moment: whether it waits for the next key or button, and the key it just refused.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ControlsView {
+    /// The key box under the cursor waits for the next key or button.
+    pub listening: bool,
+    /// The last key was refused.
+    pub refused: Option<RefusedKey>,
+}
+
+/// A key the Controls page refused: the place of its row in the grid (0 is the device row, 1 to 16 the actions),
+/// the line of the help strip, and whether the flash is on this frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedKey {
+    pub position: usize,
+    pub message: String,
+    pub blink: bool,
 }
 
 /// The tabs of the bag.
@@ -115,11 +173,7 @@ pub enum Sheet {
     Browse,
     /// Use or Drop for the stack under the cursor.
     Choose,
-    /// The party, with LV, HP, KI and BP: the member the object is used on.
-    Members,
-    /// The quantity: the units to use or to drop, from 1 to the most that can be.
-    Quantity,
-    /// Drop the units? Yes or No.
+    /// Drop one unit? Yes or No.
     Confirm,
 }
 
@@ -157,11 +211,6 @@ pub struct BagView {
     pub sheet: Sheet,
     /// On the Choose sheet: 0 Use, 1 Drop. On Confirm: 0 Yes, 1 No.
     pub choice: u8,
-    /// On the Members sheet: the party row the cursor is on.
-    pub member: u8,
-    /// On the Quantity sheet: the units chosen; the most that can be chosen.
-    pub units: u16,
-    pub most: u16,
     /// A line the screen shows at its foot: a refusal, a notice.
     pub notice: Option<&'static str>,
 }

@@ -113,3 +113,75 @@ fn the_halves_are_the_ones_the_original_draws_in_its_picture_box() {
         assert_eq!(portrait.half, u8::from(second.contains(&object)), "object {object}");
     }
 }
+
+/// The face indexes the field menu's corner faces use (measured on the field menu): the first picture of
+/// a set, or the second for the indexes the second-picture list gives.
+const FACES: [(u8, u8); 9] = [
+    (0x00, 0),
+    (0x01, 0),
+    (0x09, 1),
+    (0x0A, 1),
+    (0x0B, 0),
+    (0x0C, 1),
+    (0x0D, 0),
+    (0x50, 1),
+    (0x61, 1),
+];
+
+#[test]
+#[ignore = "needs the ROM"]
+fn every_measured_face_is_a_picture_in_the_corner_palette_and_its_half() {
+    let rom = rom();
+    let view = RomView::new(&rom).unwrap();
+    let corner = object_portrait(view, 28).unwrap().palette;
+    let piccolo = object_portrait(view, 29).unwrap().palette;
+    for (face, half) in FACES {
+        let portrait = ssd_catalogue::face_portrait(view, face)
+            .unwrap_or_else(|e| panic!("face {face:02X}: {e}"));
+        assert_eq!(portrait.pixels.len(), 32 * 32, "face {face:02X}");
+        assert!(portrait.pixels.iter().any(|&index| index != 0), "face {face:02X}: a picture");
+        let expected = if face == 0x01 { piccolo } else { corner };
+        assert_eq!(portrait.palette, expected, "face {face:02X}: its corner palette");
+        assert_eq!(portrait.half, half, "face {face:02X}: its half");
+    }
+}
+
+#[test]
+#[ignore = "needs the ROM"]
+fn the_corner_faces_of_goku_and_piccolo_are_the_pictures_of_their_objects() {
+    let rom = rom();
+    let view = RomView::new(&rom).unwrap();
+    // The first picture of Goku's set is object 28's picture, and of Piccolo's object 29's: the same
+    // pixels, in the same palette (face and object share a set and its first half).
+    for (face, object) in [(0x00_u8, 28_u8), (0x01, 29)] {
+        let face_picture = ssd_catalogue::face_portrait(view, face).unwrap();
+        let object_picture = object_portrait(view, object).unwrap();
+        assert_eq!(face_picture.characters, object_picture.characters, "face {face:02X}");
+    }
+}
+
+#[test]
+#[ignore = "needs the ROM"]
+fn each_character_has_the_face_index_the_field_menu_draws_for_it() {
+    let rom = rom();
+    let catalogue = ssd_catalogue::Catalogue::from_rom(&rom).unwrap();
+    let labels = ssd_catalogue::menu_labels(&catalogue);
+    let faces: Vec<Option<u8>> = labels.characters.iter().map(|c| c.face).collect();
+    assert_eq!(
+        faces,
+        [
+            Some(0x00),
+            Some(0x09),
+            Some(0x01),
+            Some(0x0A),
+            Some(0x0B),
+            Some(0x0C),
+            Some(0x0D),
+            Some(0x50),
+            None,
+            None,
+            None,
+            Some(0x61),
+        ]
+    );
+}

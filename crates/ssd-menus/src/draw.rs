@@ -1,5 +1,6 @@
 //! The draw list: what an HD screen paints, as plain data in logical pixels. The screens build it
 //! and the backend of `ssd-app` paints it, so a layout can be checked without a window or a GPU.
+use crate::view::Picture;
 
 /// An RGBA colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,12 +88,23 @@ pub enum Op {
     Text { x: f32, y: f32, text: String, size: f32, color: Color, align: Align },
     /// The orange cursor, a right-pointing triangle with its top-left corner at (`x`, `y`).
     Cursor { x: f32, y: f32 },
-    /// A small orange triangle pointing left or right (the quantity's arrows, which the font has no
-    /// glyph for), the cursor's size, with its top-left corner at (`x`, `y`).
+    /// A small orange triangle pointing left or right (the cheats' arrows, which the font has no glyph
+    /// for), the cursor's size, with its top-left corner at (`x`, `y`).
     Arrow { x: f32, y: f32, left: bool },
-    /// The picture of an object in a square portrait frame, or an empty box when the object has no
-    /// picture. `rect` is the outside of the frame.
-    Portrait { rect: Rect, object: Option<u8> },
+    /// A menu window in high contrast: white paper in a black frame with a white line outside it, so it stands off
+    /// the field. `rect` is the outside of the frame, as for [`Op::Window`].
+    WindowHc { rect: Rect },
+    /// A triangle in `rect` pointing right (or left), filled with `fill`, outlined with a wide `edge` line and a
+    /// narrower `ring` line on it: the safe cursor, and the arrows in high contrast.
+    Pointer { rect: Rect, left: bool, fill: Color, edge: Color, ring: Color },
+    /// A picture in a square portrait frame, or an empty box when there is nothing to show (an empty list,
+    /// or a character without a corner face). `rect` is the outside of the frame.
+    Portrait { rect: Rect, picture: Option<Picture> },
+    /// The card of the Cheats screen's preview: the battle's HD card drawn from the pack's card art (the
+    /// attack ball with four dots or the Z, the symbol, the defence ball with the numeral seven or the Z)
+    /// to fit `rect`, which is the outside of the card's frame. A backend with no card art paints
+    /// [`crate::screens::pixel_card`] instead.
+    Card { rect: Rect, attack_z: bool, defence_z: bool },
     /// A bar filled to `fraction` (0 to 1) of its well, with a white border. `rect` is the outside.
     Bar { rect: Rect, fraction: f32, color: Color },
 }

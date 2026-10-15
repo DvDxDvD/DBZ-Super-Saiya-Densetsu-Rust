@@ -37,6 +37,9 @@ pub const RANDOM_ONLY: usize = SETTINGS_LEN + 1;
 pub const MARKER: usize = SETTINGS_LEN + 2;
 /// The marker a written block carries at [`MARKER`].
 pub const MARKER_BYTES: [u8; 4] = *b"SSDc";
+/// The money multiplier: a num/den pair after the marker (the zeni a story event gives). The Cheats screen has no row for it: the
+/// Difficulty presets of the Options write it. A pair with a zero is read as x1, so a block of an older run is neutral.
+pub const MONEY: usize = MARKER + 4;
 /// The version of the bytes [`Cheats::to_bytes`] writes.
 pub const VERSION: u32 = 1;
 /// The seed of the generator, written with the settings (so a settings change starts the same sequence).
@@ -112,6 +115,12 @@ const ENEMIES_STEPS: [Multiplier; 4] = [Multiplier::new(1, 2), times(1), times(2
 /// The steps of the encounter rate: x1/4, x1/2, x1, x2 and x4 (x1 is the neutral step).
 const ENCOUNTERS_STEPS: [Multiplier; 5] =
     [Multiplier::new(1, 4), Multiplier::new(1, 2), times(1), times(2), times(4)];
+
+/// The steps of the money from story events: x1/2, x1, x2 (x1 is the neutral step). Not a [`Setting`]: the Cheats screen has no
+/// row for it, and its pair lies after the marker ([`MONEY`]).
+pub const MONEY_STEPS: [Multiplier; 3] = [Multiplier::new(1, 2), times(1), times(2)];
+/// The index of x1 in [`MONEY_STEPS`].
+pub const MONEY_NEUTRAL: usize = 1;
 
 /// The multiplier settings, in the order of their pairs in the block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -259,6 +268,14 @@ pub struct Cheats {
     z_target: ZTarget,
     zeni: bool,
     endless: bool,
+    /// The step of [`MONEY_STEPS`]. Not part of the saved cheats (the sidecar keeps the layout of version 1): it is kept
+    /// with the game's options (`difficulty.money`).
+    #[serde(skip, default = "neutral_money")]
+    money: u8,
+}
+
+fn neutral_money() -> u8 {
+    MONEY_NEUTRAL as u8
 }
 
 /// The bytes a [`Cheats`] is saved as: its version, then the choices.
@@ -290,6 +307,7 @@ impl Cheats {
             z_target: ZTarget::Party,
             zeni: false,
             endless: false,
+            money: MONEY_NEUTRAL as u8,
         }
     }
 
@@ -371,6 +389,29 @@ impl Cheats {
         self.endless = on;
     }
 
+    /// The index of the step of [`MONEY_STEPS`] the money is on.
+    #[must_use]
+    pub fn money_index(&self) -> usize {
+        usize::from(self.money).min(MONEY_STEPS.len() - 1)
+    }
+
+    /// Puts the money on the step `index`, clamped to the last step.
+    pub fn set_money_index(&mut self, index: usize) {
+        self.money = index.min(MONEY_STEPS.len() - 1) as u8;
+    }
+
+    /// The multiplier of the zeni a story event gives.
+    #[must_use]
+    pub fn money(&self) -> Multiplier {
+        MONEY_STEPS[self.money_index()]
+    }
+
+    /// Whether the money is not at x1.
+    #[must_use]
+    pub fn money_on(&self) -> bool {
+        self.money_index() != MONEY_NEUTRAL
+    }
+
     /// Whether the encounter rate is on. It only changes the random battles, so it counts while they are on.
     #[must_use]
     pub fn encounters_on(&self) -> bool {
@@ -388,7 +429,10 @@ impl Cheats {
                 .count();
         let switches =
             [self.random_battles_off, self.z_mode != ZMode::Off, self.zeni, self.endless];
-        multipliers + usize::from(self.encounters_on()) + switches.iter().filter(|&&on| on).count()
+        multipliers
+            + usize::from(self.encounters_on())
+            + usize::from(self.money_on())
+            + switches.iter().filter(|&&on| on).count()
     }
 
     /// The settings that are on, as the screen's "On" list shows them: a label and its value. `names` are the
@@ -419,6 +463,9 @@ impl Cheats {
         }
         if self.zeni {
             lines.push(("Zeni", "max".to_owned()));
+        }
+        if self.money_on() {
+            lines.push(("Money", multiplier_text(self.money())));
         }
         if self.endless {
             lines.push(("Items", "endless".to_owned()));
@@ -466,6 +513,13 @@ impl Cheats {
         bytes
     }
 
+    /// The money multiplier's pair, as the block holds it at [`MONEY`].
+    #[must_use]
+    pub fn money_bytes(&self) -> [u8; 2] {
+        let money = self.money();
+        [money.num, money.den]
+    }
+
     /// The whole cheat block: the settings, and the runtime bytes at zero (the scripted-loss gate
     /// open, no random-encounter mark). The game's work RAM holds the power-on fill until it is
     /// written, so the block is written whole once, when a run starts.
@@ -474,6 +528,9 @@ impl Cheats {
         let mut block = [0_u8; BLOCK_LEN];
         block[..SETTINGS_LEN].copy_from_slice(&self.settings_bytes());
         block[MARKER..MARKER + MARKER_BYTES.len()].copy_from_slice(&MARKER_BYTES);
+        let money = self.money();
+        block[MONEY] = money.num;
+        block[MONEY + 1] = money.den;
         block
     }
 
@@ -901,6 +958,36 @@ mod tests {
         assert_eq!(&block[..SETTINGS_LEN], &cheats.settings_bytes()[..]);
         assert_eq!(&block[MARKER..MARKER + MARKER_BYTES.len()], &MARKER_BYTES);
         assert!(MARKER + MARKER_BYTES.len() <= BLOCK_LEN);
+    }
+
+    #[test]
+    fn the_money_multiplier_is_a_pair_after_the_marker_counts_as_on_and_is_not_saved_in_the_sidecar()
+     {
+        let mut cheats = Cheats::neutral();
+        assert_eq!(&cheats.to_block()[MONEY..MONEY + 2], &[1, 1], "neutral is x1");
+        assert!(cheats.is_neutral() && !cheats.money_on());
+        cheats.set_money_index(2);
+        let block = cheats.to_block();
+        assert_eq!(&block[MONEY..MONEY + 2], &[2, 1]);
+        assert_eq!(
+            &block[..SETTINGS_LEN],
+            &Cheats::neutral().settings_bytes()[..],
+            "the settings do not move"
+        );
+        assert_eq!(
+            (cheats.on_count(), cheats.is_neutral()),
+            (1, false),
+            "money alone is a cheat: the save is marked"
+        );
+        assert_eq!(cheats.lines(&[]), vec![("Money", "×2".to_owned())]);
+        cheats.set_money_index(0);
+        assert_eq!(cheats.money(), Multiplier::new(1, 2));
+        cheats.set_money_index(9);
+        assert_eq!(cheats.money_index(), 2, "clamped");
+        const { assert!(MONEY + 2 <= BLOCK_LEN) };
+        // The sidecar's bytes are those of version 1: the money is not among them.
+        assert_eq!(cheats.to_bytes(), Cheats::neutral().to_bytes());
+        assert!(!Cheats::from_bytes(&cheats.to_bytes()).unwrap().money_on());
     }
 
     #[test]

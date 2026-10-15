@@ -12,8 +12,9 @@
 //! breakpoint <symbol or address>
 //! mode <routine> original|rust|verify
 //! menu open
-//! menu key up|down|left|right|a|b
-//! menu show field|menu|items|cheats
+//! menu key up|down|left|right|a|b|l|r|y|select
+//! menu show field|menu|items|cheats|options
+//! menu press <key>|esc|backspace|pad <button>
 //! menu tab all|allies|tools
 //! ```
 //!
@@ -26,6 +27,7 @@
 use crate::debugger::StepKind;
 use crate::panel::Tab;
 use ssd_menus::Key;
+use ssd_menus::options::controls::{self, Capture, Device};
 use ssd_menus::view::Tab as BagTab;
 use ssd_oracle::HookMode;
 use std::fmt;
@@ -64,6 +66,8 @@ pub enum MenuCommand {
     Show(MenuShow),
     /// The bag's Item screen shows this tab.
     Tab(BagTab),
+    /// A raw key (or, with `pad`, button) press while the Controls page waits for one.
+    Press(Capture),
 }
 
 /// The HD screen a `menu show` line asks for.
@@ -77,6 +81,8 @@ pub enum MenuShow {
     Items,
     /// The cheats screen.
     Cheats,
+    /// The Options screen.
+    Options,
 }
 
 /// A line of a script, with its number (from 1).
@@ -159,6 +165,12 @@ fn parse_command(text: &str) -> Result<Command, String> {
         ("menu", ["tab", tab]) => {
             menu_tab_named(tab).map(|tab| Command::Menu(MenuCommand::Tab(tab)))
         }
+        ("menu", ["press", "pad", name @ ..]) if !name.is_empty() => {
+            menu_press_named(Device::Gamepad, &name.join(" "))
+                .map(|capture| Command::Menu(MenuCommand::Press(capture)))
+        }
+        ("menu", ["press", name]) => menu_press_named(Device::Keyboard, name)
+            .map(|capture| Command::Menu(MenuCommand::Press(capture))),
         ("menu", _) => Err(MENU_USAGE.to_owned()),
         _ => Err(format!(
             "unknown action `{action}`: expected panel, tab, pause, step, frames, select, \
@@ -168,7 +180,7 @@ fn parse_command(text: &str) -> Result<Command, String> {
 }
 
 /// What a `menu` line takes, for the error message.
-const MENU_USAGE: &str = "menu takes open, key up|down|left|right|a|b, show field|menu|items|cheats, or tab all|allies|tools";
+const MENU_USAGE: &str = "menu takes open, key up|down|left|right|a|b, show field|menu|items|cheats, press <key>, or tab all|allies|tools";
 
 fn menu_tab_named(name: &str) -> Result<BagTab, String> {
     match name {
@@ -187,8 +199,28 @@ fn menu_key_named(name: &str) -> Result<Key, String> {
         "right" => Ok(Key::Right),
         "a" => Ok(Key::Confirm),
         "b" => Ok(Key::Cancel),
-        _ => Err(format!("unknown menu key `{name}`: expected up, down, left, right, a or b")),
+        "l" => Ok(Key::TabBack),
+        "r" => Ok(Key::Tab),
+        "y" => Ok(Key::ResetPage),
+        "select" => Ok(Key::ResetAll),
+        _ => Err(format!(
+            "unknown menu key `{name}`: expected up, down, left, right, a, b, l, r, y or select"
+        )),
     }
+}
+
+/// The press a `menu press` line gives: Esc and Backspace are the page's own, the rest a key or button by its name.
+fn menu_press_named(device: Device, name: &str) -> Result<Capture, String> {
+    if device == Device::Keyboard {
+        match name.to_ascii_lowercase().as_str() {
+            "esc" | "escape" => return Ok(Capture::Cancel),
+            "backspace" => return Ok(Capture::Clear),
+            _ => {}
+        }
+    }
+    controls::code_named(device, name)
+        .map(Capture::Code)
+        .ok_or_else(|| format!("unknown key or button `{name}`"))
 }
 
 fn menu_screen_named(name: &str) -> Result<MenuShow, String> {
@@ -197,7 +229,10 @@ fn menu_screen_named(name: &str) -> Result<MenuShow, String> {
         "menu" => Ok(MenuShow::Menu),
         "items" => Ok(MenuShow::Items),
         "cheats" => Ok(MenuShow::Cheats),
-        _ => Err(format!("unknown menu screen `{name}`: expected field, menu, items or cheats")),
+        "options" => Ok(MenuShow::Options),
+        _ => Err(format!(
+            "unknown menu screen `{name}`: expected field, menu, items, cheats or options"
+        )),
     }
 }
 
@@ -244,6 +279,22 @@ mod tests {
     }
 
     #[test]
+    fn a_menu_press_line_gives_a_key_a_button_or_esc_and_backspace() {
+        assert_eq!(command("menu press z"), Command::Menu(MenuCommand::Press(Capture::Code(29))));
+        assert_eq!(command("menu press Esc"), Command::Menu(MenuCommand::Press(Capture::Cancel)));
+        assert_eq!(
+            command("menu press backspace"),
+            Command::Menu(MenuCommand::Press(Capture::Clear))
+        );
+        assert_eq!(command("menu press f5"), Command::Menu(MenuCommand::Press(Capture::Code(62))));
+        assert_eq!(
+            command("menu press pad D-pad Up"),
+            Command::Menu(MenuCommand::Press(Capture::Code(12)))
+        );
+        assert!(error("menu press nonsense").message.contains("unknown key or button"));
+    }
+
+    #[test]
     fn every_action_parses_to_its_command() {
         assert_eq!(command("panel open"), Command::Panel { open: true });
         assert_eq!(command("panel close"), Command::Panel { open: false });
@@ -266,6 +317,14 @@ mod tests {
         assert_eq!(command("menu open"), Command::Menu(MenuCommand::Open));
         assert_eq!(command("menu key a"), Command::Menu(MenuCommand::Key(Key::Confirm)));
         assert_eq!(command("menu key b"), Command::Menu(MenuCommand::Key(Key::Cancel)));
+        assert_eq!(command("menu key y"), Command::Menu(MenuCommand::Key(Key::ResetPage)));
+        assert_eq!(command("menu key select"), Command::Menu(MenuCommand::Key(Key::ResetAll)));
+        assert_eq!(command("menu key l"), Command::Menu(MenuCommand::Key(Key::TabBack)));
+        assert_eq!(command("menu key r"), Command::Menu(MenuCommand::Key(Key::Tab)));
+        assert_eq!(
+            command("menu show options"),
+            Command::Menu(MenuCommand::Show(MenuShow::Options))
+        );
     }
 
     #[test]

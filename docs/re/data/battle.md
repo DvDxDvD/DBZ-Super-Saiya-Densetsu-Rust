@@ -112,6 +112,9 @@ Goku's HP from 210 to 202 instead of 194.
   of each of those routines. A "maximum zeni" cheat is therefore a plain write of 999 to `zeni` (a word), at the moment
   the cheat is switched on and again whenever the money is shown or spent (every frame is simplest). The battle drops
   objects, not money (05:8F4D, up to three objects in `$14F6`, refused when the list is full).
+  The ROM holds six writers of `zeni` in all (a scan of the store instructions to `$01B4`: 01:98A5 and 03:A68A payments, 01:D80A, 03:A661, 03:A7AC, 03:A975), and the one that is a gift is
+  01:D80A, the tail of 01:D7F9, a target of the script event table at 01:D43B (event number 20, read from `$072E` by 01:D433 and 01:BF44): it adds the word `$0D53` to the zeni, capped at 999. Two scripts set
+  the amount (03:9D0E and 03:A226 store 40 in `$0D53`). The money multiplier of the difficulty presets scales `$0D53` at the entry 01:D7F9 and lets the event run (seen: 40 added to 100 zeni gives 180 at x2, 120 at x1/2, 140 at x1).
 
 ## Enemy groups
 
@@ -268,3 +271,18 @@ battle that leaves the battle states before the replay ends):
 The `$57` row is the one that needed the gate: the first gate, which came off on the first non-battle state, came
 off in the middle of the fight (frame 4104), and the cheats then changed the fight (see above). The gate now stays
 through every battle state and comes off on the map.
+
+### Identity verdicts of three secret replays (found 2026-10-15)
+
+`verify-replays --cheats-identity` reported DIVERGED on `secret-king-kai-planet`, `secret-piccolo-snake-way` and
+`secret-dodoria`. None of it was the cheats: the same three diverged without `--cheats-identity` in the non-recomp
+build (Rust hooks), and with all hooks on the original (`--hooks original`, with or without the wrappers) all three
+were green.
+- King Kai planet and Snake Way: `update_travel_and_follow` declared one cost for a call whose real cost is 6 master
+  cycles lower when bit 1 of `$01E7` is set (see `docs/re/routines/update_travel_and_follow.md`). The hooked machine
+  arrived 6 cycles late at the next event. Fixed in the routine's cost.
+- Dodoria: the recording ends inside `fill_bank7f_pattern` (a 2-million-cycle call, about 6 frames, with the NMI off).
+  A stops on the last recorded frame, still inside the original's run of it, and B, whose Rust version of the call is
+  atomic, ends 5 frames later. That is the lockstep's tail window, not a routine difference; the last window of a
+  replay now accepts B past the end (the NMIs are still compared).
+Non-recomp runs of these replays end UNVERIFIED (routines called but never run in Rust), as for most replays.

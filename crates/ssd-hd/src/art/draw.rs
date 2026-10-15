@@ -396,11 +396,70 @@ pub struct Drawn {
     pub weight: u64,
     pub shown: [u64; 3],
     pub original: [u64; 3],
+    /// The alpha weight of the art's colours, and of the original's, by [`colour_class`].
+    pub classes_shown: [u64; COLOUR_CLASSES],
+    pub classes_original: [u64; COLOUR_CLASSES],
+}
+
+/// The coarse colour classes the on-model check compares: dark, white, grey, red, orange, skin,
+/// brown, yellow, green, blue, purple.
+pub const COLOUR_CLASSES: usize = 11;
+
+/// The class of a colour: by lightness, saturation and hue, so shading does not move it far.
+#[must_use]
+pub fn colour_class(rgb: [u8; 3]) -> usize {
+    let [r8, g8, b8] = rgb;
+    let (max8, min8) = (r8.max(g8).max(b8), r8.min(g8).min(b8));
+    let [r, g, b] = rgb.map(|c| f32::from(c) / 255.0);
+    let max = f32::from(max8) / 255.0;
+    let delta = f32::from(max8 - min8) / 255.0;
+    let saturation = if max8 == 0 { 0.0 } else { delta / max };
+    if max < 0.22 {
+        return 0;
+    }
+    if saturation < 0.18 {
+        return if max > 0.75 { 1 } else { 2 };
+    }
+    let hue = if max8 == min8 {
+        0.0
+    } else if max8 == r8 {
+        60.0 * (((g - b) / delta).rem_euclid(6.0))
+    } else if max8 == g8 {
+        60.0 * ((b - r) / delta + 2.0)
+    } else {
+        60.0 * ((r - g) / delta + 4.0)
+    };
+    match hue {
+        h if !(15.0..345.0).contains(&h) => 3,
+        h if h < 45.0 => {
+            if saturation < 0.62 && max > 0.7 {
+                5
+            } else if max < 0.55 {
+                6
+            } else {
+                4
+            }
+        }
+        h if h < 70.0 => {
+            if max < 0.5 {
+                6
+            } else {
+                7
+            }
+        }
+        h if h < 170.0 => 8,
+        h if h < 262.0 => 9,
+        _ => 10,
+    }
 }
 
 impl Drawn {
     fn add(mut self, other: Self) -> Self {
         self.weight += other.weight;
+        for class in 0..COLOUR_CLASSES {
+            self.classes_shown[class] += other.classes_shown[class];
+            self.classes_original[class] += other.classes_original[class];
+        }
         for channel in 0..3 {
             self.shown[channel] += other.shown[channel];
             self.original[channel] += other.original[channel];
@@ -477,6 +536,8 @@ pub(crate) fn draw_objects(
                             sums.shown[channel] += weight * u64::from(shown[channel]);
                             sums.original[channel] += weight * u64::from(color[channel]);
                         }
+                        sums.classes_shown[colour_class(shown)] += weight;
+                        sums.classes_original[colour_class(color)] += weight;
                     }
                     let target = target_x as usize * 4;
                     blend(&mut row[target..target + 4], shown, source[3]);

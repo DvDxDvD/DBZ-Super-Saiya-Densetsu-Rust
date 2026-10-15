@@ -13,6 +13,7 @@
 
 pub mod cheats;
 pub mod data;
+pub mod gameplay;
 pub mod menu;
 pub mod mode;
 mod registry;

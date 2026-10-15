@@ -100,11 +100,13 @@ Remastered is the *Enhanced* mode, a set of named differences from the original 
 - **Enhanced menus:** the field command window, the Menu list, the Zeni window, the corner portraits with HP and
   KI bars, and the **Item screen** are redrawn in the original's style at 1280x720. The bag has **60 slots and
   stacks of up to 99**, with the story's objects pinned at the top; a **Cheats** screen lets you change the rules
-  of the running game (see [The new menus](#the-new-menus)). *How it works:* the original menus keep running unseen
+  of the running game, and an **Options** screen holds the difficulty, gameplay, video, audio, controls and
+  accessibility settings (see [The new menus](#the-new-menus)). *How it works:* the original menus keep running unseen
   underneath and perform every consequence; the new screens only press the original's buttons, so the game's rules
   stay the original's.
 - **Fast-forward and save states.** Tab cycles the speed x1, x2, x4, x8; F5 and F9 save and load a state in one
-  of four slots. The debug panel (F1) shows the routines, memory and a debugger, and records and verifies replays.
+  of four slots (every key can be remapped in Options). The debug panel (F1) shows the routines, memory and a
+  debugger, and records and verifies replays.
 
 ## Comparison gallery
 
@@ -141,12 +143,13 @@ belong to it; the game gets no button until the original draws a message or a sc
 
 **Field command window and Menu list.** X on the field opens the command window (Talk, Look, Fly, Item, Menu; in a town there
 is no Fly, and in flight it is Land, Item, Menu), with a help window. The Menu list
-holds Cards, Status, Order, Text, Save, **Cheats**, and **Options** (greyed out: *coming soon*). The corner
+holds Cards, Status, Order, Text, Save, **Cheats** and **Options**. The corner
 portraits show each fighter's HP and KI bars, and a Zeni window shows your money.
 
 **Item screen.** A bag of **60 slots** with up to **99 units per stack**, in two columns with `x NN` counts, three
-tabs (All, Allies, Tools), the object's picture, its Pt price and its help text. Use takes the party list (level,
-HP, KI, BP) and a quantity selector (left arrow, `x NN`, right arrow); Drop asks to confirm. The Dragon Balls and
+tabs (All, Allies, Tools), the object's picture, its Pt price and its help text. Use takes one unit at once and
+hands over to the original's own use window and messages, the same on the map and in battle; Drop asks Yes or No
+and drops one unit. The Dragon Balls and
 the story's objects are pinned at the top and cannot be dropped, and a full bag refuses what it is offered, with a
 notice. The bag lives in `saves/ssd.bag` beside the battery save, one per save slot. The battle's Item screen keeps
 the original's look.
@@ -159,6 +162,25 @@ Fights that the story expects you to lose (today Nail against Frieza) **suspend 
 "Cheats off for this fight" for about two seconds and "Cheats back on" on the map. Each save slot keeps its own
 cheats, and a save made with a cheat on shows a CHEATS badge in the slot lists. Cheats act in the running game only
 and are never part of Classic.
+
+**Options.** Six pages, chosen on the left (L and R change page); each says whether it is saved with the game or
+kept for this PC. *Reset this page* (Y) and *Reset all* (Select, with a Yes/No question) restore the defaults.
+
+- **Difficulty** (saved with the game): Easy (enemy power x1/2, EXP x2, money x2), Normal (the original) or Hard
+  (enemy power x2, money x1/2). The preset writes the same numbers as the Cheats screen, which stays the fine control
+  (changing a cheat shows *Custom*); money here is the zeni the story's events give, since the original pays none for
+  battles. Easy and Hard mark the save with the CHEATS badge.
+- **Gameplay** (saved with the game): text speed (the original's five steps, Slowest to Fastest, the same setting as
+  the Menu's Text entry), message auto-run after a short, normal or long wait, battle animation speed (x2 to x4: the
+  attack animations run faster with the outcome unchanged; the music skips while they do), random encounters.
+- **Video** (this PC): window or fullscreen, scale 2x to 8x, look (crisp or smooth), V-sync, 16:9 or the original
+  4:3, scanlines and a CRT filter. A change of display, scale or aspect asks *Keep* or *Revert* and reverts by itself
+  after 10 seconds.
+- **Audio** (this PC): one volume (the console mixes music and effects together) and stereo or mono.
+- **Controls** (this PC): every SNES button and shortcut on the keyboard and on a gamepad; a key already in use is
+  refused and the help says by which action.
+- **Accessibility** (this PC): larger text, high-contrast menus (white windows, black text and frames) and a
+  colour-blind-safe cursor (a bigger blue arrow with a bar under the row), with a sample window.
 
 ## Getting started
 
@@ -314,18 +336,8 @@ This is a young project; these are the things we know are not right yet.
 <!-- KNOWN-BUGS:BEGIN -->
 **Remastered (HD)**
 
-- The **Mode 7 planes of the title screen** (the sky and the Goku close-up) are still drawn from the original's
-  pixels; the flights' planes are HD.
-- The **credits frame and separators**, and the **dialogue strip of one cutscene** (it is built from UI tiles),
-  are the original's pixels.
-- The **"Next card" preview of the Cheats screen** draws the card's kanji in the old pixel style instead of the HD
-  card art (the battle's own cards are HD).
-- **Field sprites are about 93 % covered** by HD art; a few NPCs, objects and effects of the field are still drawn
-  from the original's pixels, made bigger.
-- A **portrait box can show an `[art]` placeholder** in the Remastered menus (for instance the second fighter's corner
-  portrait on Namek, and the picture box of the Item screen), where a picture has no HD art yet.
-- In some **cutscenes** the plain backdrop colour spills into the black side margins of the 16:9 view in the rows
-  where the original draws only the backdrop (the Raditz arrival scene is one).
+- **Field sprites are about 99 % covered** by HD art; a few effects of the field are still drawn from the original's
+  pixels, made bigger.
 - **Frieza's first form (enemy group `$53`)** with strong cheats on ends later than it should; it is not a stall and
   is not gated like the scripted Nail fight, which suspends the cheats.
 
@@ -335,7 +347,6 @@ This is a young project; these are the things we know are not right yet.
 - **Japanese Rev 1 plus `--ips`** is implemented and unit-tested, but has not been tried end to end with a real
   Japanese ROM.
 - **Windows only.** Other platforms have not been tried.
-- The **Options** entry of the Menu list is greyed out (see [the roadmap](#roadmap)).
 <!-- KNOWN-BUGS:END -->
 
 Found another one? Please open an issue with the ROM's CRC-32, what you did and, if you can, a screenshot.
@@ -356,25 +367,12 @@ goes from polish to new content. Dates are not promised; each milestone ships wh
 | **M4** | **Enhanced menus and bag** | The field command window, Menu list, Zeni window and Item screen redrawn in the original's style; a 60-slot bag with stacks of 99; story items pinned; Enhanced mode as a named set of differences that never touch Classic. |
 | **M5** | **Cheats** | The Cheats screen (damage, defence, EXP, Z cards, zeni, endless items, random battles, enemy count and power) with per-slot persistence and the scripted-fight safety. |
 | **M6** | **HD graphics and widescreen** | The frame-end HD renderer (pixel-exact against the PPU), 16:9, HD text, soft shadows, card tooltips, and the HD art: portraits and faces, fighters and effects, field sprites, maps, battle backgrounds, title and story pictures, cards, Mode 7 flights. |
-
-### M7: Options and difficulty
-
-The greyed Options entry of the Menu list becomes a real screen, saved with the game:
-
-- **Difficulty**: a preset (Easy, Normal, Hard) that sets enemy power, EXP and money together, next to the cheats' fine control.
-- **Gameplay**: text speed in the new style, battle animation speed, random-encounter rate, auto-run of messages.
-- **Video**: window or fullscreen, scale (2 to 8), look (crisp or smooth), 16:9 or the original 4:3, scanline and
-  CRT filters, V-sync.
-- **Audio**: music and effects volume, mono or stereo.
-- **Controls**: remapping of keyboard and gamepad (shared with M13).
-- **Accessibility**: larger HD text, high-contrast menus, a colour-blind-safe cursor.
+| **M7** | **Options and difficulty** | The Options screen in the original's style: difficulty presets over the cheats' numbers, gameplay (text speed, message auto-run, battle animation speed, random encounters), video (fullscreen, scale, look, 16:9 or 4:3, scanlines, CRT, V-sync, Keep or Revert), audio (volume, mono or stereo), keyboard and gamepad remapping, accessibility (larger text, high contrast, a colour-blind-safe cursor); saved with the game or kept for the PC. |
 
 ### M8: HD polish
 
-- HD art for the **title's two Mode 7 planes** and the **Goku close-up**.
-- HD **credits frame and separators** and the **dialogue strip** that is still pixels.
-- The **Cheats "Next card" preview** drawn from the HD card art.
-- **Field sprites** from about 93 % to full coverage (remaining NPCs, objects and effects).
+- **Field sprites** to full coverage (the last effects of the field).
+- An optional **money from battles** switch (the original pays no zeni for a battle).
 - **Palette-exact recolouring** of every layer in every colour variant, checked on all replays.
 - A **faster fast-forward** (x8 at full speed).
 - Frieza's first form with cheats (group `$53`).
@@ -417,7 +415,7 @@ A new story chapter after the Frieza saga, faithful to the anime, English only:
 
 ### M13: Platforms and controls
 
-- **Controller remapping** and profiles (with M7).
+- **Controller profiles** (the remapping came with M7).
 - **Linux and macOS** builds, and the **Steam Deck** (controller layout, handheld resolution).
 - Packaged releases for each platform.
 
@@ -441,8 +439,8 @@ own pictures larger, with the HD text, 16:9, new menus and cheats.
 **Why do I need to give it my ROM?** Because the game is not ours to share. The game keeps a normalised copy in your
 user folder and builds everything else from it.
 
-**Does it change my saves?** The in-game saves are the cartridge's own three slots. In Remastered the bag and the
-cheats are kept in small files beside them (`ssd.bag`, `ssd.cheats`), and a save that Classic plays afterwards rebuilds
+cheats and the options saved with the game are kept in small files beside them (`ssd.bag`, `ssd.cheats`, `ssd.options`; the
+settings of this PC are in `ssd.settings`), and a save that Classic plays afterwards rebuilds
 the bag from the game's list.
 
 **Will there be a Linux, macOS or Steam Deck version?** The dependencies (SDL3, wgpu) are portable but only Windows

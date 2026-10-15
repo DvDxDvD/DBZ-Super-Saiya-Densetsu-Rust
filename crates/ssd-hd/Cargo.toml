@@ -16,6 +16,7 @@ png = { workspace = true }          # decoding the pack's art
 image-webp = { workspace = true }   # decoding the pack's art when it is WebP
 sha1_smol = { workspace = true }    # the keys of the battle poses
 thiserror = { workspace = true }
+log = { workspace = true }          # a warning when the card art holds more tiles than the glyph space
 toml = { workspace = true }         # hdpack.toml
 
 [dev-dependencies]

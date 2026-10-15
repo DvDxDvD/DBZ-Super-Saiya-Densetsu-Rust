@@ -183,9 +183,18 @@ against both halves). The palette is the sixteen words at the bank-`$09` address
 colour 0 is transparent. Checked against the original's screen: for four objects, every colour in the portrait box lies in
 the palette of that object, and the grid reproduces Bulma's picture.
 
-**Corner faces (not mapped).** The party's corner faces of the field menu come from a table that is not found yet. The HD
-draws the picture of the object of the same name (Goku 28, Piccolo 29, Gohan 26, Vegeta 19); a character without such an
-object shows a placeholder. Piccolo's corner matches object 29's picture on the frame.
+**Corner faces.** The field menu's corner portraits are drawn from the face table `face_portrait_pointers` (`02:A3B4`, three
+bytes per face index: the 24-bit address of the compressed set, word then bank). The decoder is the same as the objects'
+(`01:CA98`, `00:C559`), and the set's first picture (tiles 0 to 7 and 16 to 23) or its second (tiles 8 to 15 and 24 to 31)
+is drawn: the second for the indexes 09, 0A, 0C, 50 and 61 (measured by the tiles in video memory after the menu opens, with
+one character alone in the party). The face index is the second byte of the character's party record (`$0B01 + 32 × slot`,
+the slots of the nine party records): Goku 00, Piccolo 01, Gohan 09, Krillin 0A, Tien 0B, Yamcha 0C, Chiaotzu 0D,
+Vegeta 50, Dende 61. The face index of Nail, Tsumuri and Maima has not been seen in a party yet. The corners are drawn in
+the colour row 6 of the field menu, which holds the palette of object 28 (`09:D200`): an exact match of each face's pixels
+against the rendered frame of the Namek party (five corners) and of Goku's corner. Piccolo's corner is drawn in the colour
+row 7, object 29's palette (`09:D220`), as the frame of the starting party with Piccolo shows (one-unit rounding aside).
+The palette of Dende's, Vegeta's and the other faces that were not in a measured frame is row 6, not measured. The catalogue reads the table
+and the palette; `menu-test items` (`pictures`) checks the faces and names the three that are not known.
 
 **Help text.** `item_help_pointers` (bank `$07`) gives the text of each object: lines of tiles, each line ended by `$FF`, a
 page ended by an empty line. The help window shows the first page (at most three lines). The codes the catalogue cannot
@@ -348,8 +357,10 @@ replay is re-played with the same keeper; the final state (work RAM and the bag)
 ## Open
 
 - What `$25` = `$0F` counts (about 18 frames, then 1) and `$0D67`/`$0D60` precisely; screens 5, 11 to 16 and 18 to 29.
-- The table of the party's corner faces (see "Corner faces"), and the use of the second picture of each object (tiles 8 to 15
+- The face index of Nail, Tsumuri and Maima (see "Corner faces"); the use of the second picture of each object (tiles 8 to 15
   and 24 to 31).
+- The kanji mark of the price box of the objects with no price (tile `$2F`, drawn by `01:CACB`) and the run-time slots of the
+  help texts (`$FC`, `$43`, filled in by messages): the menu shows nothing and an ellipsis there.
 - The effects of ids 27 to 31 and the battle side of the Item screen (`$61` = 1, screens 17 and `$15`).
 - What the second kanji-like icon in the price box means for each object (a "no price" mark, seen on the Dragon Balls,
   Gohan and Korin).

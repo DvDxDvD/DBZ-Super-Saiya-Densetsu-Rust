@@ -29,6 +29,9 @@ pub struct GameView<'a> {
     pub pixel_aspect: f64,
     /// Whether the picture is drawn with linear filtering (see above).
     pub smooth: bool,
+    /// Where the original window lies in the picture (x, y, width, height in its pixels), when the picture is
+    /// wider than it: the 4:3 view shows only this part.
+    pub logical: Option<[u32; 4]>,
 }
 
 impl<'a> GameView<'a> {
@@ -41,6 +44,7 @@ impl<'a> GameView<'a> {
             height: frame.size.height,
             pixel_aspect: pixel_aspect(frame),
             smooth: false,
+            logical: None,
         }
     }
 
@@ -54,6 +58,12 @@ impl<'a> GameView<'a> {
             height: picture.height,
             pixel_aspect: pixel_aspect(frame),
             smooth: true,
+            logical: Some([
+                picture.logical.x,
+                picture.logical.y,
+                picture.logical.width,
+                picture.logical.height,
+            ]),
         }
     }
 }

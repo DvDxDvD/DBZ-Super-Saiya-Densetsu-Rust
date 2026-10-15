@@ -295,9 +295,15 @@ pub(crate) fn tile_words(rom: &[u8], code: u16) -> Option<[u16; 8]> {
     rom.get(at..at + 16).map(words_of)
 }
 
+/// The eight words of tile `code` of a decoded tile set (the title set of [`title_tiles`]).
+pub(crate) fn words_in(set: &[u8], code: u16) -> Option<[u16; 8]> {
+    let at = usize::from(code) * 16;
+    set.get(at..at + 16).map(words_of)
+}
+
 /// The words of a tile with colour 1 clear: where a row's plane 0 is set and its plane 1 is not, the
 /// pixel reads colour 0. That is the form the game's VRAM holds the title set's white letters in.
-fn clear_colour_one(words: [u16; 8]) -> [u16; 8] {
+pub(crate) fn clear_colour_one(words: [u16; 8]) -> [u16; 8] {
     words.map(|word| {
         let (plane0, plane1) = (word & 0xFF, word >> 8);
         (plane0 & plane1) | plane1 << 8
@@ -306,7 +312,7 @@ fn clear_colour_one(words: [u16; 8]) -> [u16; 8] {
 
 /// The tiles of the title set: the stream at `00:DF39` decoded from the ROM, in the SNES layout
 /// (`None` when the image has no such stream).
-fn title_tiles(rom: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn title_tiles(rom: &[u8]) -> Option<Vec<u8>> {
     let offset = RomView::new(rom).ok()?.offset(TITLE_STREAM)?;
     let mut stream = graphics::lz_decode(rom, offset)?;
     graphics::regroup(&mut stream.data);
@@ -413,7 +419,11 @@ impl Font {
         match CardArt::load(dir) {
             Ok(Some(cards)) => font.with_cards(rom, Arc::new(cards)),
             Ok(None) => Ok(font),
-            Err(error) => Err(FontError::Cards(error)),
+            // An unreadable card art costs the cards their art, never the text its font
+            Err(error) => {
+                log::warn!("the HD card art is not used: {error}");
+                Ok(font)
+            }
         }
     }
 
@@ -563,11 +573,6 @@ impl Font {
         }
         let height = rgba.len() / 4 / width;
         let base_height = base.len() / base_width;
-        if let Some(cards) = &self.cards {
-            for cell in cells.iter().filter(|cell| cell.glyph >= CARD_BASE) {
-                cards.draw(rgba, width, scale, cell);
-            }
-        }
         // The pixels the cells show take their background colour (a card tile keeps what the look
         // drew: its art covers it); a clear glyph's take the picture beside them
         for cell in cells.iter().filter(|cell| cell.glyph < CARD_BASE) {
@@ -585,6 +590,12 @@ impl Font {
                         rgba[at..at + 3].copy_from_slice(&colour);
                     }
                 }
+            }
+        }
+        // The art of the tiles over what they stand on
+        if let Some(cards) = &self.cards {
+            for cell in cells.iter().filter(|cell| cell.glyph >= CARD_BASE) {
+                cards.draw(rgba, width, scale, cell);
             }
         }
         // The glyphs over them: inside the cell where its pixels show, outside it where the 1x
@@ -1207,6 +1218,34 @@ mod tests {
         // The credits hold the same tile as the stream has it, colour 1 drawn: both forms bind
         let held = font.glyph_at(&top_vram(white), 0x20).expect("the held form of the A");
         assert_eq!((held.glyph, held.clear), (hit.glyph, false));
+    }
+
+    #[test]
+    fn a_title_tile_of_the_cards_art_is_bound_in_both_forms_of_the_title_set() {
+        // A separator's tile: colours 2 and 3 with colour 1 in between
+        let tile = [0x0F3C_u16; 8];
+        let with_title = title_rom(&[(0xCB, tile)]);
+        let cards = Arc::new(CardArt::flat_title(&[0xCB]));
+        let font = Font::new(&with_title, SHARE_TECH_MONO)
+            .unwrap()
+            .with_cards(&with_title, cards)
+            .unwrap();
+        let held = font.glyph_at(&top_vram(tile), 0x20).expect("the tile as the stream has it");
+        assert_eq!(held.glyph, CARD_BASE);
+        let clear =
+            font.glyph_at(&top_vram(clear_colour_one(tile)), 0x20).expect("with colour 1 clear");
+        assert_eq!(clear.glyph, CARD_BASE);
+        // It is a tile of art, not a letter, and the UI set's tile of the same number is another tile
+        assert_eq!((held.bold, held.clear), (false, false));
+        let other = [0x1234_u16; 8];
+        assert!(font.glyph_at(&top_vram(other), 0x20).is_none());
+        // An image with no title stream skips it
+        let short = rom();
+        let font = Font::new(&short, SHARE_TECH_MONO)
+            .unwrap()
+            .with_cards(&short, Arc::new(CardArt::flat_title(&[0xCB])))
+            .unwrap();
+        assert!(font.glyph_at(&top_vram(tile), 0x20).is_none());
     }
 
     #[test]

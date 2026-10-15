@@ -20,7 +20,7 @@
 
 use crate::data as d;
 use ssd_menus::cheats::{
-    Cheats, ENDLESS, GENERATOR, GENERATOR_SEED, MARKER, MARKER_BYTES, MAX_ZENI, Multiplier,
+    Cheats, ENDLESS, GENERATOR, GENERATOR_SEED, MARKER, MARKER_BYTES, MAX_ZENI, MONEY, Multiplier,
     RANDOM_OFF, RANDOM_ONLY, SUSPENDED, Setting, Z_VALUE, ZCARDS, ZCARDS_FIGHTER, ZENI, ZTarget,
 };
 use ssd_oracle::{Ctx, HookAction, HookEntry, HookMode, HookTable, HostEvent, ReturnKind};
@@ -141,6 +141,10 @@ const FIGHTER_ENTRY_B801: u32 = 0x05_B801;
 const FIGHTER_ENTRY_B7FC: u32 = 0x05_B7FC;
 const ROLL_ENTRY: u32 = 0x02_D289;
 const ITEM_ENTRY: u32 = 0x01_C639;
+/// The story event that gives zeni (`01:D7F9`, a target of the event table at `01:D456`): it adds the word `.work/edit3.plD53` to the zeni.
+const MONEY_ENTRY: u32 = 0x01_D7F9;
+/// The amount the money event adds (`.work/edit3.plD53`, a word); set by the script that makes the event, read only by the event.
+const MONEY_AMOUNT: u32 = 0x7E_0D53;
 
 /// The hook entries of the cheats, in Rust mode. They replace any hook at the same address (the recompiled
 /// routine, which is the original's code) and are installed on top of the table [`install`] is given.
@@ -172,6 +176,8 @@ pub fn hook_entries() -> Vec<HookEntry> {
         entry("cheat_fighter_b7fc", FIGHTER_ENTRY_B7FC, fighter_b7fc_wrapper, ReturnKind::Rtl),
         entry("cheat_roll", ROLL_ENTRY, roll_wrapper, ReturnKind::Rtl),
         entry("cheat_item", ITEM_ENTRY, item_wrapper, ReturnKind::Rtl),
+        // A jump target: nothing returns from it, the wrapper always ends by resuming the original.
+        entry("cheat_money", MONEY_ENTRY, money_wrapper, ReturnKind::Rtl),
     ]
 }
 
@@ -206,6 +212,12 @@ pub fn block_events(cheats: &Cheats) -> Vec<HostEvent> {
     vec![HostEvent::Wram { address: BLOCK, bytes: cheats.to_block().to_vec() }]
 }
 
+/// The host event that writes the money multiplier of `cheats` (its pair lies after the marker, outside the settings).
+#[must_use]
+pub fn money_event(cheats: &Cheats) -> HostEvent {
+    HostEvent::Wram { address: BLOCK + MONEY as u32, bytes: cheats.money_bytes().to_vec() }
+}
+
 /// The host event that writes the settings of `cheats` (the first bytes of the block: the multipliers, the
 /// switches and the generator, reseeded; the runtime bytes stay as the wrappers left them).
 #[must_use]
@@ -217,7 +229,7 @@ pub fn settings_event(cheats: &Cheats) -> HostEvent {
 /// Z corners of the hand ([`hand_events`]).
 #[must_use]
 pub fn settings_events(cheats: &Cheats, wram: &[u8]) -> Vec<HostEvent> {
-    let mut events = vec![settings_event(cheats)];
+    let mut events = vec![settings_event(cheats), money_event(cheats)];
     events.extend(hand_events(cheats, wram));
     events
 }
@@ -389,6 +401,29 @@ fn exp_wrapper(ctx: &mut Ctx<'_>) {
     let total = before.saturating_add(multiplier.scale(award, MAX24));
     write24(ctx, BATTLE_EXP, total.min(MAX24));
     ctx.set_cost(0);
+}
+
+/// `01:D7F9`, the story event that gives zeni: it adds `$0D53` to the zeni (capped at 999). The amount is scaled by the money
+/// multiplier of the block before the original runs, and the original goes on inline (a jump target, not a call: nothing
+/// returns). A multiplier of x1 declines and changes nothing. A battle itself pays no zeni (`battle.md`), so this is the
+/// only place the game hands money out besides selling.
+fn money_wrapper(ctx: &mut Ctx<'_>) {
+    ctx.mark_gated();
+    let multiplier = if live(ctx) {
+        let (num, den) = (ctx.read8(BLOCK + MONEY as u32), ctx.read8(BLOCK + MONEY as u32 + 1));
+        if num == 0 || den == 0 { Multiplier::new(1, 1) } else { Multiplier::new(num, den) }
+    } else {
+        Multiplier::new(1, 1)
+    };
+    if !is_on(multiplier) {
+        ctx.resume_at(MONEY_ENTRY);
+        return;
+    }
+    let amount = u32::from(ctx.read8(MONEY_AMOUNT)) | u32::from(ctx.read8(MONEY_AMOUNT + 1)) << 8;
+    let scaled = multiplier.scale(amount, u32::from(MAX_ZENI)) as u16;
+    ctx.write8(MONEY_AMOUNT, (scaled & 0xFF) as u8);
+    ctx.write8(MONEY_AMOUNT + 1, (scaled >> 8) as u8);
+    ctx.resume_at(MONEY_ENTRY);
 }
 
 /// `01:F692`, the enemy group of a battle is set up (`rtl`). A group of a scripted fight turns the

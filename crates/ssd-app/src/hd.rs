@@ -9,7 +9,7 @@
 use crate::paths;
 use crate::theme;
 use anyhow::Context;
-use ssd_catalogue::{Catalogue, Portrait, RomView, object_portrait};
+use ssd_catalogue::{Catalogue, Portrait, RomView, face_portrait, object_portrait};
 use ssd_game::Ruleset;
 use ssd_game::cheats::BLOCK;
 use ssd_game::data as d;
@@ -20,7 +20,7 @@ use ssd_menus::bag::Sidecar;
 use ssd_menus::cheats::{CheatSidecar, MARKER, MARKER_BYTES, SUSPENDED};
 use ssd_menus::layout::{self, palette};
 use ssd_menus::screens::SlotList;
-use ssd_menus::{Color, DrawList, Key, Op, Rect};
+use ssd_menus::{Color, DrawList, Key, Op, Picture, Rect};
 use ssd_oracle::{Frame, FrameLog, Joypad};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -117,11 +117,23 @@ impl Hd {
             Driver::with_bag(ssd_catalogue::menu_labels(&catalogue), ruleset.bag(), sidecar);
         let driver =
             if ruleset.cheats() { driver.with_cheats(read_cheats_sidecar()?) } else { driver };
+        let driver =
+            driver.with_options(crate::options::read_slots()?, crate::options::read_settings()?);
         Ok(Self {
             driver,
             art: Art {
                 rom: rom.to_vec(),
                 pack: crate::hd_art::pack(rom),
+                cards: crate::hd_art::pack(rom).and_then(|pack| {
+                    match ssd_hd::CardArt::load(&pack.dir) {
+                        Ok(cards) => cards,
+                        Err(error) => {
+                            log::warn!("the HD card art: {error}");
+                            None
+                        }
+                    }
+                }),
+                card_textures: HashMap::new(),
                 textures: HashMap::new(),
                 field: None,
                 backdrop: None,
@@ -164,6 +176,15 @@ impl Hd {
         write_beside(&cheats_sidecar_path(), &self.driver.cheat_sidecar().to_bytes())
     }
 
+    /// Writes the options of the save slots (after a save changed one).
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be written.
+    pub fn save_options_sidecar(&self) -> anyhow::Result<()> {
+        crate::options::write_slots(self.driver.option_slots())
+    }
+
     /// The cheats' notices, from the gate of the cheat block (see [`CheatNotice::note`]), once a frame.
     pub fn note_cheats(&mut self, wram: &[u8]) {
         self.notice.note(wram);
@@ -180,7 +201,8 @@ impl Hd {
         if let (Some(which), Some(sram)) = (slot_list(wram), sram) {
             list.append(ssd_menus::screens::slot_badges(which, self.driver.marked_slots(sram)));
         }
-        (!list.ops().is_empty()).then_some(list)
+        (!list.ops().is_empty())
+            .then(|| crate::options::access::restyle(&self.driver.options().pc, list))
     }
 
     /// The Item screen shows `tab` of the bag.
@@ -218,6 +240,17 @@ impl Hd {
     /// A navigation key of the HD on the menu of `wram` (see [`Driver::key`]).
     pub fn key(&mut self, key: Key, wram: &[u8]) {
         self.driver.key(key, wram);
+    }
+
+    /// Whether the Controls page waits for a key or button, and for which device (see [`Driver::listening`]).
+    #[must_use]
+    pub fn listening(&self) -> Option<ssd_menus::options::controls::Device> {
+        self.driver.listening()
+    }
+
+    /// A raw press for the key box that waits for one (see [`Driver::capture`]).
+    pub fn capture(&mut self, capture: ssd_menus::options::controls::Capture) {
+        self.driver.capture(capture);
     }
 
     /// The player's press on the field opens the menu (see [`Driver::open`]).
@@ -314,7 +347,11 @@ pub struct Art {
     rom: Vec<u8>,
     /// The HD pack whose art stands for the pictures of the objects, when there is one.
     pack: Option<std::sync::Arc<ssd_hd::pack::Pack>>,
-    textures: HashMap<u8, Option<egui::TextureHandle>>,
+    /// The art of the battle's cards, when the pack has it: the Cheats screen's preview is drawn from it.
+    cards: Option<ssd_hd::CardArt>,
+    /// The preview card as a texture, by its Z corners (attack, defence), made on first use.
+    card_textures: HashMap<(bool, bool), Option<egui::TextureHandle>>,
+    textures: HashMap<Picture, Option<egui::TextureHandle>>,
     field: Option<FieldImage>,
     /// The texture of the field at a generation, uploaded when it is first painted.
     backdrop: Option<(u64, egui::TextureHandle)>,
@@ -360,19 +397,48 @@ impl Art {
         self.backdrop.as_ref().map(|(_, texture)| texture.id())
     }
 
-    /// The texture of the picture of `object`, decoded on first use; `None` when the ROM has no
+    /// The texture of the preview card with the Z corners given and its size in pixels, drawn from the pack's
+    /// card art on first use; `None` when the pack has no card art (or lacks a tile of the card).
+    fn card(
+        &mut self,
+        ctx: &egui::Context,
+        attack_z: bool,
+        defence_z: bool,
+    ) -> Option<(egui::TextureId, egui::Vec2)> {
+        let cards = self.cards.as_ref()?;
+        let entry = self.card_textures.entry((attack_z, defence_z)).or_insert_with(|| {
+            let card = cards.preview(attack_z, defence_z)?;
+            let image =
+                egui::ColorImage::from_rgba_unmultiplied([card.width, card.height], &card.rgba);
+            Some(ctx.load_texture(
+                format!("preview card {attack_z} {defence_z}"),
+                image,
+                egui::TextureOptions::LINEAR,
+            ))
+        });
+        entry.as_ref().map(|texture| (texture.id(), texture.size_vec2()))
+    }
+
+    /// The texture of `picture` (an object's, or a corner face), decoded on first use; `None` when the ROM has no
     /// picture for it.
-    fn texture(&mut self, ctx: &egui::Context, object: u8) -> Option<egui::TextureId> {
+    fn texture(&mut self, ctx: &egui::Context, picture: Picture) -> Option<egui::TextureId> {
         let rom = &self.rom;
         let pack = self.pack.as_deref();
-        let entry = self.textures.entry(object).or_insert_with(|| {
-            let portrait =
-                RomView::new(rom).ok().and_then(|view| object_portrait(view, object).ok())?;
+        let entry = self.textures.entry(picture).or_insert_with(|| {
+            let view = RomView::new(rom).ok()?;
+            let (portrait, name) = match picture {
+                Picture::Object(object) => {
+                    (object_portrait(view, object).ok()?, format!("object {object}"))
+                }
+                Picture::Face(face) => {
+                    (face_portrait(view, face).ok()?, format!("face {face:02X}"))
+                }
+            };
             // The approved art of the picture itself (found by its characters), when the pack
             // has it: never another picture's art
             if let Some(image) = pack.and_then(|pack| hd_picture(pack, &portrait)) {
                 return Some(ctx.load_texture(
-                    format!("object {object} (HD)"),
+                    format!("{name} (HD)"),
                     image,
                     egui::TextureOptions::LINEAR,
                 ));
@@ -381,7 +447,7 @@ impl Art {
                 [ssd_catalogue::art::SIDE; 2],
                 &rgba(&portrait),
             );
-            Some(ctx.load_texture(format!("object {object}"), image, egui::TextureOptions::NEAREST))
+            Some(ctx.load_texture(name, image, egui::TextureOptions::NEAREST))
         });
         entry.as_ref().map(egui::TextureHandle::id)
     }
@@ -406,8 +472,12 @@ fn cheats_sidecar_path() -> PathBuf {
     paths::saves_dir().join(CHEATS_SIDECAR)
 }
 
-/// Writes `bytes` to `path`: beside the file and renamed over it, so a crash never leaves half a file.
-fn write_beside(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<()> {
+/// Writes `bytes` to `path`: beside the file and renamed over it, so a crash never leaves half a file. The writer
+/// of the player's sidecar and option files: a run that does not persist writes nothing (see [`paths::persists`]).
+pub(crate) fn write_beside(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<()> {
+    if !paths::persists() {
+        return Ok(());
+    }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
@@ -424,11 +494,7 @@ fn read_cheats_sidecar() -> anyhow::Result<CheatSidecar> {
     let path = cheats_sidecar_path();
     match std::fs::read(&path) {
         Ok(bytes) => Ok(CheatSidecar::from_bytes(&bytes).unwrap_or_else(|error| {
-            let aside = path.with_extension("cheats.bad");
-            log::warn!("{}: {error}; kept as {}", path.display(), aside.display());
-            if let Err(error) = std::fs::rename(&path, &aside) {
-                log::warn!("{}: {error}", aside.display());
-            }
+            keep_damaged(&path, &path.with_extension("cheats.bad"), &error);
             CheatSidecar::empty()
         })),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(CheatSidecar::empty()),
@@ -443,15 +509,24 @@ fn read_sidecar() -> anyhow::Result<Sidecar> {
     let path = sidecar_path();
     match std::fs::read(&path) {
         Ok(bytes) => Ok(Sidecar::from_bytes(&bytes).unwrap_or_else(|error| {
-            let aside = path.with_extension("bag.bad");
-            log::warn!("{}: {error}; kept as {}", path.display(), aside.display());
-            if let Err(error) = std::fs::rename(&path, &aside) {
-                log::warn!("{}: {error}", aside.display());
-            }
+            keep_damaged(&path, &path.with_extension("bag.bad"), &error);
             Sidecar::empty()
         })),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Sidecar::empty()),
         Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// A damaged sidecar, read as none: a run that persists keeps the file aside as `aside`; a run that does not persist
+/// leaves it as it is, since it writes nothing.
+fn keep_damaged(path: &std::path::Path, aside: &std::path::Path, error: impl std::fmt::Display) {
+    if !paths::persists() {
+        log::warn!("{}: {error}; read as none, the file is left as it is", path.display());
+        return;
+    }
+    log::warn!("{}: {error}; kept as {}", path.display(), aside.display());
+    if let Err(error) = std::fs::rename(path, aside) {
+        log::warn!("{}: {error}", aside.display());
     }
 }
 
@@ -482,7 +557,8 @@ pub fn snes_rgb(colour: u16) -> [u8; 3] {
 }
 
 /// The navigation keys of the HD that were pressed between two frames of the host's joypad: the
-/// d-pad, A to confirm, B to cancel and the shoulders to change the bag's tab (the keyboard and the
+/// d-pad, A to confirm, B to cancel, the shoulders to change the bag's tab or the options page (L goes back), Y and
+/// Select to reset an options page or all of them (the keyboard and the
 /// gamepad alike). A held button counts once, when it goes down.
 #[must_use]
 pub fn keys_pressed(previous: Joypad, now: Joypad) -> Vec<Key> {
@@ -493,7 +569,9 @@ pub fn keys_pressed(previous: Joypad, now: Joypad) -> Vec<Key> {
         (now.right && !previous.right, Key::Right),
         (now.a && !previous.a, Key::Confirm),
         (now.b && !previous.b, Key::Cancel),
-        (now.l && !previous.l, Key::Tab),
+        (now.l && !previous.l, Key::TabBack),
+        (now.y && !previous.y, Key::ResetPage),
+        (now.select && !previous.select, Key::ResetAll),
         (now.r && !previous.r, Key::Tab),
     ]
     .into_iter()
@@ -569,6 +647,21 @@ pub fn paint(ui: &egui::Ui, picture: egui::Rect, list: &DrawList, art: &mut Art)
                 painter.rect_stroke(fit.rect(*rect), 0.0, stroke, egui::StrokeKind::Inside);
             }
             Op::Window { rect } => window(&painter, &fit, *rect),
+            Op::WindowHc { rect } => window_contrast(&painter, &fit, *rect),
+            Op::Pointer { rect, left, fill, edge, ring } => {
+                let (tip, base) =
+                    if *left { (rect.x, rect.right()) } else { (rect.right(), rect.x) };
+                let points = [(base, rect.y), (tip, rect.middle_y()), (base, rect.bottom())]
+                    .map(|(x, y)| fit.point(x, y));
+                for (colour_of, width) in [(edge, POINTER_EDGE), (ring, POINTER_RING)] {
+                    let stroke = egui::Stroke::new(width * fit.scale, colour(*colour_of));
+                    painter.add(egui::Shape::convex_polygon(
+                        points.to_vec(),
+                        colour(*fill),
+                        stroke,
+                    ));
+                }
+            }
             Op::Line { from, to, width, color } => {
                 let stroke = egui::Stroke::new(width * fit.scale, colour(*color));
                 painter.line_segment([fit.point(from.0, from.1), fit.point(to.0, to.1)], stroke);
@@ -605,7 +698,26 @@ pub fn paint(ui: &egui::Ui, picture: egui::Rect, list: &DrawList, art: &mut Art)
                     stroke,
                 ));
             }
-            Op::Portrait { rect, object } => portrait(ui, &painter, &fit, art, *rect, *object),
+            Op::Portrait { rect, picture } => portrait(ui, &painter, &fit, art, *rect, *picture),
+            Op::Card { rect, attack_z, defence_z } => {
+                match art.card(ui.ctx(), *attack_z, *defence_z) {
+                    Some((id, size)) => {
+                        // The card's art keeps its proportions, centred in the rect
+                        let area = fit.rect(*rect);
+                        let scale = (area.width() / size.x).min(area.height() / size.y);
+                        let drawn = egui::Rect::from_center_size(area.center(), size * scale);
+                        let uv =
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                        painter.image(id, drawn, uv, egui::Color32::WHITE);
+                    }
+                    None => paint(
+                        ui,
+                        picture,
+                        &ssd_menus::screens::pixel_card(*rect, *attack_z, *defence_z),
+                        art,
+                    ),
+                }
+            }
             Op::Bar { rect, fraction, color } => {
                 painter.rect_filled(fit.rect(*rect), 0.0, colour(palette::WHITE));
                 let well = rect.grow(-layout::BAR_BORDER);
@@ -615,6 +727,19 @@ pub fn paint(ui: &egui::Ui, picture: egui::Rect, list: &DrawList, art: &mut Art)
             }
         }
     }
+}
+
+/// The stroke widths of a [`Op::Pointer`]: the wide outline and the narrower line on it.
+const POINTER_EDGE: f32 = 5.0;
+const POINTER_RING: f32 = 2.0;
+
+/// A menu window in high contrast: a white line outside a black frame, and white paper.
+fn window_contrast(painter: &egui::Painter, fit: &Fit, rect: Rect) {
+    let black = colour(palette::BLACK);
+    let white = colour(palette::WHITE);
+    painter.rect_filled(fit.rect(rect.grow(layout::LINE)), 0.0, white);
+    painter.rect_filled(fit.rect(rect), 0.0, black);
+    painter.rect_filled(fit.rect(rect.grow(-layout::FRAME)), 0.0, white);
 }
 
 /// A menu window: the dark-red line outside the orange frame, the frame, the dark-red line inside
@@ -651,43 +776,60 @@ fn portrait(
     fit: &Fit,
     art: &mut Art,
     rect: Rect,
-    object: Option<u8>,
+    picture: Option<Picture>,
 ) {
     painter.rect_filled(fit.rect(rect.grow(2.0)), 0.0, colour(palette::WHITE));
     painter.rect_filled(fit.rect(rect), 0.0, colour(palette::BLACK));
     let inner = rect.grow(-layout::PORTRAIT_FRAME);
-    let texture = object.and_then(|object| art.texture(ui.ctx(), object));
-    match texture {
-        Some(id) => {
-            let whole = (inner.w / layout::PICTURE).floor().max(1.0);
-            let side = layout::PICTURE * whole;
-            let picture = Rect::new(
-                inner.x + (inner.w - side) / 2.0,
-                inner.y + (inner.h - side) / 2.0,
-                side,
-                side,
-            );
-            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            painter.image(id, fit.rect(picture), uv, egui::Color32::WHITE);
-        }
-        None => {
-            painter.rect_filled(fit.rect(inner), 0.0, colour(palette::EMPTY_PORTRAIT));
-            let at = fit.point(inner.x + inner.w / 2.0, inner.y + inner.h / 2.0);
-            let font = theme::game(layout::SMALL_TEXT * fit.scale);
-            painter.text(
-                at,
-                egui::Align2::CENTER_CENTER,
-                "[art]",
-                font,
-                colour(palette::EMPTY_PORTRAIT_TEXT),
-            );
-        }
+    let texture = picture.and_then(|picture| art.texture(ui.ctx(), picture));
+    // Nothing to show (an empty list, or a face with no picture): the box stays empty, never a
+    // stand-in text
+    if let Some(id) = texture {
+        let whole = (inner.w / layout::PICTURE).floor().max(1.0);
+        let side = layout::PICTURE * whole;
+        let picture = Rect::new(
+            inner.x + (inner.w - side) / 2.0,
+            inner.y + (inner.h - side) / 2.0,
+            side,
+            side,
+        );
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        painter.image(id, fit.rect(picture), uv, egui::Color32::WHITE);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ssd_menus::Style;
+
+    #[test]
+    fn a_run_that_does_not_persist_writes_no_sidecar_and_leaves_a_damaged_one_as_it_is() {
+        let _guard = paths::ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: serialised by ENV_LOCK.
+        unsafe { std::env::set_var("SSD_DATA_DIR", dir.path()) };
+        let bag = sidecar_path();
+        paths::set_persistent(false);
+        write_beside(&bag, b"bags").unwrap();
+        assert!(!bag.exists() && !paths::saves_dir().exists(), "no sidecar, no saves folder");
+        // A damaged sidecar is read as none, and the file stays where it is.
+        std::fs::create_dir_all(paths::saves_dir()).unwrap();
+        std::fs::write(&bag, b"garbage").unwrap();
+        assert!(read_sidecar().is_ok());
+        assert_eq!(std::fs::read(&bag).unwrap(), b"garbage", "the damaged file is unchanged");
+        assert!(!bag.with_extension("bag.bad").exists());
+        // A windowed run writes the sidecar, and keeps a damaged one aside.
+        paths::set_persistent(true);
+        write_beside(&bag, b"bags").unwrap();
+        assert_eq!(std::fs::read(&bag).unwrap(), b"bags");
+        std::fs::write(&bag, b"garbage").unwrap();
+        read_sidecar().unwrap();
+        assert!(bag.with_extension("bag.bad").exists(), "the damaged file was moved aside");
+        assert!(!bag.exists());
+        paths::set_persistent(false);
+        unsafe { std::env::remove_var("SSD_DATA_DIR") };
+    }
 
     #[test]
     fn the_colours_widen_five_bits_to_eight_by_repeating_their_top_bits() {
@@ -743,10 +885,12 @@ mod tests {
                 | Op::Bar { rect, .. } => {
                     boxes.push(logical(*rect));
                 }
-                Op::Window { rect } => {
+                Op::Window { rect } | Op::WindowHc { rect } => {
                     boxes.push(logical(rect.grow(layout::CAP_OVERHANG.max(layout::LINE))));
                 }
                 Op::Portrait { rect, .. } => boxes.push(logical(rect.grow(2.0))),
+                Op::Card { rect, .. } => boxes.push(logical(*rect)),
+                Op::Pointer { rect, .. } => boxes.push(logical(rect.grow(POINTER_EDGE / 2.0))),
                 Op::Cursor { x, y } | Op::Arrow { x, y, .. } => {
                     boxes.push(logical(Rect::new(
                         *x,
@@ -796,6 +940,21 @@ mod tests {
     /// The screens of the menus in their worst cases: every command and row, the longest names, a
     /// party of nine (the most the records hold), a full bag of 24 stacks, and each sheet.
     fn every_screen() -> Vec<DrawList> {
+        let plain = plain_screens();
+        let styles = [
+            Style { large_text: true, ..Style::default() },
+            Style { contrast: true, safe_cursor: true, ..Style::default() },
+            Style { large_text: true, contrast: true, safe_cursor: true },
+        ];
+        let mut screens = plain.clone();
+        for style in styles {
+            screens.extend(plain.iter().map(|list| style.apply(list.clone())));
+        }
+        screens
+    }
+
+    /// The screens in the design as drawn: see [`every_screen`].
+    fn plain_screens() -> Vec<DrawList> {
         use ssd_menus::cheats::{Cheats, Row, Setting, ZMode, ZTarget};
         use ssd_menus::view::{
             BagView, Member, MenuView, Screen, Selected, Sheet, Slot, StackView, Tab,
@@ -881,13 +1040,9 @@ mod tests {
             droppable_here: true,
             sheet,
             choice: 1,
-            member: 8,
-            units: 99,
-            most: 99,
             notice,
         };
-        for sheet in [Sheet::Browse, Sheet::Choose, Sheet::Members, Sheet::Quantity, Sheet::Confirm]
-        {
+        for sheet in [Sheet::Browse, Sheet::Choose, Sheet::Confirm] {
             for page in 0..3 {
                 for cursor in [0, 7] {
                     let view = MenuView {
@@ -925,6 +1080,21 @@ mod tests {
             for cheats in [Cheats::neutral(), busy] {
                 let view = ssd_menus::view::CheatsView { cheats, row, names: names.clone() };
                 screens.push(ssd_menus::screens::cheats_screen(&view));
+            }
+        }
+        // The Options screen: each page with the cursor on each of its rows (the two questions lie over the page they ask about, which
+        // the text check cannot take).
+        for category in ssd_menus::options::Category::ALL {
+            for row in 0..category.rows().len().max(1) {
+                let view = ssd_menus::view::OptionsView {
+                    category,
+                    row,
+                    values: vec![1; category.rows().len()],
+                    confirm: None,
+                    video: None,
+                    controls: None,
+                };
+                screens.push(ssd_menus::screens::options_screen(&view));
             }
         }
         screens.push(ssd_menus::screens::notice("Cheats off for this fight"));
@@ -995,7 +1165,7 @@ mod tests {
                 .ops()
                 .iter()
                 .filter_map(|op| match op {
-                    Op::Window { rect } => Some(*rect),
+                    Op::Window { rect } | Op::WindowHc { rect } => Some(*rect),
                     _ => None,
                 })
                 .collect();
@@ -1102,5 +1272,15 @@ mod tests {
         let b = Joypad { b: true, ..Joypad::default() };
         assert_eq!(keys_pressed(none, b), [Key::Cancel]);
         assert_eq!(keys_pressed(none, Joypad { start: true, ..Joypad::default() }), []);
+        let l = Joypad { l: true, ..Joypad::default() };
+        let r = Joypad { r: true, ..Joypad::default() };
+        assert_eq!(
+            (keys_pressed(none, l), keys_pressed(none, r)),
+            (vec![Key::TabBack], vec![Key::Tab])
+        );
+        let y = Joypad { y: true, ..Joypad::default() };
+        let select = Joypad { select: true, ..Joypad::default() };
+        assert_eq!(keys_pressed(none, y), [Key::ResetPage]);
+        assert_eq!(keys_pressed(none, select), [Key::ResetAll]);
     }
 }

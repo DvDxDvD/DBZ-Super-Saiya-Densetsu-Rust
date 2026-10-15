@@ -11,7 +11,7 @@ mod objects;
 mod wide;
 
 pub use check::{ObjectCheck, TileCheck, TileDifference, check_objects, check_tiles};
-pub use map::{FieldMap, FieldState, Rom};
+pub use map::{FieldMap, FieldState, Rom, is_field_mode};
 pub use objects::{MapObject, Part, metasprite};
 pub use wide::{
     HudPlacement, MAX_WIDTH, NotField, Rect, Scene, WIDTH_16_9, WideError, WideFrame, WideHd,

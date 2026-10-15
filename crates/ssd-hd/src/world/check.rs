@@ -27,10 +27,13 @@ pub struct TileDifference {
 pub struct TileCheck {
     /// Distinct tiles with a pixel in the first 224 lines.
     pub tiles: u64,
-    /// Of those, the tiles whose word differs.
+    /// Of those, the tiles inside the map whose word differs.
     pub differing: u64,
     /// Of those, the tiles outside the map (the lookup gives 0 there).
     pub outside: u64,
+    /// Of the tiles outside the map, the ones whose word differs (the game fills the ring beyond
+    /// a map edge with whatever it holds: a scripted camera can show it).
+    pub outside_differing: u64,
     /// Tiles of a row the game never built, where the lookup is not 0 (the tiles of the first
     /// 224 lines only, not counted in `differing`).
     pub unbuilt: u64,
@@ -45,7 +48,12 @@ impl TileCheck {
     /// uses the field's mode for pictures of its own (a cutscene on BG2), where they are not.
     #[must_use]
     pub fn is_map(&self) -> bool {
-        self.differing * 4 <= self.tiles
+        let inside = self.tiles - self.outside;
+        if inside == 0 {
+            (self.differing + self.outside_differing) * 4 <= self.tiles
+        } else {
+            self.differing * 4 <= inside
+        }
     }
 }
 
@@ -63,6 +71,10 @@ pub fn check_tiles(rom: Rom<'_>, state: &FieldState, log: &FrameLog) -> TileChec
     // Per tile row of the first 224 lines: the tiles where the game and the lookup differ, and
     // how many of the row's tiles the game filled
     let mut rows: BTreeMap<i32, (Vec<TileDifference>, u32)> = BTreeMap::new();
+    // Whether the window ever reaches beyond the map: a scripted camera pans in from outside
+    // the map, and the game's ring then holds its own tiles over the whole picture (not only
+    // beyond the edge), so no tile is judged
+    let mut overhang = false;
     let mut work = Vec::new();
     if !log.vram_writes.is_empty() {
         work.extend_from_slice(&log.vram);
@@ -86,6 +98,10 @@ pub fn check_tiles(rom: Rom<'_>, state: &FieldState, log: &FrameLog) -> TileChec
         let vram = if log.vram_writes.is_empty() { &log.vram } else { &work };
         let (left, top) = window_origin(regs, state.camera);
         let world_y = top + i32::from(entry.scanline);
+        overhang |= entry.scanline <= DESIGNED_LINES
+            && (!state.map.contains(left, world_y)
+                || !state.map.contains(left + 255, world_y)
+                || top < 0);
         for tile_x in (left >> 3)..=((left + 255) >> 3) {
             if !seen.insert((tile_x, world_y >> 3)) {
                 continue;
@@ -111,9 +127,13 @@ pub fn check_tiles(rom: Rom<'_>, state: &FieldState, log: &FrameLog) -> TileChec
         if filled == 0 {
             check.unbuilt += differences.len() as u64;
         } else {
-            check.differing += differences.len() as u64;
+            let (outside, inside): (Vec<_>, Vec<_>) = differences
+                .iter()
+                .partition(|d| overhang || !state.map.contains(d.world.0, d.world.1));
+            check.outside_differing += outside.len() as u64;
+            check.differing += inside.len() as u64;
             if check.first.is_none() {
-                check.first = differences.first().copied();
+                check.first = inside.first().map(|&&d| d);
             }
         }
     }
@@ -155,4 +175,36 @@ pub fn check_objects(rom: Rom<'_>, state: &FieldState, log: &FrameLog) -> Object
     check.parts = parts.len() as u64;
     check.missing = missing;
     check
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TileCheck;
+
+    #[test]
+    fn tiles_beyond_the_map_edge_do_not_hide_the_map() {
+        // A scripted camera shows the ring beyond a one-block map's edge: half of the tiles
+        // are outside, and the game's words there are not the lookup's 0
+        let beyond_the_edge = TileCheck {
+            tiles: 928,
+            differing: 0,
+            outside: 528,
+            outside_differing: 441,
+            ..TileCheck::default()
+        };
+        assert!(beyond_the_edge.is_map());
+        // The same count of differences inside the map is not the map
+        let wrong_tiles =
+            TileCheck { differing: 441, outside_differing: 0, ..beyond_the_edge.clone() };
+        assert!(!wrong_tiles.is_map());
+        // A picture that is all outside the map has nothing to bind
+        let nothing_inside = TileCheck {
+            tiles: 100,
+            differing: 0,
+            outside: 100,
+            outside_differing: 100,
+            ..TileCheck::default()
+        };
+        assert!(!nothing_inside.is_map());
+    }
 }

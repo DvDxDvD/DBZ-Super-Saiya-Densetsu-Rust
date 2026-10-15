@@ -224,6 +224,9 @@ pub struct PoseStat {
     /// Where the pose's array sits (x of the screen, row of the capture) and its size.
     pub org: (i32, i32),
     pub size: (usize, usize),
+    /// What the original shows inside the pose's box, as a digest that does not depend on how the
+    /// sprites are ordered or grouped (see [`poses::region_digest`]); filled while the art measures.
+    pub look: u64,
 }
 
 /// A pose of a frame that has no art (a missing or a partial one) with its pixels, for the tour to
@@ -331,6 +334,18 @@ pub struct ArtStats {
     /// where nothing is in front), and the ones drawn from the art of a layer.
     pub bg_pixels: u64,
     pub bg_art: u64,
+    /// The map art of the field frame: the layer of the maps' index its map data names
+    /// (`available`, for a frame whose BG2 shows the field's map in whatever main loop state) and
+    /// whether the frame draws it (`bound`: the frame is classed as the field and its layer slot was
+    /// bound to that art).
+    pub field_map: FieldMapArt,
+}
+
+/// See [`ArtStats::field_map`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FieldMapArt {
+    pub available: Option<u32>,
+    pub bound: Option<u32>,
 }
 
 /// The Mode 7 plane a frame shows: the matrix of each line (by scanline; `None` for a line that
@@ -392,6 +407,10 @@ pub(crate) struct ArtState {
     pub(crate) height: usize,
     /// Whether the renderer records the pixels of the lines it draws.
     pub(crate) active: bool,
+    /// The main loop is known to be in a field state (the map, a menu or a scene over it, a town),
+    /// never a battle: a pose that has art made for a fighter is then still a figure of the field
+    /// (see [`ArtState::find_poses_in`]). `None` when the caller does not know.
+    pub(crate) field_frame: Option<bool>,
     pub(crate) stats: ArtStats,
 }
 
@@ -443,6 +462,7 @@ impl ArtState {
             width: 0,
             height: 0,
             active: false,
+            field_frame: None,
             stats: ArtStats::default(),
         }
     }
@@ -481,6 +501,7 @@ impl ArtState {
             self.field_tiles.clear();
             self.plane_arts.clear();
         }
+        self.field_frame = None;
         self.pixels.clear();
         self.pixels.resize(width * height, ArtPixel::NONE);
         self.width = width;
@@ -723,14 +744,25 @@ impl ArtState {
             return Vec::new();
         }
         let sprites = poses::sprites_in(log, view);
-        if sprites.is_empty() {
+        let overscan = poses::overscan_sprites_in(log, view);
+        if sprites.is_empty() && overscan.is_empty() {
             return Vec::new();
         }
         let mut found = poses::poses_in(log, &sprites, view);
         // The fighters the game draws with the other palettes (an enemy of a formation), when the
         // index has art for them, before the effects the same sprites make
         // (only in a frame of fighters: a field group of such a palette is the field's)
-        let battle = found.iter().any(|pose| pose.fighter && !self.candidates(pose).is_empty());
+        let battle = self.field_frame != Some(true)
+            && found.iter().any(|pose| pose.fighter && !self.candidates(pose).is_empty());
+        // Outside a battle, a field group with no art is read again (see `poses::refine_field`)
+        if !battle {
+            found = poses::refine_field(found, &sprites, log, view, &mut |pose| {
+                !self.candidates(pose).is_empty() || self.shaped(pose).is_some()
+            });
+            found = poses::join_band(found, &sprites, &overscan, log, view, &mut |pose| {
+                !self.candidates(pose).is_empty() || self.shaped(pose).is_some()
+            });
+        }
         let extra: Vec<Pose> = if battle {
             poses::fighter_candidates(&sprites)
                 .into_iter()
@@ -745,6 +777,25 @@ impl ArtState {
         }
         // The fighters drawn as BG tiles (the end slots of a formation of five), when the index has
         // art for their pixels
+        // The speed lines of a cutscene that reach under line 224 (a frame of 239 lines shows them):
+        // the pieces under it are poses of their own, found only by the exact pixels the index has
+        // art for (or all of them, when the tour looks for what has no art)
+        if !battle {
+            // (the pieces a figure of the field took with it are drawn by its art)
+            let joined =
+                found.iter().filter(|pose| pose.field).fold(0_u128, |all, pose| all | pose.sprites);
+            for mut pose in poses::overscan_effects(log, &overscan) {
+                if pose.sprites & !joined == 0 {
+                    continue;
+                }
+                // (a cluster that also holds pieces a figure took in the band is placed on the
+                // others: the figure's art draws those, the effect's the rest)
+                pose.excluded = pose.sprites & joined;
+                if self.tally_on || !self.candidates(&pose).is_empty() {
+                    found.push(pose);
+                }
+            }
+        }
         let bg_fighters = self.bg_fighters(log);
         if !bg_fighters.is_empty() {
             found.extend(bg_fighters);
@@ -786,6 +837,11 @@ impl ArtState {
                 art: None,
                 org: pose.org,
                 size: (pose.w, pose.h),
+                look: if self.measure {
+                    poses::region_digest(&sprites, pose.org, pose.w, pose.h)
+                } else {
+                    0
+                },
             });
         }
         let rows: Vec<[[u8; 3]; 16]> = found
@@ -804,7 +860,18 @@ impl ArtState {
         // First the poses whose pixels the index has a key for (the art made for the exact pose),
         // in the order of the frame; then the ground shadows; then the poses found by their shape
         // or as part of another pose (a fade-in, a cut by the screen's edge)
-        for (n, pose) in found.iter().enumerate() {
+        // Outside a battle the poses with the most pixels come first (a field group before an
+        // effect's cluster of as many): the whole figure takes its sprites before a piece of it
+        // does (a cloud's 42 x 13 corner that an effect's art fits must not take them from the
+        // group, nor the pieces a group is cut in from the whole figure that art was made for), so
+        // a figure is drawn from the same art in every frame whatever way its sprites are grouped
+        let mut order: Vec<usize> = (0..found.len()).collect();
+        if !battle {
+            let opaque = |n: usize| found[n].arr.iter().filter(|&&c| c != 0).count();
+            order.sort_by_key(|&n| (std::cmp::Reverse(opaque(n)), !found[n].field));
+        }
+        for n in order {
+            let pose = &found[n];
             if pose.shadow || !free(pose, taken) {
                 continue;
             }
@@ -1773,5 +1840,5 @@ pub(crate) fn object_priority(mode_01: bool, bits: u8) -> u8 {
     }
 }
 
-pub use draw::Drawn;
+pub use draw::{COLOUR_CLASSES, Drawn, colour_class};
 pub(crate) use draw::{Placed, draw_objects, draw_pictures, draw_shadows};

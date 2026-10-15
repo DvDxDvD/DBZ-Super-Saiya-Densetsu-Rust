@@ -34,6 +34,8 @@ mod recompile;
 mod repro;
 mod routines;
 mod save;
+mod scene_flicker;
+mod scenes;
 mod shared;
 mod shots;
 mod standalone_diff;
@@ -474,6 +476,25 @@ fn hd_pack_public(args: &[&str]) -> anyhow::Result<ExitCode> {
 
 /// What the HD art does in the replays, or its frames (see [`hd_art_run`]).
 fn hd_art(args: &[&str]) -> anyhow::Result<ExitCode> {
+    if let Some((&"scenes", &["merge", out, ref dirs @ ..])) = args.split_first() {
+        let dirs: Vec<std::path::PathBuf> = dirs.iter().map(std::path::PathBuf::from).collect();
+        let code =
+            scenes::merge(&repo_root()?, std::path::Path::new(out), &dirs, &mut std::io::stdout())?;
+        return Ok(ExitCode::from(code));
+    }
+    if let Some((&"scenes", rest)) = args.split_first() {
+        let args = match tour::parse_args(rest) {
+            Ok(args) => args,
+            Err(message) => {
+                eprintln!("hd-art scenes: {message}");
+                return Ok(usage());
+            }
+        };
+        let rom = cached_rom()?;
+        let dir = hd_pack_dir(&rom);
+        let code = scenes::run(&rom, &dir, &repo_root()?, &args, &mut std::io::stdout())?;
+        return Ok(ExitCode::from(code));
+    }
     let args = match hd_art_run::parse_args(args) {
         Ok(args) => args,
         Err(message) => {

@@ -3,6 +3,7 @@ mod audio;
 mod canvas;
 mod debugger;
 mod egui_input;
+mod filter;
 mod hd;
 mod hd_art;
 mod hd_install;
@@ -10,11 +11,13 @@ mod hook_setup;
 mod hotkeys;
 mod input;
 mod layout;
+mod options;
 mod panel;
 mod paths;
 mod replay_io;
 mod replays;
 mod rom_setup;
+mod saves;
 mod snapshot;
 mod tab_debugger;
 mod tab_memory;
@@ -32,6 +35,7 @@ use clap::{CommandFactory, Parser};
 use hook_setup::{HookSetup, HookSwitch, HooksArg};
 use ssd_game::Ruleset;
 use ssd_hd::{HdOptions, Look};
+use ssd_menus::options::Values;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -235,10 +239,24 @@ fn main() -> ExitCode {
         off: cli.no_hd_art,
         font_off: cli.no_hd_font,
     });
-    let enhanced = cli.hd_scale.map(|scale| HdOptions {
-        scale,
-        look: cli.enhanced_look.map_or_else(Look::default, Look::from),
-    });
+    // Only a windowed run writes the player's files (see `persists`): set before the first read.
+    paths::set_persistent(persists(&cli));
+    // A windowed Enhanced run takes the scale and the look of the options where no flag gives them; headless
+    // runs, snapshots and benchmarks ignore the saved file, so they do not depend on this PC's choices.
+    let saved_video =
+        cli.mode == ModeArg::Enhanced && cli.headless_frames.is_none() && cli.bench_app.is_none();
+    let saved =
+        if saved_video { options::read_settings().unwrap_or_default() } else { Values::new() };
+    let video_start =
+        options::video::start(&saved, cli.hd_scale, cli.enhanced_look.map(Look::from));
+    let enhanced = if saved_video {
+        Some(video_start.shown.hd())
+    } else {
+        cli.hd_scale.map(|scale| HdOptions {
+            scale,
+            look: cli.enhanced_look.map_or_else(Look::default, Look::from),
+        })
+    };
     if cli.hd_scale.is_some() && cli.headless_frames.is_some() && cli.ui_snapshot.is_none() {
         Cli::command()
             .error(ErrorKind::ArgumentConflict, "--hd-scale needs a window or --ui-snapshot")
@@ -294,6 +312,7 @@ fn main() -> ExitCode {
                 cli.mode.ruleset(),
                 session,
                 enhanced,
+                video_start,
             )
         }
     };
@@ -301,6 +320,12 @@ fn main() -> ExitCode {
         Ok(stats) => ExitCode::from(finish(hooks.as_ref(), &stats)),
         Err(e) => error_exit(&e),
     }
+}
+
+/// Whether this run writes the player's files (see [`paths::persists`]): a windowed run does. A headless run (a UI
+/// snapshot is one), a benchmark and a replay keep their changes in memory for the run (README, "Data and files").
+fn persists(cli: &Cli) -> bool {
+    cli.headless_frames.is_none() && cli.replay.is_none() && cli.bench_app.is_none()
 }
 
 /// `--hd-scale`: a whole scale from 2 to [`ssd_hd::MAX_SCALE`].
@@ -415,5 +440,63 @@ mod tests {
         // Nothing is compared outside verify, whatever the counters say.
         assert_eq!(finish(setup(HooksArg::Rust).as_ref(), &stats(1)), 0);
         assert_eq!(finish(None, &stats(1)), 0);
+    }
+
+    /// The command lines that do not persist: a headless run, a UI snapshot, a replay and a benchmark.
+    const NOT_PERSISTING: [&[&str]; 4] = [
+        &["--headless-frames", "600"],
+        &["--headless-frames", "600", "--ui-snapshot", "panel.png"],
+        &["--replay", "battle.ssdreplay"],
+        &["--bench-app", "battle.ssdreplay"],
+    ];
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(std::iter::once("ssd-recompiled").chain(args.iter().copied())).unwrap()
+    }
+
+    #[test]
+    fn a_headless_configuration_writes_no_option_file_and_a_windowed_one_does() {
+        let _guard = paths::ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: serialised by ENV_LOCK.
+        unsafe { std::env::set_var("SSD_DATA_DIR", dir.path()) };
+        let file = dir.path().join("saves").join("ssd.settings");
+        let mut values = Values::new();
+        values.set("video.scale", 5);
+        for args in NOT_PERSISTING {
+            paths::set_persistent(persists(&parse(args)));
+            options::write_settings(&values).unwrap();
+            assert!(!file.exists(), "{args:?} wrote the PC file");
+        }
+        paths::set_persistent(persists(&parse(&[])));
+        options::write_settings(&values).unwrap();
+        assert!(file.exists(), "a windowed run writes the PC file");
+        paths::set_persistent(false);
+        unsafe { std::env::remove_var("SSD_DATA_DIR") };
+    }
+
+    #[test]
+    fn a_headless_configuration_writes_no_save_file_and_a_windowed_one_does() {
+        let _guard = paths::ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: serialised by ENV_LOCK.
+        unsafe { std::env::set_var("SSD_DATA_DIR", dir.path()) };
+        let saves = dir.path().join("saves");
+        // What a run writes when it ends: its battery save and its bag and cheat files.
+        let write_saves = |args: &[&str]| {
+            paths::set_persistent(persists(&parse(args)));
+            saves::battery_saves().unwrap().persist("sav", &[0x5A; 8192]).unwrap();
+            hd::write_beside(&saves.join("ssd.bag"), b"bags").unwrap();
+            hd::write_beside(&saves.join("ssd.cheats"), b"cheats").unwrap();
+        };
+        for args in NOT_PERSISTING {
+            write_saves(args);
+            assert!(!saves.exists(), "{args:?} created the saves folder");
+        }
+        write_saves(&[]);
+        assert!(saves.join("ssd.sav").exists(), "a windowed run writes the battery save");
+        assert!(saves.join("ssd.bag").exists() && saves.join("ssd.cheats").exists());
+        paths::set_persistent(false);
+        unsafe { std::env::remove_var("SSD_DATA_DIR") };
     }
 }

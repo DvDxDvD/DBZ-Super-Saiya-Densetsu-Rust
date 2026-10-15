@@ -484,6 +484,81 @@ fn run_frames(
     Ok(trace)
 }
 
+/// Plays `replay` for 600 frames with `plan`, then stages the story event that gives zeni (the amount `$0D53` is 40, the
+/// zeni 100) by running the game's event dispatcher on it (`01:D433`, to `01:D7F9`), and runs one frame. Returns the zeni and the amount after.
+fn money_event(
+    rom: &[u8],
+    replay: &Replay,
+    plan: &Plan,
+    symbols: Option<&Symbols>,
+) -> anyhow::Result<(u16, u16)> {
+    const AT: u64 = 600;
+    let mut machine = replay.power_on(rom.to_vec())?;
+    if plan.start.is_some() {
+        let mut table = match symbols {
+            Some(symbols) => ssd_game::hook_table(symbols, Some(HookMode::Rust))?,
+            None => HookTable::new(),
+        };
+        cheats::install(&mut table);
+        machine.set_hook_table(Some(table));
+    }
+    run_frames(&mut machine, plan, |frame| replay.input(frame), AT)?;
+    run_money_event(&mut machine, &mut |frame| replay.input(frame), symbols.is_some())
+}
+
+/// Stages the story event that gives zeni on `machine` (the amount `$0D53` is 40, the zeni 100) and runs it to its end.
+/// Returns the zeni and the amount after.
+fn run_money_event(
+    machine: &mut Machine,
+    input: &mut dyn FnMut(u64) -> ssd_oracle::Joypad,
+    at_hook: bool,
+) -> anyhow::Result<(u16, u16)> {
+    if at_hook {
+        // With routines in Rust the CPU may be inside one at a frame's end: it is taken right after the dispatch of a hooked
+        // routine instead, which is an opcode fetch whatever the routines it runs on.
+        let stops = ssd_oracle::Stops { after_dispatch: true, ..ssd_oracle::Stops::default() };
+        let stopped = machine.run(&stops, input, &mut NullAudio, 4)?;
+        anyhow::ensure!(
+            matches!(stopped, ssd_oracle::Stopped::Dispatched { .. }),
+            "no hooked routine ran in four frames: {stopped:?}"
+        );
+    } else {
+        // Between two instructions: the registers are not taken in the middle of one, of a DMA or of an interrupt's entry.
+        let stops = ssd_oracle::Stops { instructions: Some(1), ..ssd_oracle::Stops::default() };
+        let stopped = machine.run(&stops, input, &mut NullAudio, 4)?;
+        anyhow::ensure!(
+            matches!(stopped, ssd_oracle::Stopped::Instructions),
+            "no instruction boundary in four frames: {stopped:?}"
+        );
+    }
+    let stage = [
+        HostEvent::Wram { address: 0x7E_01B4, bytes: 100_u16.to_le_bytes().to_vec() },
+        HostEvent::Wram { address: 0x7E_0D53, bytes: 40_u16.to_le_bytes().to_vec() },
+    ];
+    apply_events(machine, &stage)?;
+    // The event is reached as the game reaches it: the dispatcher at `01:D433` reads the event number (20) from `$072E`
+    // and jumps through its table to `01:D7F9`.
+    machine.bus_write(0x7E_072E, 20);
+    let mut registers = machine.cpu_registers();
+    registers.pbr = 0x01;
+    registers.pc = 0xD433;
+    registers.p = ssd_oracle::StatusRegister::default();
+    machine.set_cpu_registers(registers);
+    // The event ends with a jump to `01:D574`; the run stops there, before anything else of the game runs (in the original code).
+    machine.set_breakpoint(0x01_D574);
+    let stops =
+        ssd_oracle::Stops { frame_end: true, breakpoint: true, ..ssd_oracle::Stops::default() };
+    let stopped = machine.run(&stops, input, &mut NullAudio, 1)?;
+    machine.clear_breakpoint(0x01_D574);
+    // With the recompiled routines the run may go on to the end of the frame without an arrival at the breakpoint; the
+    // credit is made by then all the same, and nothing else writes the zeni.
+    anyhow::ensure!(
+        matches!(stopped, ssd_oracle::Stopped::Breakpoint { .. } | ssd_oracle::Stopped::FrameEnd),
+        "the money event did not run: {stopped:?}"
+    );
+    Ok((read16(machine.wram(), ZENI), read16(machine.wram(), 0x0D53)))
+}
+
 /// FNV-1a of all of work RAM: what a recorded session must end on when it is played back.
 fn full_hash(wram: &[u8]) -> u64 {
     fnv(wram, 0xcbf2_9ce4_8422_2325_u64)
@@ -621,6 +696,20 @@ fn screen_scenarios(
         let _ = writeln!(out, "  screen-persist: the Save, Continue and the CHEATS badge");
         ok &= screen_persist(rom, &sram, slot, data_out, out)?;
     }
+    if wanted("screen-difficulty") {
+        let _ = writeln!(
+            out,
+            "  screen-difficulty: the Difficulty presets through the Options screen, the money event and the badge"
+        );
+        ok &= screen_difficulty(rom, &sram, slot, out)?;
+    }
+    if wanted("screen-gameplay") {
+        let _ = writeln!(
+            out,
+            "  screen-gameplay: the Gameplay page: the text speed, the auto-run, the animation speed and the slot's values"
+        );
+        ok &= screen_gameplay(rom, &sram, slot, out)?;
+    }
     if wanted("screen-resave") {
         let _ = writeln!(
             out,
@@ -639,6 +728,17 @@ fn field_harness(
     slot: usize,
     sidecar: CheatSidecar,
 ) -> anyhow::Result<Harness> {
+    field_harness_with(rom, sram, slot, sidecar, None)
+}
+
+/// [`field_harness`] with the options of the save slots (`ssd.options`) the driver is given.
+fn field_harness_with(
+    rom: &[u8],
+    sram: &[u8],
+    slot: usize,
+    sidecar: CheatSidecar,
+    options: Option<ssd_menus::options::SlotOptions>,
+) -> anyhow::Result<Harness> {
     let make = || -> anyhow::Result<Machine> {
         let mut saves = MemorySaveStore::default();
         saves.0.insert("sav".to_owned(), sram.to_vec());
@@ -655,7 +755,11 @@ fn field_harness(
     machine.load_state(&state)?;
     let catalogue = ssd_catalogue::Catalogue::from_rom(rom)?;
     let labels = ssd_catalogue::menu_labels(&catalogue);
-    let driver = Driver::with_bag(labels, Rules::default(), Sidecar::empty()).with_cheats(sidecar);
+    let mut driver =
+        Driver::with_bag(labels, Rules::default(), Sidecar::empty()).with_cheats(sidecar);
+    if let Some(options) = options {
+        driver = driver.with_options(options, ssd_menus::options::Values::new());
+    }
     let mut table = HookTable::new();
     cheats::install(&mut table);
     machine.set_hook_table(Some(table));
@@ -940,6 +1044,245 @@ fn screen_persist(
             dir.display()
         );
     }
+    Ok(checks.ok)
+}
+
+/// The zeni after the story's money event runs on the harness's machine (100 zeni, 40 given); the machine is put back as it
+/// was, so the run goes on.
+fn pay(h: &mut Harness) -> anyhow::Result<u16> {
+    let before = h.machine.save_state();
+    let (zeni, _) = run_money_event(&mut h.machine, &mut |_| ssd_oracle::Joypad::default(), false)?;
+    h.machine.load_state(&before)?;
+    Ok(zeni)
+}
+
+/// Opens the Options screen from the field: the Menu list's seventh row. Whether the screen is up afterwards.
+fn open_options(h: &mut Harness) -> anyhow::Result<bool> {
+    menu_test::menu_list(h)?;
+    for _ in 0..6 {
+        h.key(Key::Down)?;
+    }
+    h.key(Key::Confirm)?;
+    Ok(h.driver.nav().screen() == Screen::Options && h.driver.curtain() == Curtain::Up)
+}
+
+/// The money bytes of the block, as work RAM holds them.
+fn block_money(h: &Harness) -> [u8; 2] {
+    let at = BLOCK_AT + ssd_menus::cheats::MONEY;
+    [h.machine.wram()[at], h.machine.wram()[at + 1]]
+}
+
+/// The Difficulty page through the keys: Hard, Easy and Normal write the cheats and the block (the money pair among them),
+/// the story's money event pays x1/2, x2 and x1 on them, a value changed on the Cheats screen reads Custom, the save made on
+/// Easy carries the CHEATS badge and the one made on Normal does not, and Continue restores the money.
+fn screen_difficulty(
+    rom: &[u8],
+    sram: &[u8],
+    slot: usize,
+    out: &mut String,
+) -> anyhow::Result<bool> {
+    let mut checks = Checks { out, ok: true };
+    let mut h = field_harness(rom, sram, slot, CheatSidecar::empty())?;
+    checks.check(open_options(&mut h)?, "the Options screen opens from the Menu list".to_owned());
+    let preset = |h: &Harness| ssd_menus::options::difficulty::preset_of(h.driver.cheats());
+    checks.check(
+        preset(&h) == Some(1) && block_money(&h) == [1, 1],
+        "Continue: Normal, money x1 in the block".to_owned(),
+    );
+    // Hard: power x2, EXP x1, money x1/2. The event runs on a copy of the machine.
+    h.key(Key::Right)?;
+    let hard = *h.driver.cheats();
+    h.frame(ssd_oracle::Joypad::default())?;
+    checks.check(
+        preset(&h) == Some(2)
+            && hard.multiplier(Setting::Power) == Multiplier::new(2, 1)
+            && hard.multiplier(Setting::Exp) == Multiplier::new(1, 1)
+            && block_settings(&h) == hard.settings_bytes()
+            && block_money(&h) == [1, 2],
+        "Hard: enemy power x2, EXP x1, money x1/2 reach the block".to_owned(),
+    );
+    let zeni = pay(&mut h)?;
+    checks.check(
+        zeni == 120,
+        format!("Hard: the event adds 40 to 100 zeni and pays x1/2: {zeni} (120)"),
+    );
+    // Right again wraps to Easy: power x1/2, EXP x2, money x2.
+    h.key(Key::Right)?;
+    let easy = *h.driver.cheats();
+    h.frame(ssd_oracle::Joypad::default())?;
+    checks.check(
+        preset(&h) == Some(0)
+            && easy.multiplier(Setting::Power) == Multiplier::new(1, 2)
+            && easy.multiplier(Setting::Exp) == Multiplier::new(2, 1)
+            && block_settings(&h) == easy.settings_bytes()
+            && block_money(&h) == [2, 1],
+        "Easy: enemy power x1/2, EXP x2, money x2 reach the block".to_owned(),
+    );
+    let zeni = pay(&mut h)?;
+    checks.check(zeni == 180, format!("Easy: the event pays x2: {zeni} (180)"));
+    // A value changed on the Cheats screen: the preset reads Custom.
+    h.key(Key::Cancel)?;
+    h.key(Key::Cancel)?;
+    h.key(Key::Cancel)?;
+    checks.check(open_cheats(&mut h)?, "the Cheats screen opens".to_owned());
+    goto(&mut h, Row::Exp)?;
+    h.key(Key::Right)?;
+    checks.check(
+        preset(&h).is_none(),
+        "EXP changed on the Cheats screen: the preset reads Custom".to_owned(),
+    );
+    h.key(Key::Left)?;
+    checks.check(preset(&h) == Some(0), "and back: Easy again".to_owned());
+    h.key(Key::Cancel)?;
+    h.key(Key::Cancel)?;
+    h.key(Key::Cancel)?;
+    let mut saved = Report::default();
+    menu_test::menu_save(&mut h, &mut saved)?;
+    let written = h.machine.sram().context("the cartridge has its save")?.to_vec();
+    checks.check(
+        saved.passed() && h.driver.marked_slots(&written).iter().filter(|&&m| m).count() == 1,
+        "the save made on Easy has the CHEATS badge".to_owned(),
+    );
+    let checksum = slot_checksum(&written, 0);
+    let kept = h.driver.option_slots().entry_for(0, checksum).cloned();
+    checks.check(
+        kept.as_ref().and_then(|v| v.get("difficulty.money")) == Some(2),
+        "the slot file keeps the money step".to_owned(),
+    );
+    // Continue on that save: the money comes back with the cheats.
+    let mut again = field_harness_with(
+        rom,
+        &written,
+        0,
+        h.driver.cheat_sidecar().clone(),
+        Some(h.driver.option_slots().clone()),
+    )?;
+    again.frame(ssd_oracle::Joypad::default())?;
+    checks.check(
+        preset(&again) == Some(0) && block_money(&again) == [2, 1],
+        "Continue restores Easy: the cheats from ssd.cheats, the money from ssd.options".to_owned(),
+    );
+    // Normal is clean: the original's numbers, no badge.
+    let mut normal = field_harness(rom, sram, slot, CheatSidecar::empty())?;
+    let zeni = pay(&mut normal)?;
+    checks.check(zeni == 140, format!("Normal: the event pays x1: {zeni} (140)"));
+    let mut plain = Report::default();
+    menu_test::menu_save(&mut normal, &mut plain)?;
+    let plain_sram = normal.machine.sram().context("the cartridge has its save")?.to_vec();
+    checks.check(
+        plain.passed() && normal.driver.marked_slots(&plain_sram) == [false; 3],
+        "the save made on Normal has no badge".to_owned(),
+    );
+    Ok(checks.ok)
+}
+
+/// The Gameplay page through the keys: the text speed row writes `$01D0` (the row counts slowest first, the byte fastest
+/// first), the auto-run switch, its wait and the animation speed are kept for the slot (Save writes them to `ssd.options`,
+/// Continue restores them), a finished message that waits for A gets the host's A after the wait, and the animation speed
+/// only speeds up the battle's attack animation.
+fn screen_gameplay(rom: &[u8], sram: &[u8], slot: usize, out: &mut String) -> anyhow::Result<bool> {
+    let mut checks = Checks { out, ok: true };
+    let mut h = field_harness(rom, sram, slot, CheatSidecar::empty())?;
+    checks.check(open_options(&mut h)?, "the Options screen opens from the Menu list".to_owned());
+    h.key(Key::Tab)?;
+    checks.check(
+        h.driver.nav().options_category() == ssd_menus::options::Category::Gameplay,
+        "R changes to the Gameplay page".to_owned(),
+    );
+    // Text speed: Right is one step faster, so the byte goes down by one (wrapping from the fastest to the slowest).
+    let before = h.byte(d::TEXT_SPEED);
+    h.key(Key::Right)?;
+    let expected = if before == 0 { 4 } else { before - 1 };
+    checks.check(
+        h.byte(d::TEXT_SPEED) == expected,
+        format!(
+            "Text speed Right: the byte {before} becomes {} ({expected})",
+            h.byte(d::TEXT_SPEED)
+        ),
+    );
+    h.key(Key::Left)?;
+    checks.check(h.byte(d::TEXT_SPEED) == before, "and Left puts it back".to_owned());
+    // Auto-run On, wait Short, animation x2.
+    h.key(Key::Down)?;
+    h.key(Key::Right)?;
+    h.key(Key::Down)?;
+    h.key(Key::Left)?;
+    h.key(Key::Down)?;
+    h.key(Key::Right)?;
+    let values = h.driver.options().game.clone();
+    checks.check(
+        values.get("gameplay.auto_run") == Some(1)
+            && values.get("gameplay.auto_wait") == Some(0)
+            && values.get("gameplay.anim_speed") == Some(1),
+        "Auto-run On, wait Short and animation x2 are in the slot's values".to_owned(),
+    );
+    h.key(Key::Cancel)?;
+    h.key(Key::Cancel)?;
+    h.key(Key::Cancel)?;
+    // A finished message waits for A (the work RAM patched for the driver alone: the machine is not run).
+    let mut wram = h.machine.wram().to_vec();
+    wram[0x071B] = 0x83;
+    let mut pressed_at = None;
+    for frame in 0..200 {
+        if h.driver.frame(&wram, None, ssd_oracle::Joypad::default()).pad.a {
+            pressed_at = Some(frame);
+            break;
+        }
+    }
+    checks.check(
+        pressed_at == Some(44),
+        format!("a message that waits for A gets the host's A after the Short wait: frame {pressed_at:?} (44)"),
+    );
+    wram[0x071B] = 0x96;
+    checks.check(
+        !h.driver.frame(&wram, None, ssd_oracle::Joypad::default()).pad.a,
+        "a timed message gets none".to_owned(),
+    );
+    // The animation speed: only the attack animation is sped up.
+    wram[0x071B] = 0;
+    wram[0x0364] = 0xFF;
+    wram[0x24] = 4;
+    wram[0xAB] = 4;
+    checks.check(
+        h.driver.animation_factor(&wram) == 2,
+        "x2 in the battle's attack animation".to_owned(),
+    );
+    wram[0xAB] = 3;
+    checks.check(h.driver.animation_factor(&wram) == 1, "and 1 in the other states".to_owned());
+    // Save writes the three keys to the slot's entry; Continue restores them.
+    let mut saved = Report::default();
+    menu_test::menu_save(&mut h, &mut saved)?;
+    let written = h.machine.sram().context("the cartridge has its save")?.to_vec();
+    let checksum = slot_checksum(&written, 0);
+    let kept = h.driver.option_slots().entry_for(0, checksum).cloned();
+    checks.check(
+        saved.passed()
+            && kept.as_ref().is_some_and(|v| {
+                v.get("gameplay.auto_run") == Some(1)
+                    && v.get("gameplay.auto_wait") == Some(0)
+                    && v.get("gameplay.anim_speed") == Some(1)
+            }),
+        "the Save keeps the three values in the slot's entry".to_owned(),
+    );
+    let again = field_harness_with(
+        rom,
+        &written,
+        0,
+        h.driver.cheat_sidecar().clone(),
+        Some(h.driver.option_slots().clone()),
+    )?;
+    let restored = again.driver.options().game.clone();
+    checks.check(
+        restored.get("gameplay.auto_run") == Some(1)
+            && restored.get("gameplay.anim_speed") == Some(1),
+        "Continue restores them".to_owned(),
+    );
+    let mut other = field_harness(rom, sram, slot, CheatSidecar::empty())?;
+    other.frame(ssd_oracle::Joypad::default())?;
+    checks.check(
+        other.driver.options().game.get("gameplay.auto_run").is_none(),
+        "a slot without an entry starts with the defaults (Off, Normal)".to_owned(),
+    );
     Ok(checks.ok)
 }
 
@@ -1514,6 +1857,55 @@ fn scenarios(
             trace.snaps.iter().skip(5001).all(|snap| snap.zeni == 999),
             "and it stays 999 to frame 7000".to_owned(),
         );
+    }
+    if wanted("money") {
+        checks.note(
+            "money: the zeni a story event gives, scaled by the money multiplier (a battle pays none)".to_owned(),
+        );
+        let symbols = Symbols::load(SYMBOLS).map_err(anyhow::Error::msg)?;
+        // The shop replay holds one such event (a gift of 40 zeni): the zeni it adds, in Classic and at each money step, with
+        // the cheat wrapper on the game's own code and on the routines in Rust (the recompiled ones in a build with the
+        // `recomp` feature).
+        let shop = read_replay(rom, &dir.join("shop.ssdreplay"))?;
+        let frames = 7000.min(shop.frames());
+        let classic = play_plan(rom, &shop, &Plan::default(), None, frames)?;
+        let rise =
+            (6000..frames as usize).find(|&f| classic.snaps[f].zeni > classic.snaps[f - 1].zeni);
+        let Some(rise) = rise else {
+            checks.check(false, "the shop replay has no zeni gain after frame 6000".to_owned());
+            return Ok(checks.ok);
+        };
+        let gain = |trace: &Trace| {
+            i32::from(trace.snaps[rise + 2].zeni) - i32::from(trace.snaps[rise - 1].zeni)
+        };
+        checks.check(
+            gain(&classic) == 40,
+            format!("Classic: the event adds 40 at frame {rise}: {}", gain(&classic)),
+        );
+        for (label, step, want) in [("x1", 1_usize, 40_i32), ("x2", 2, 80), ("x1/2", 0, 20)] {
+            let mut cheats = Cheats::neutral();
+            cheats.set_money_index(step);
+            let plan = Plan { start: Some(cheats), ..Plan::default() };
+            for (how, table) in [("original code", None), ("routines in Rust", Some(&symbols))] {
+                let trace = play_plan(rom, &shop, &plan, table, frames)?;
+                checks.check(
+                    gain(&trace) == want,
+                    format!("{label}, {how}: the event adds {want}: {}", gain(&trace)),
+                );
+            }
+        }
+        // The same event staged on the battle replay's machine (the original code): 40 added to 100 zeni.
+        let replay = read_replay(rom, &dir.join(battle))?;
+        for (label, step, want) in [("x1", 1_usize, 140_u16), ("x2", 2, 180), ("x1/2", 0, 120)] {
+            let mut cheats = Cheats::neutral();
+            cheats.set_money_index(step);
+            let plan = Plan { start: Some(cheats), ..Plan::default() };
+            let (zeni, amount) = money_event(rom, &replay, &plan, None)?;
+            checks.check(
+                zeni == want,
+                format!("{label}, staged: 40 added to 100 zeni gives {want}: {zeni} (the amount reads {amount})"),
+            );
+        }
     }
     if wanted("random-off") {
         checks.note(

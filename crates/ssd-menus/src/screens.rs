@@ -5,12 +5,15 @@
 use crate::cheats::Row;
 use crate::draw::{Align, Color, DrawList, Op, Rect};
 use crate::layout::{
-    BAR_HEIGHT, COMMAND_ROW, CORNER_PORTRAIT, CURSOR_HEIGHT, CURSOR_WIDTH, FRAME, HEIGHT,
+    ADVANCE, BAR_HEIGHT, COMMAND_ROW, CORNER_PORTRAIT, CURSOR_HEIGHT, CURSOR_WIDTH, FRAME, HEIGHT,
     HELP_LINE, ITEM_PORTRAIT, ITEM_ROW, LARGE_TEXT, LINE, MARGIN, PADDING, PORTRAIT_FRAME,
     SMALL_TEXT, WIDTH, fit, palette, text_width,
 };
 use crate::nav::{Entry, MENU_ROWS, command_rows};
-use crate::view::{BagView, CheatsView, Member, MenuView, Screen, Selected, Sheet, Tab};
+use crate::options::{Category, Kind};
+use crate::view::{
+    BagView, CheatsView, MenuView, OptionsView, Picture, Screen, Selected, Sheet, Tab, VideoAsk,
+};
 
 /// The items shown on one page of the item list.
 pub const PAGE_SIZE: usize = 8;
@@ -38,7 +41,7 @@ pub fn scene(view: &MenuView) -> DrawList {
         Screen::Command => command(view),
         Screen::Menu => menu_list(view),
         Screen::Items => items(view),
-        Screen::Cheats => DrawList::new(),
+        Screen::Cheats | Screen::Options => DrawList::new(),
     }
 }
 
@@ -79,7 +82,7 @@ pub fn items(view: &MenuView) -> DrawList {
             bag_window(&mut list, view, bag);
             zeni_window(&mut list, view.zeni);
             detail(&mut list, view.selected.as_ref());
-            if let Some(sheet) = sheet_window(bag, &view.party) {
+            if let Some(sheet) = sheet_window(bag) {
                 sheet_draw(&mut list, &sheet);
             }
         }
@@ -101,7 +104,7 @@ fn backdrop(list: &mut DrawList) {
 fn party(list: &mut DrawList, view: &MenuView) {
     for (member, &x) in view.party.iter().take(2).zip(CORNERS.iter()) {
         let frame = Rect::new(x, CORNER_TOP, CORNER_PORTRAIT, CORNER_PORTRAIT);
-        list.push(Op::Portrait { rect: frame, object: member.face });
+        list.push(Op::Portrait { rect: frame, picture: member.face.map(Picture::Face) });
         let hp = frame.bottom() + 14.0;
         let ki = hp + 20.0;
         gauge_row(
@@ -337,8 +340,6 @@ struct SheetWindow {
     /// Each row: its label, its figures (the use-on list's LV, HP, KI, BP) and whether it is enabled.
     rows: Vec<(String, Option<String>, bool)>,
     cursor: Option<usize>,
-    /// The units chosen, on the quantity sheet: drawn as ◀ ×NN ▶ with shapes for the arrows.
-    quantity: Option<u16>,
     /// Distance between two rows: [`SHEET_ROW`], or less when the rows would run past the space.
     pitch: f32,
 }
@@ -348,9 +349,9 @@ const SHEET_TOP: f32 = 300.0;
 /// Distance between two rows of a sheet.
 const SHEET_ROW: f32 = 40.0;
 
-/// The sheet open on the bag, if one is: Use or Drop, the party's use-on list, the quantity, or
-/// Drop's Yes and No. It takes the place of the detail's help, on the right.
-fn sheet_window(bag: &BagView, party: &[Member]) -> Option<SheetWindow> {
+/// The sheet open on the bag, if one is: Use or Drop, the party's use-on list, or Drop's Yes and No.
+/// It takes the place of the detail's help, on the right.
+fn sheet_window(bag: &BagView) -> Option<SheetWindow> {
     let x = 702.0;
     let width = 538.0;
     let (title, rows, cursor) = match bag.sheet {
@@ -363,23 +364,8 @@ fn sheet_window(bag: &BagView, party: &[Member]) -> Option<SheetWindow> {
             ],
             Some(usize::from(bag.choice)),
         ),
-        Sheet::Members => (
-            "Use on whom?".to_owned(),
-            party
-                .iter()
-                .map(|member| {
-                    let figures = format!(
-                        "LV {:>2} HP {:>3}/{:<3} KI {:>3}/{:<3} BP {:>3}",
-                        member.level, member.hp, member.max_hp, member.ki, member.max_ki, member.bp
-                    );
-                    (member.name.clone(), Some(figures), true)
-                })
-                .collect(),
-            Some(usize::from(bag.member)),
-        ),
-        Sheet::Quantity => ("How many?".to_owned(), Vec::new(), None),
         Sheet::Confirm => (
-            format!("Drop \u{d7}{:02}?", bag.units),
+            "Drop one?".to_owned(),
             vec![("Yes".to_owned(), None, true), ("No".to_owned(), None, true)],
             Some(usize::from(bag.choice)),
         ),
@@ -391,15 +377,7 @@ fn sheet_window(bag: &BagView, party: &[Member]) -> Option<SheetWindow> {
     let room = HEIGHT - MARGIN - SHEET_TOP - head;
     let pitch = (room / rows.len().max(1) as f32).min(SHEET_ROW);
     let height = (head + pitch * rows.len() as f32).max(150.0);
-    let quantity = (bag.sheet == Sheet::Quantity).then_some(bag.units);
-    Some(SheetWindow {
-        rect: Rect::new(x, SHEET_TOP, width, height),
-        title,
-        rows,
-        cursor,
-        quantity,
-        pitch,
-    })
+    Some(SheetWindow { rect: Rect::new(x, SHEET_TOP, width, height), title, rows, cursor, pitch })
 }
 
 /// Paints a sheet: its frame, its title, and its rows with the cursor on the chosen one.
@@ -408,17 +386,6 @@ fn sheet_draw(list: &mut DrawList, window: &SheetWindow) {
     let left = window.rect.x + FRAME + 22.0;
     let top = window.rect.y + FRAME + PADDING;
     list.text(left, top + LARGE_TEXT / 2.0, &window.title, LARGE_TEXT, palette::BLACK, Align::Left);
-    if let Some(units) = window.quantity {
-        // ◀ ×NN ▶, centred under the title: the font has no triangles, so they are shapes.
-        let middle = top + LARGE_TEXT + 18.0 + 20.0;
-        let centre = window.rect.x + window.rect.w / 2.0;
-        let text = format!("\u{d7}{units:02}");
-        list.text(centre, middle, &text, LARGE_TEXT, palette::BLACK, Align::Centre);
-        let reach = 60.0;
-        let y = middle - CURSOR_HEIGHT / 2.0;
-        list.push(Op::Arrow { x: centre - reach - CURSOR_WIDTH, y, left: true });
-        list.push(Op::Arrow { x: centre + reach, y, left: false });
-    }
     for (row, (label, figures, enabled)) in window.rows.iter().enumerate() {
         let middle = top + LARGE_TEXT + 18.0 + window.pitch * row as f32 + 20.0;
         if window.cursor == Some(row) {
@@ -464,7 +431,7 @@ fn zeni_window(list: &mut DrawList, zeni: u16) {
 fn detail(list: &mut DrawList, selected: Option<&Selected>) {
     let x = WIDTH - MARGIN - 538.0;
     let picture = Rect::new(x, 36.0, ITEM_PORTRAIT, ITEM_PORTRAIT);
-    list.push(Op::Portrait { rect: picture, object: selected.map(|s| s.object) });
+    list.push(Op::Portrait { rect: picture, picture: selected.map(|s| Picture::Object(s.object)) });
     let price = Rect::new(x, picture.bottom() + 4.0, ITEM_PORTRAIT, 46.0);
     list.fill(price, palette::PRICE);
     list.push(Op::Outline { rect: price, width: PORTRAIT_FRAME, color: palette::BLACK });
@@ -648,15 +615,22 @@ fn cheat_row(list: &mut DrawList, view: &CheatsView, row: Row, left: f32, right:
         (0..row.choices()).map(|choice| row.choice_text(choice, &view.names)).collect();
     let chosen = row.index(&view.cheats).min(texts.len().saturating_sub(1));
     if row == Row::ZFor {
-        cycler(list, &texts[chosen], right, middle);
+        cycler(list, &texts[chosen], right, middle, CYCLER_VALUE);
     } else {
-        choices(list, &texts, chosen, right, middle);
+        choices(list, &texts, chosen, right, middle, palette::WHITE);
     }
 }
 
 /// The choices of a row, from `right` leftwards, each in a button as wide as its text needs (at least
-/// [`CHOICE_MIN`]). The chosen one is orange with white text and a dark-red line.
-fn choices(list: &mut DrawList, texts: &[String], chosen: usize, right: f32, middle: f32) {
+/// [`CHOICE_MIN`]). The chosen one is orange with `on_colour` text (white on the Cheats screen, black on the Options) and a dark-red line.
+fn choices(
+    list: &mut DrawList,
+    texts: &[String],
+    chosen: usize,
+    right: f32,
+    middle: f32,
+    on_colour: Color,
+) {
     let widths: Vec<f32> = texts
         .iter()
         .map(|text| (SMALL_TEXT * text.chars().count() as f32 + CHOICE_PADDING).max(CHOICE_MIN))
@@ -670,7 +644,7 @@ fn choices(list: &mut DrawList, texts: &[String], chosen: usize, right: f32, mid
             list.fill(rect, palette::ORANGE);
             list.push(Op::Outline { rect, width: LINE, color: palette::DARK_RED });
         }
-        let colour = if on { palette::WHITE } else { palette::BLACK };
+        let colour = if on { on_colour } else { palette::BLACK };
         list.text(rect.x + width / 2.0, middle, text, SMALL_TEXT, colour, Align::Centre);
         x += width + LINE_GAP;
     }
@@ -678,8 +652,8 @@ fn choices(list: &mut DrawList, texts: &[String], chosen: usize, right: f32, mid
 
 /// A cycler: an arrow to the left, the value between two 4 px gaps, and an arrow to the right, the value
 /// at least [`CYCLER_VALUE`] px wide and the whole ending at `right`.
-fn cycler(list: &mut DrawList, value: &str, right: f32, middle: f32) {
-    let width = (ROW_TEXT * value.chars().count() as f32).max(CYCLER_VALUE);
+fn cycler(list: &mut DrawList, value: &str, right: f32, middle: f32, least: f32) {
+    let width = (ROW_TEXT * value.chars().count() as f32).max(least);
     let left = right - (2.0 * ARROW_BOX + 2.0 * CYCLER_GAP + width);
     let inset = (ARROW_BOX - CURSOR_WIDTH) / 2.0;
     let y = middle - CURSOR_HEIGHT / 2.0;
@@ -688,6 +662,38 @@ fn cycler(list: &mut DrawList, value: &str, right: f32, middle: f32) {
     list.text(value_left + width / 2.0, middle, value, ROW_TEXT, palette::BLACK, Align::Centre);
     let arrow = value_left + width + CYCLER_GAP;
     list.push(Op::Arrow { x: arrow + inset, y, left: false });
+}
+
+/// The bar of a slider row (the approved design): an arrow, the bar (a 200 x 16 px well with a white edge and a
+/// dark red line around it, filled orange in proportion), the value in percent and an arrow, ending at `right`.
+fn slider(list: &mut DrawList, chosen: usize, steps: u8, right: f32, middle: f32) {
+    const BAR_WIDTH: f32 = 200.0;
+    const BAR_HEIGHT: f32 = 16.0;
+    const VALUE_WIDTH: f32 = 52.0;
+    let last = usize::from(steps).saturating_sub(1).max(1);
+    let percent = chosen.min(last) * 100 / last;
+    let inset = (ARROW_BOX - CURSOR_WIDTH) / 2.0;
+    let y = middle - CURSOR_HEIGHT / 2.0;
+    list.push(Op::Arrow { x: right - ARROW_BOX + inset, y, left: false });
+    let value_right = right - ARROW_BOX - CYCLER_GAP;
+    list.text(
+        value_right,
+        middle,
+        &percent.to_string(),
+        OPT_VALUE_TEXT,
+        palette::BLACK,
+        Align::Right,
+    );
+    let bar_right = value_right - VALUE_WIDTH - CYCLER_GAP;
+    let bar = Rect::new(bar_right - BAR_WIDTH, middle - BAR_HEIGHT / 2.0, BAR_WIDTH, BAR_HEIGHT);
+    list.fill(Rect::new(bar.x - 1.0, bar.y - 1.0, bar.w + 2.0, bar.h + 2.0), palette::DARK_RED);
+    list.fill(bar, palette::WHITE);
+    let well = Rect::new(bar.x + 2.0, bar.y + 2.0, bar.w - 4.0, bar.h - 4.0);
+    list.fill(well, palette::BLACK);
+    if percent > 0 {
+        list.fill(Rect::new(well.x, well.y, well.w * percent as f32 / 100.0, well.h), palette::HP);
+    }
+    list.push(Op::Arrow { x: bar.x - CYCLER_GAP - ARROW_BOX + inset, y, left: true });
 }
 
 /// The preview of the next card: its window, the card with its balls and its symbol, and under it the
@@ -710,22 +716,9 @@ fn next_card(list: &mut DrawList, view: &CheatsView, window: Rect) {
         CARD_WIDTH,
         CARD_HEIGHT,
     );
-    // The card: a black line outside its white border, and a black face inside it.
-    list.fill(card.grow(2.0), palette::BLACK);
-    list.fill(card, palette::WHITE);
-    let face = card.grow(-CARD_BORDER);
-    list.fill(face, palette::BLACK);
-    list.push(Op::Outline { rect: face.grow(-10.0), width: LINE, color: palette::CARD });
+    // The card: the HD art of the battle's cards where the pack has it, else the pixel-style card
     let mode = view.cheats.z_mode();
-    let attack = Rect::new(face.x + 2.0, face.y + 2.0, BALL, BALL);
-    let defence = Rect::new(face.right() - 2.0 - BALL, face.bottom() - 2.0 - BALL, BALL, BALL);
-    ball(list, attack, mode.attack(), true);
-    ball(list, defence, mode.defence(), false);
-    // The symbol in the middle: a kanji in a cream box with an orange border.
-    let symbol = Rect::new(face.x + face.w / 2.0 - 29.0, face.y + 56.0, 58.0, 58.0);
-    list.fill(symbol, palette::ORANGE);
-    list.fill(symbol.grow(-4.0), palette::CREAM);
-    list.text(symbol.x + 29.0, symbol.y + 29.0, "必", 40.0, palette::KI, Align::Centre);
+    list.push(Op::Card { rect: card, attack_z: mode.attack(), defence_z: mode.defence() });
     let caption = match (mode.attack(), mode.defence()) {
         (true, true) => "Z in attack and defence",
         (true, false) => "Z in attack",
@@ -744,6 +737,29 @@ fn next_card(list: &mut DrawList, view: &CheatsView, window: Rect) {
             Align::Centre,
         );
     }
+}
+
+/// The card of the preview drawn in the pixel style, for a backend that has no card art: a black line
+/// outside a white border, a black face with an orange outline, the balls in the attack and defence
+/// corners and the symbol in a cream box with an orange border. `card` is the outside of the white border.
+#[must_use]
+pub fn pixel_card(card: Rect, attack_z: bool, defence_z: bool) -> DrawList {
+    let mut list = DrawList::new();
+    list.fill(card.grow(2.0), palette::BLACK);
+    list.fill(card, palette::WHITE);
+    let face = card.grow(-CARD_BORDER);
+    list.fill(face, palette::BLACK);
+    list.push(Op::Outline { rect: face.grow(-10.0), width: LINE, color: palette::CARD });
+    let attack = Rect::new(face.x + 2.0, face.y + 2.0, BALL, BALL);
+    let defence = Rect::new(face.right() - 2.0 - BALL, face.bottom() - 2.0 - BALL, BALL, BALL);
+    ball(&mut list, attack, attack_z, true);
+    ball(&mut list, defence, defence_z, false);
+    // The symbol in the middle: a kanji in a cream box with an orange border.
+    let symbol = Rect::new(face.x + face.w / 2.0 - 29.0, face.y + 56.0, 58.0, 58.0);
+    list.fill(symbol, palette::ORANGE);
+    list.fill(symbol.grow(-4.0), palette::CREAM);
+    list.text(symbol.x + 29.0, symbol.y + 29.0, "必", 40.0, palette::KI, Align::Centre);
+    list
 }
 
 /// A ball of the card: a black ring around an orange disc, with a Z (when the corner is Z), four pips (an
@@ -906,6 +922,425 @@ fn help_strip(list: &mut DrawList, row: Row) {
     list.text(right, window.middle_y(), "B  Back", SMALL_TEXT, palette::DARK_RED, Align::Right);
 }
 
+/// The Options screen's grid, in logical pixels, as the approved design sets it: the category window on the
+/// left, the rows window beside it, the help strip at the foot and the question over a veil.
+const OPT_TOP: f32 = 32.0;
+const OPT_HEIGHT: f32 = 522.0;
+const OPT_CATEGORIES: f32 = 300.0;
+const OPT_ROWS_X: f32 = 362.0;
+const OPT_ROWS_WIDTH: f32 = 878.0;
+const OPT_HELP_TOP: f32 = 576.0;
+const OPT_HELP_HEIGHT: f32 = 112.0;
+/// A window's padding inside its frame: 18 px at the sides, 12 px above and below.
+const OPT_SIDE: f32 = 18.0;
+const OPT_PAD_TOP: f32 = 12.0;
+/// The title above a list: 26 px high in the category window, 28 px in the rows window.
+const OPT_TITLE: f32 = 26.0;
+const OPT_GROUP: f32 = 28.0;
+/// A category row is 58 px high; a value row 44 px; the rows are 2 px apart.
+const OPT_CATEGORY_ROW: f32 = 58.0;
+const OPT_ROW: f32 = 44.0;
+const OPT_GAP: f32 = 2.0;
+/// A button of the category window (Reset this page, Reset all): 44 px high, 6 px apart.
+const OPT_BUTTON: f32 = 44.0;
+/// The width of an option's cycler value and of the Open button.
+const OPT_CYCLER_VALUE: f32 = 160.0;
+const OPT_OPEN_WIDTH: f32 = 220.0;
+/// A note row under a group is 22 px high (4 px above its 18 px line).
+const OPT_NOTE_ROW: f32 = 22.0;
+/// The text sizes of the screen.
+const OPT_CATEGORY_TEXT: f32 = 28.0;
+const OPT_SUB_TEXT: f32 = 14.0;
+const OPT_LABEL_TEXT: f32 = 20.0;
+const OPT_HELP_TEXT: f32 = 20.0;
+/// The text of a read-only value.
+const OPT_VALUE_TEXT: f32 = 18.0;
+/// The tint of the row or the category under the cursor: the orange at 14 %.
+const OPT_TINT: Color = Color([0xFF, 0x52, 0x00, 36]);
+/// The sample window of the Accessibility page: 420 px wide, three rows of 40 px in its frame and padding.
+const SAMPLE_WIDTH: f32 = 420.0;
+const SAMPLE_ROW: f32 = 40.0;
+const SAMPLE_HEIGHT: f32 = 2.0 * FRAME + 16.0 + 3.0 * SAMPLE_ROW;
+/// The veil over the screen while a question is open: black at 55 %.
+const OPT_VEIL: Color = Color([0, 0, 0, 140]);
+
+/// The Options screen: the categories with where each is kept, the rows of the chosen category with the cursor on
+/// one of them, Reset this page and Reset all, and at the foot the help of the row and the key hints. While Reset
+/// all asks, the question is over a veil. Everything lies inside the space.
+#[must_use]
+pub fn options_screen(view: &OptionsView) -> DrawList {
+    let mut list = DrawList::new();
+    backdrop(&mut list);
+    options_categories(&mut list, view);
+    options_rows(&mut list, view);
+    options_help(&mut list, view);
+    if let Some(choice) = view.confirm {
+        options_question(&mut list, choice);
+    }
+    if let Some(ask) = &view.video {
+        options_video_question(&mut list, ask);
+    }
+    list
+}
+
+/// The window of the categories: the list with the scope label of each, and the two buttons at its foot.
+fn options_categories(list: &mut DrawList, view: &OptionsView) {
+    let window = Rect::new(MARGIN, OPT_TOP, OPT_CATEGORIES, OPT_HEIGHT);
+    list.push(Op::Window { rect: window });
+    let left = window.x + FRAME + OPT_SIDE;
+    let width = window.w - 2.0 * (FRAME + OPT_SIDE);
+    let top = window.y + FRAME + OPT_PAD_TOP;
+    list.text(
+        left + 26.0,
+        top + OPT_TITLE - 9.0,
+        "-- Options --",
+        GROUP_TEXT,
+        palette::DARK_RED,
+        Align::Left,
+    );
+    let mut y = top + OPT_TITLE + 6.0;
+    for category in Category::ALL {
+        let row = Rect::new(left, y, width, OPT_CATEGORY_ROW);
+        if category == view.category {
+            list.fill(row, OPT_TINT);
+            list.push(Op::Cursor { x: left, y: row.middle_y() - CURSOR_HEIGHT / 2.0 });
+        }
+        list.text(
+            left + 26.0,
+            y + 20.0,
+            category.name(),
+            OPT_CATEGORY_TEXT,
+            palette::BLACK,
+            Align::Left,
+        );
+        list.text(
+            left + 26.0,
+            y + 44.0,
+            category.scope_label(),
+            OPT_SUB_TEXT,
+            palette::DARK_RED,
+            Align::Left,
+        );
+        y += OPT_CATEGORY_ROW;
+    }
+    let bottom = window.bottom() - FRAME - OPT_PAD_TOP;
+    for (index, text) in ["Reset this page", "Reset all"].into_iter().enumerate() {
+        let from_bottom = (1 - index) as f32 * (OPT_BUTTON + 6.0) + OPT_BUTTON;
+        let rect = Rect::new(left, bottom - from_bottom, width, OPT_BUTTON);
+        list.push(Op::Outline { rect, width: LINE, color: palette::DARK_RED });
+        list.text(
+            rect.x + rect.w / 2.0,
+            rect.middle_y(),
+            text,
+            ROW_TEXT,
+            palette::BLACK,
+            Align::Centre,
+        );
+    }
+}
+
+/// The window of the rows: each group's title, and its rows with the value at the right end.
+fn options_rows(list: &mut DrawList, view: &OptionsView) {
+    if view.category == Category::Controls {
+        crate::controls_page::rows(list, view);
+        return;
+    }
+    let window = Rect::new(OPT_ROWS_X, OPT_TOP, OPT_ROWS_WIDTH, OPT_HEIGHT);
+    list.push(Op::Window { rect: window });
+    let left = window.x + FRAME + OPT_SIDE;
+    let right = window.right() - FRAME - OPT_SIDE;
+    let mut y = window.y + FRAME + OPT_PAD_TOP;
+    let mut group = None;
+    for (index, row) in view.category.rows().iter().enumerate() {
+        if group != Some(row.group) {
+            group = Some(row.group);
+            let title = format!("-- {} --", row.group);
+            list.text(
+                left + 26.0,
+                y + OPT_GROUP - 9.0,
+                &title,
+                GROUP_TEXT,
+                palette::DARK_RED,
+                Align::Left,
+            );
+            y += OPT_GROUP + OPT_GAP;
+        }
+        if let Kind::Note(text) = row.kind {
+            // A line of small text under its group: no cursor, no value.
+            list.text(
+                left + 26.0,
+                y + 4.0 + CAPTION_TEXT / 2.0,
+                text,
+                CAPTION_TEXT,
+                palette::DARK_RED,
+                Align::Left,
+            );
+            y += OPT_NOTE_ROW + OPT_GAP;
+            continue;
+        }
+        let middle = y + OPT_ROW / 2.0;
+        if index == view.row {
+            list.fill(Rect::new(left, y, right - left, OPT_ROW), OPT_TINT);
+            list.push(Op::Cursor { x: left, y: middle - CURSOR_HEIGHT / 2.0 });
+        }
+        list.text(left + 26.0, middle, row.label, OPT_LABEL_TEXT, palette::BLACK, Align::Left);
+        let chosen = view.values.get(index).copied().unwrap_or(0);
+        match row.kind {
+            Kind::Choice(labels) => {
+                if chosen >= labels.len() {
+                    // No choice is the value: the page says so (the Difficulty preset changed on the Cheats screen).
+                    let x = left + 26.0 + text_width(row.label, OPT_LABEL_TEXT) + 16.0;
+                    list.text(x, middle, "Custom", OPT_SUB_TEXT, palette::DARK_RED, Align::Left);
+                }
+                let texts: Vec<String> = labels.iter().map(|&text| text.to_owned()).collect();
+                choices(list, &texts, chosen, right, middle, palette::BLACK);
+            }
+            Kind::Cycle(_) => cycler(list, row.text(chosen), right, middle, OPT_CYCLER_VALUE),
+
+            Kind::Slider { steps } => slider(list, chosen, steps, right, middle),
+
+            // The Controls page draws its own rows (see `controls_page`).
+            Kind::Note(_) | Kind::Key => {}
+
+            Kind::Info => {
+                let text = crate::options::info_text(view.category, row.key, &view.values);
+                let width = (text_width(&text, OPT_VALUE_TEXT) + 16.0).max(72.0);
+                let rect = Rect::new(right - width, middle - 18.0, width, 36.0);
+                list.fill(rect, palette::ORANGE);
+                list.push(Op::Outline { rect, width: LINE, color: palette::DARK_RED });
+                list.text(
+                    rect.x + width / 2.0,
+                    middle,
+                    &text,
+                    OPT_VALUE_TEXT,
+                    palette::BLACK,
+                    Align::Centre,
+                );
+                let caption = crate::options::info_caption(view.category, row.key);
+                list.text(
+                    rect.x - 12.0,
+                    middle,
+                    caption,
+                    OPT_SUB_TEXT,
+                    palette::DARK_RED,
+                    Align::Right,
+                );
+            }
+            Kind::Button(text) => {
+                let width = (text_width(text, ROW_TEXT) + 24.0).max(OPT_OPEN_WIDTH);
+                let rect =
+                    Rect::new(right - width, middle - CHOICE_HEIGHT / 2.0, width, CHOICE_HEIGHT);
+                list.push(Op::Outline { rect, width: LINE, color: palette::DARK_RED });
+                list.text(
+                    rect.x + width / 2.0,
+                    middle,
+                    text,
+                    ROW_TEXT,
+                    palette::BLACK,
+                    Align::Centre,
+                );
+            }
+        }
+        y += OPT_ROW + OPT_GAP;
+    }
+    if let Some(note) = view.category.note() {
+        list.text(
+            left + 26.0,
+            y + 4.0 + CAPTION_TEXT / 2.0,
+            note,
+            CAPTION_TEXT,
+            palette::DARK_RED,
+            Align::Left,
+        );
+    }
+    if view.category == Category::Accessibility {
+        access_sample(list, window);
+    }
+}
+
+/// The "Sample" of the Accessibility page: a small menu window at the foot of the rows window, drawn in the
+/// design like any menu (the chosen style is applied to the whole screen, so it shows the choices at once).
+fn access_sample(list: &mut DrawList, rows: Rect) {
+    let left = rows.x + FRAME + OPT_SIDE;
+    let window = Rect::new(
+        left,
+        rows.bottom() - FRAME - OPT_PAD_TOP - SAMPLE_HEIGHT,
+        SAMPLE_WIDTH,
+        SAMPLE_HEIGHT,
+    );
+    list.text(
+        left + 26.0,
+        window.y - 6.0 - 11.0,
+        "-- Sample --",
+        GROUP_TEXT,
+        palette::DARK_RED,
+        Align::Left,
+    );
+    list.push(Op::Window { rect: window });
+    let text = window.x + FRAME + 16.0 + 34.0;
+    let top = window.y + FRAME + 8.0;
+    for (row, label) in ["Items", "Status", "Options"].into_iter().enumerate() {
+        let middle = top + SAMPLE_ROW * row as f32 + SAMPLE_ROW / 2.0;
+        if row == 1 {
+            list.push(Op::Cursor { x: text - 34.0 + 9.0, y: middle - CURSOR_HEIGHT / 2.0 });
+        }
+        list.text(text, middle, label, LARGE_TEXT, palette::BLACK, Align::Left);
+    }
+}
+
+/// The help strip: the help of the row under the cursor (wrapped to three lines at most) and the key hints.
+fn options_help(list: &mut DrawList, view: &OptionsView) {
+    let window = Rect::new(MARGIN, OPT_HELP_TOP, WIDTH - 2.0 * MARGIN, OPT_HELP_HEIGHT);
+    list.push(Op::Window { rect: window });
+    let left = window.x + FRAME + 22.0;
+    let row = view.category.rows().get(view.row);
+    let refusal = view.controls.as_ref().and_then(|state| state.refused.as_ref());
+    let help =
+        refusal.map_or_else(|| row.map_or("", |row| row.help), |refusal| refusal.message.as_str());
+    let chars = ((window.w - 2.0 * (FRAME + 22.0)) / (ADVANCE * OPT_HELP_TEXT)).floor() as usize;
+    let top = window.y + FRAME + 10.0;
+    for (line, text) in wrap(help, chars).iter().take(3).enumerate() {
+        list.text(
+            left,
+            top + 13.0 + 26.0 * line as f32,
+            text,
+            OPT_HELP_TEXT,
+            palette::BLACK,
+            Align::Left,
+        );
+    }
+    let hints = if view.controls.as_ref().is_some_and(|state| state.listening) {
+        let shortcut = view.row > 0
+            && (view.row - 1) % crate::options::controls::ACTIONS
+                >= crate::options::controls::BUTTONS;
+        let mut hints = vec!["Press the new key"];
+        hints.push("Esc  Cancel");
+        if shortcut {
+            hints.push("Backspace  Clear");
+        }
+        hints.join("   ")
+    } else {
+        view.category.hints(row).join("   ")
+    };
+    let y = window.bottom() - FRAME - 10.0 - 9.0;
+    list.text(
+        window.right() - FRAME - 22.0,
+        y,
+        &hints,
+        SMALL_TEXT,
+        palette::DARK_RED,
+        Align::Right,
+    );
+}
+
+/// Reset all's question over a veil: the words, Yes and No (the cursor on `choice`, 0 Yes and 1 No), and the hint.
+fn options_question(list: &mut DrawList, choice: u8) {
+    list.fill(Rect::new(0.0, 0.0, WIDTH, HEIGHT), OPT_VEIL);
+    let window = Rect::new(340.0, 220.0, 600.0, 270.0);
+    list.push(Op::Window { rect: window });
+    let left = window.x + FRAME + 28.0;
+    let top = window.y + FRAME + OPT_PAD_TOP;
+    list.text(
+        left,
+        top + OPT_TITLE - 9.0,
+        "-- Options --",
+        GROUP_TEXT,
+        palette::DARK_RED,
+        Align::Left,
+    );
+    list.text(
+        left,
+        top + 49.0,
+        "Reset all options to their defaults?",
+        26.0,
+        palette::BLACK,
+        Align::Left,
+    );
+    // The second line wraps inside the window (the design's text is wider than its box), and the buttons move down.
+    let chars = ((window.w - 2.0 * (FRAME + 28.0)) / (ADVANCE * ROW_TEXT)).floor() as usize;
+    let lines = wrap("Difficulty, Gameplay, Video, Audio, Controls and Accessibility.", chars);
+    for (line, text) in lines.iter().enumerate() {
+        let y = top + 81.0 + 22.0 * line as f32;
+        list.text(left, y, text, ROW_TEXT, palette::BLACK, Align::Left);
+    }
+    let buttons = top + 110.0 + 22.0 * (lines.len() as f32 - 1.0);
+    for (index, text) in ["Yes", "No"].into_iter().enumerate() {
+        let rect = Rect::new(left + index as f32 * 224.0, buttons, 200.0, 52.0);
+        if usize::from(choice) == index {
+            list.fill(rect, OPT_TINT);
+            list.push(Op::Cursor { x: rect.x, y: rect.middle_y() - CURSOR_HEIGHT / 2.0 });
+        }
+        list.text(rect.x + 26.0, rect.middle_y(), text, 30.0, palette::BLACK, Align::Left);
+    }
+    list.text(
+        window.right() - FRAME - 28.0,
+        window.bottom() - FRAME - OPT_PAD_TOP - 9.0,
+        "A  OK   B  No",
+        SMALL_TEXT,
+        palette::DARK_RED,
+        Align::Right,
+    );
+}
+
+/// "Apply video changes?" over a veil: what the video would be, Keep and Revert (the cursor on `ask.choice`), the
+/// countdown with its bar, and the hint.
+fn options_video_question(list: &mut DrawList, ask: &VideoAsk) {
+    list.fill(Rect::new(0.0, 0.0, WIDTH, HEIGHT), OPT_VEIL);
+    let window = Rect::new(340.0, 220.0, 600.0, 280.0);
+    list.push(Op::Window { rect: window });
+    let left = window.x + FRAME + 28.0;
+    let top = window.y + FRAME + OPT_PAD_TOP;
+    list.text(
+        left,
+        top + OPT_TITLE - 9.0,
+        "-- Video --",
+        GROUP_TEXT,
+        palette::DARK_RED,
+        Align::Left,
+    );
+    list.text(left, top + 49.0, "Apply video changes?", 26.0, palette::BLACK, Align::Left);
+    let chars = ((window.w - 2.0 * (FRAME + 28.0)) / (ADVANCE * ROW_TEXT)).floor() as usize;
+    let lines = wrap(&ask.summary, chars);
+    for (line, text) in lines.iter().enumerate() {
+        let y = top + 81.0 + 22.0 * line as f32;
+        list.text(left, y, text, ROW_TEXT, palette::BLACK, Align::Left);
+    }
+    let extra = 22.0 * (lines.len() as f32 - 1.0).max(0.0);
+    let buttons = top + 110.0 + extra;
+    for (index, text) in ["Keep", "Revert"].into_iter().enumerate() {
+        let rect = Rect::new(left + index as f32 * 224.0, buttons, 200.0, 52.0);
+        if usize::from(ask.choice) == index {
+            list.fill(rect, OPT_TINT);
+            list.push(Op::Cursor { x: rect.x, y: rect.middle_y() - CURSOR_HEIGHT / 2.0 });
+        }
+        list.text(rect.x + 26.0, rect.middle_y(), text, 30.0, palette::BLACK, Align::Left);
+    }
+    let seconds = ask.tenths.div_ceil(10);
+    let middle = buttons + 52.0 + 14.0 + 7.0;
+    list.text(
+        left,
+        middle,
+        &format!("Reverting in {seconds} s"),
+        SMALL_TEXT,
+        palette::DARK_RED,
+        Align::Left,
+    );
+    let bar = Rect::new(left + 202.0, middle - 7.0, 300.0, 14.0);
+    list.push(Op::Bar {
+        rect: bar,
+        fraction: ask.tenths.min(100) as f32 / 100.0,
+        color: palette::ORANGE,
+    });
+    list.text(
+        window.right() - FRAME - 28.0,
+        window.bottom() - FRAME - OPT_PAD_TOP - 9.0,
+        "A  Keep   B  Revert",
+        SMALL_TEXT,
+        palette::DARK_RED,
+        Align::Right,
+    );
+}
+
 /// The words of `text` in lines of at most `width` characters; a word longer than a line has a line of its own.
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
@@ -925,6 +1360,7 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::cheats::{Cheats, Setting, ZMode, ZTarget};
+    use crate::options::Category;
     use crate::view::{Member, Slot};
 
     fn field_view(cursor: u8) -> MenuView {
@@ -945,7 +1381,7 @@ mod tests {
                     ki: 12,
                     max_ki: 12,
                     bp: 416,
-                    face: Some(28),
+                    face: Some(0x00),
                 },
                 Member {
                     name: "Piccolo".into(),
@@ -1024,7 +1460,7 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_list_shows_its_entries_and_greys_only_the_one_that_waits_for_later() {
+    fn the_menu_list_shows_its_seven_entries_and_greys_none() {
         let mut view = field_view(6);
         view.screen = Screen::Menu;
         let list = scene(&view);
@@ -1032,14 +1468,17 @@ mod tests {
         for label in ["Cards", "Status", "Order", "Text", "Save", "Cheats", "Options"] {
             assert!(text.contains(&label), "{label} in {text:?}");
         }
-        assert_eq!(text.iter().filter(|t| **t == "coming soon").count(), 1);
+        assert!(!text.contains(&"coming soon"), "the options exist now");
         let grey = list
             .ops()
             .iter()
             .filter(|op| matches!(op, Op::Text { color, .. } if *color == palette::GREY))
             .count();
-        assert_eq!(grey, 2, "the label and its note in grey");
-        assert!(text.contains(&"Coming soon."), "the help of the greyed entry under the cursor");
+        assert_eq!(grey, 0);
+        assert!(
+            text.contains(&"Game, picture, sound and keys."),
+            "the help of Options under the cursor"
+        );
         assert_eq!(cursors(&list).len(), 1, "the cursor is on Options");
         view.cursor = 5;
         assert!(texts(&scene(&view)).contains(&"Set the cheats of this run."));
@@ -1051,17 +1490,17 @@ mod tests {
         assert_eq!(list.ops().first(), Some(&Op::Backdrop));
         let text = texts(&list);
         assert!(text.contains(&"Zeni 040P"), "{text:?}");
-        let portraits: Vec<Option<u8>> = list
+        let portraits: Vec<Option<Picture>> = list
             .ops()
             .iter()
             .filter_map(|op| match op {
-                Op::Portrait { object, .. } => Some(*object),
+                Op::Portrait { picture, .. } => Some(*picture),
                 _ => None,
             })
             .collect();
         assert_eq!(
             portraits,
-            [Some(28), None],
+            [Some(Picture::Face(0x00)), None],
             "one frame per corner member, empty without a face"
         );
     }
@@ -1113,7 +1552,7 @@ mod tests {
     }
 
     #[test]
-    fn the_quantity_sheet_draws_its_arrows_as_shapes_around_the_figure() {
+    fn the_drop_sheet_asks_one_unit_with_yes_and_no_and_no_arrows() {
         let bag = BagView {
             tab: Tab::All,
             stacks: Vec::new(),
@@ -1122,103 +1561,17 @@ mod tests {
             full: false,
             usable_here: true,
             droppable_here: true,
-            sheet: Sheet::Quantity,
-            choice: 0,
-            member: 0,
-            units: 7,
-            most: 9,
+            sheet: Sheet::Confirm,
+            choice: 1,
             notice: None,
         };
-        let window = sheet_window(&bag, &[]).expect("the quantity sheet is a sheet");
+        let window = sheet_window(&bag).expect("the Drop sheet is a sheet");
         let mut list = DrawList::new();
         sheet_draw(&mut list, &window);
-        let arrows: Vec<(f32, bool)> = list
-            .ops()
-            .iter()
-            .filter_map(|op| match op {
-                Op::Arrow { x, left, .. } => Some((*x, *left)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(arrows.len(), 2, "a left and a right arrow");
-        assert!(arrows[0].1 && !arrows[1].1);
-        let figure = list.texts().find(|(_, _, text)| text.contains('7')).expect("the figure");
-        assert_eq!(figure.2, "\u{d7}07");
-        assert!(arrows[0].0 < figure.0 && figure.0 < arrows[1].0, "the figure is between them");
-        assert!(list.texts().all(|(_, _, text)| !text.contains(['<', '>'])), "no ASCII stand-ins");
-    }
-
-    #[test]
-    fn the_use_on_list_shows_level_hp_ki_and_bp() {
-        let view = field_view(0);
-        let bag = BagView {
-            tab: Tab::All,
-            stacks: Vec::new(),
-            used: 0,
-            slots: 60,
-            full: false,
-            usable_here: true,
-            droppable_here: true,
-            sheet: Sheet::Members,
-            choice: 0,
-            member: 0,
-            units: 1,
-            most: 1,
-            notice: None,
-        };
-        let window = sheet_window(&bag, &view.party).expect("the members sheet");
-        let figures = window.rows[0].1.as_deref().expect("the figures of the first member");
-        for part in ["LV 10", "HP  80/100", "KI  12/12", "BP 416"] {
-            assert!(figures.contains(part), "{part} in {figures}");
-        }
-    }
-
-    #[test]
-    fn the_use_on_sheet_of_a_full_party_ends_above_the_margin() {
-        let members = |count: usize| -> Vec<Member> {
-            (0..count)
-                .map(|i| Member {
-                    name: format!("Member {i}"),
-                    level: 1,
-                    hp: 1,
-                    max_hp: 1,
-                    ki: 1,
-                    max_ki: 1,
-                    bp: 1,
-                    face: None,
-                })
-                .collect()
-        };
-        let bag = || BagView {
-            tab: Tab::All,
-            stacks: Vec::new(),
-            used: 0,
-            slots: 60,
-            full: false,
-            usable_here: true,
-            droppable_here: true,
-            sheet: Sheet::Members,
-            choice: 0,
-            member: 0,
-            units: 1,
-            most: 1,
-            notice: None,
-        };
-        // Two or seven members keep the rows 40 px apart, as the design has them.
-        for count in [2, 7] {
-            let party = members(count);
-            let window = sheet_window(&bag(), &party).expect("the members sheet");
-            assert!((window.pitch - SHEET_ROW).abs() < 1e-3, "{count} members: {:?}", window.pitch);
-        }
-        // Nine (the most the records hold) are closer, and the last row is still inside the sheet.
-        let party = members(9);
-        let window = sheet_window(&bag(), &party).expect("the members sheet");
-        assert!(window.pitch < SHEET_ROW, "{:?}", window.pitch);
-        assert!(window.rect.bottom() <= HEIGHT - MARGIN, "{:?}", window.rect);
-        let mut list = DrawList::new();
-        sheet_draw(&mut list, &window);
-        let last = list.texts().find(|(_, _, text)| *text == "Member 8").expect("the last row");
-        assert!(last.1 + LARGE_TEXT / 2.0 <= window.rect.bottom(), "{last:?} in {:?}", window.rect);
+        let texts: Vec<&str> = list.texts().map(|(_, _, text)| text).collect();
+        assert!(texts.contains(&"Drop one?"), "the question: {texts:?}");
+        assert!(texts.contains(&"Yes") && texts.contains(&"No"), "the answers: {texts:?}");
+        assert!(list.ops().iter().all(|op| !matches!(op, Op::Arrow { .. })), "no quantity arrows");
     }
 
     #[test]
@@ -1281,6 +1634,393 @@ mod tests {
     }
 
     #[test]
+    fn the_accessibility_page_has_three_rows_and_a_sample_window_at_its_foot() {
+        let list = options_screen(&options_view(Category::Accessibility, 2, None));
+        let texts: Vec<&str> = list.texts().map(|(_, _, text)| text).collect();
+        for wanted in ["Text size", "High contrast", "Cursor", "-- Sample --", "Items", "Status"] {
+            assert!(texts.contains(&wanted), "{wanted}");
+        }
+        assert!(!texts.contains(&"Coming in a later version."));
+        // Two windows more than the other pages: the sample's.
+        let windows = |category| {
+            let list = options_screen(&options_view(category, 0, None));
+            list.ops().iter().filter(|op| matches!(op, Op::Window { .. })).count()
+        };
+        assert_eq!(windows(Category::Accessibility), windows(Category::Video) + 1);
+        // The sample window lies inside the rows window.
+        let rows = list
+            .ops()
+            .iter()
+            .filter_map(|op| if let Op::Window { rect } = op { Some(*rect) } else { None })
+            .nth(1)
+            .unwrap();
+        let sample = list
+            .ops()
+            .iter()
+            .filter_map(|op| if let Op::Window { rect } = op { Some(*rect) } else { None })
+            .nth(2)
+            .unwrap();
+        assert!(
+            sample.x >= rows.x
+                && sample.right() <= rows.right()
+                && sample.bottom() <= rows.bottom()
+        );
+    }
+
+    fn options_view(category: Category, row: usize, confirm: Option<u8>) -> OptionsView {
+        let values = category.rows().iter().map(crate::options::RowDef::default_index).collect();
+        OptionsView { category, row, values, confirm, video: None, controls: None }
+    }
+
+    fn controls_view(
+        row: usize,
+        device: usize,
+        state: Option<crate::view::ControlsView>,
+    ) -> OptionsView {
+        use crate::options::controls::{self, Device, KEYBOARD_DEFAULTS};
+        let mut view = options_view(Category::Controls, row, None);
+        view.values[0] = device;
+        for (action, &code) in KEYBOARD_DEFAULTS.iter().enumerate() {
+            view.values[controls::row_of(Device::Keyboard, action)] = usize::from(code);
+        }
+        view.controls = state;
+        view
+    }
+
+    #[test]
+    fn the_controls_page_shows_the_device_the_groups_and_a_key_box_per_action_two_to_a_line() {
+        use crate::view::ControlsView;
+        let list = options_screen(&controls_view(1, 0, Some(ControlsView::default())));
+        let text = texts(&list);
+        for label in [
+            "Device",
+            "Keyboard",
+            "Gamepad",
+            "-- D-pad and shoulders --",
+            "-- Buttons --",
+            "-- Shortcuts --",
+            "A (confirm)",
+            "B (back)",
+            "Speed x1/x2/x4/x8",
+            "Save state",
+            "Load state",
+            // The keys of today.
+            "Up",
+            "X",
+            "Z",
+            "S",
+            "Enter",
+            "R-Shift",
+            "Tab",
+            "P",
+            "F5",
+            "F9",
+        ] {
+            assert!(text.contains(&label), "{label} in {text:?}");
+        }
+        let hints = text.iter().find(|t| t.contains("Select  Reset all")).copied().unwrap_or("");
+        assert!(hints.contains("A  Remap"), "{hints}");
+        // The cursor of the rows is on the first key box (Up), under the device row.
+        let device_row_top = 32.0 + 6.0 + 12.0;
+        let cursor_ys: Vec<f32> = cursors(&list).iter().map(|c| c.1).collect();
+        assert_eq!(cursor_ys.len(), 2, "the category and the key box");
+        assert!(cursor_ys[1] > device_row_top + 44.0 + 28.0, "{cursor_ys:?}");
+    }
+
+    #[test]
+    fn a_key_box_that_waits_says_press_a_key_and_a_refused_one_says_key_in_use_and_the_strip_names_the_action()
+     {
+        use crate::view::{ControlsView, RefusedKey};
+        let waiting = ControlsView { listening: true, refused: None };
+        let text_of = |view: &OptionsView| {
+            texts(&options_screen(view)).iter().map(|t| (*t).to_owned()).collect::<Vec<_>>()
+        };
+        let keyboard = text_of(&controls_view(4, 0, Some(waiting.clone())));
+        assert!(keyboard.contains(&"Press a key...".to_owned()), "{keyboard:?}");
+        assert!(keyboard.iter().any(|t| t.contains("Esc  Cancel")));
+        assert!(!keyboard.iter().any(|t| t.contains("Backspace")), "a button cannot be cleared");
+        let pad = text_of(&controls_view(4, 1, Some(waiting.clone())));
+        assert!(pad.contains(&"Press a button...".to_owned()), "{pad:?}");
+        // A shortcut can be cleared.
+        let shortcut = text_of(&controls_view(13, 0, Some(waiting)));
+        assert!(shortcut.iter().any(|t| t.contains("Backspace  Clear")), "{shortcut:?}");
+        let refused = ControlsView {
+            listening: false,
+            refused: Some(RefusedKey {
+                position: 2,
+                message: "Key already used by A (confirm). Choose another key.".to_owned(),
+                blink: true,
+            }),
+        };
+        let shown = text_of(&controls_view(2, 0, Some(refused)));
+        assert!(shown.contains(&"Key in use".to_owned()), "{shown:?}");
+        assert!(shown.contains(&"Key already used by A (confirm). Choose another key.".to_owned()));
+        assert!(!shown.contains(&"Press a key...".to_owned()));
+    }
+
+    #[test]
+    fn every_window_and_text_of_the_options_screen_lies_inside_the_space() {
+        for category in Category::ALL {
+            for row in 0..category.rows().len().max(1) {
+                for confirm in [None, Some(0), Some(1)] {
+                    let list = options_screen(&options_view(category, row, confirm));
+                    for op in list.ops() {
+                        if let Op::Window { rect } = op {
+                            assert!(
+                                rect.x >= MARGIN - 1e-3 && rect.right() <= WIDTH - MARGIN + 1e-3
+                            );
+                            assert!(rect.y >= 0.0 && rect.bottom() <= HEIGHT, "{rect:?}");
+                        }
+                        if let Op::Text { x, y, text, size, align, .. } = op {
+                            let width = text_width(text, *size);
+                            let (from, to) = match align {
+                                Align::Left => (*x, *x + width),
+                                Align::Centre => (*x - width / 2.0, *x + width / 2.0),
+                                Align::Right => (*x - width, *x),
+                            };
+                            assert!(
+                                from >= MARGIN && to <= WIDTH - MARGIN,
+                                "{text}: {from} to {to}"
+                            );
+                            assert!((0.0..=HEIGHT).contains(y), "{text}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn video_ask(choice: u8, tenths: u32) -> VideoAsk {
+        VideoAsk {
+            choice,
+            tenths,
+            summary: "Fullscreen, 6x, 4:3 (1536 x 1344), Scanlines Light, CRT Full".into(),
+        }
+    }
+
+    #[test]
+    fn the_video_page_shows_its_groups_the_size_and_the_note_and_the_question_the_countdown() {
+        let mut view = options_view(Category::Video, 4, None);
+        view.values[1] = 4;
+        let text = texts(&options_screen(&view)).join("|");
+        for want in [
+            "-- Window --",
+            "-- Picture --",
+            "-- Filters --",
+            "V-Sync",
+            "Picture size",
+            "pixels at this scale",
+            "2232 x 1344",
+            "CRT filter",
+            "revert after 10 s",
+        ] {
+            assert!(text.contains(want), "{want} in {text}");
+        }
+        for (choice, tenths) in [(1, 100), (0, 73), (1, 0)] {
+            view.video = Some(video_ask(choice, tenths));
+            let list = options_screen(&view);
+            let shown = texts(&list);
+            assert!(shown.contains(&"Apply video changes?"));
+            assert!(shown.contains(&"A  Keep   B  Revert"));
+            let seconds = format!("Reverting in {} s", tenths.div_ceil(10));
+            assert!(shown.contains(&seconds.as_str()), "{seconds}");
+            let bars: Vec<f32> = list
+                .ops()
+                .iter()
+                .filter_map(|op| match op {
+                    Op::Bar { fraction, .. } => Some(*fraction),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(bars, [tenths as f32 / 100.0]);
+            for op in list.ops() {
+                if let Op::Text { x, text, size, align, .. } = op {
+                    let width = text_width(text, *size);
+                    let (from, to) = match align {
+                        Align::Left => (*x, *x + width),
+                        Align::Centre => (*x - width / 2.0, *x + width / 2.0),
+                        Align::Right => (*x - width, *x),
+                    };
+                    assert!(
+                        from >= 340.0 && to <= 940.0 || from >= MARGIN,
+                        "{text}: {from} to {to}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_options_screen_lists_the_categories_with_where_each_is_kept_and_the_two_buttons() {
+        let list = options_screen(&options_view(Category::Gameplay, 0, None));
+        let text = texts(&list);
+        for category in Category::ALL {
+            assert!(text.contains(&category.name()), "{}", category.name());
+        }
+        assert_eq!(text.iter().filter(|t| **t == "Saved with the game").count(), 2);
+        assert_eq!(text.iter().filter(|t| **t == "This PC").count(), 4);
+        for label in
+            ["-- Options --", "Reset this page", "Reset all", "Text speed", "Random encounters"]
+        {
+            assert!(text.contains(&label), "{label} in {text:?}");
+        }
+        assert!(
+            text.contains(&"-- Messages --") && text.contains(&"-- Exploring --"),
+            "the groups"
+        );
+        let cursor_ys: Vec<f32> = cursors(&list).iter().map(|c| c.1).collect();
+        assert_eq!(cursor_ys.len(), 2, "one for the category, one for the row");
+        // The cursor of the category sits on the second category row (Gameplay), 58 px below the first.
+        let first_row_top = 32.0 + 6.0 + 12.0 + 26.0 + 6.0;
+        let want = first_row_top + 58.0 + 29.0 - CURSOR_HEIGHT / 2.0;
+        assert!((cursor_ys[0] - want).abs() < 1e-3, "{cursor_ys:?}");
+        let hints = text.iter().find(|t| t.contains("Select  Reset all")).copied().unwrap_or("");
+        for hint in
+            ["Left/Right  Change", "B  Back", "Y  Reset page", "Select  Reset all", "L/R  Page"]
+        {
+            assert!(hints.contains(hint), "{hint} in {hints}");
+        }
+    }
+
+    #[test]
+    fn the_chosen_option_is_orange_with_black_text_and_a_cycler_shows_its_value_between_arrows() {
+        let mut view = options_view(Category::Gameplay, 0, None);
+        view.values = vec![3, 0, 1, 0, 0];
+        let list = options_screen(&view);
+        assert!(has_text(&list, "Fast", palette::BLACK));
+        let orange = list
+            .ops()
+            .iter()
+            .any(|op| matches!(op, Op::Fill { color, .. } if *color == palette::ORANGE));
+        assert!(orange, "the chosen text speed is on an orange button");
+        assert!(texts(&list).contains(&"Off"), "the cycler shows its value");
+        let arrows = list.ops().iter().filter(|op| matches!(op, Op::Arrow { .. })).count();
+        assert_eq!(arrows, 4, "two cyclers: the animation speed and the encounters");
+        let video = options_screen(&options_view(Category::Video, 0, None));
+        assert!(texts(&video).contains(&"4x"));
+        let difficulty = options_screen(&options_view(Category::Difficulty, 0, None));
+        assert!(texts(&difficulty).contains(&"Open Cheats"));
+        assert!(texts(&difficulty).contains(&"Cheats screen"));
+    }
+
+    #[test]
+    fn the_difficulty_page_shows_the_preset_what_it_sets_and_the_notes() {
+        let mut cheats = Cheats::neutral();
+        crate::options::difficulty::apply(&mut cheats, 0);
+        let view = |cheats: &Cheats, row| OptionsView {
+            category: Category::Difficulty,
+            row,
+            values: crate::options::Options::default().indices(Category::Difficulty, cheats, 0),
+            confirm: None,
+            video: None,
+            controls: None,
+        };
+        let easy = options_screen(&view(&cheats, 0));
+        let text = texts(&easy);
+        for want in [
+            "-- Preset --",
+            "Difficulty",
+            "Easy",
+            "Normal",
+            "Hard",
+            "Easy and Hard mark the save with the CHEATS badge. Only Normal is clean.",
+            "-- The preset sets --",
+            "Enemy power",
+            "EXP per battle",
+            "Money from events",
+            "Cheats: Enemy power",
+            "-- Fine control --",
+            "Open Cheats",
+            "The preset and the Cheats screen write the same numbers: the last change wins.",
+        ] {
+            assert!(text.contains(&want), "{want}");
+        }
+        assert!(!text.contains(&"Custom"), "Easy is a preset");
+        // Easy: power x1/2, EXP x2, money x2 in the three orange boxes; Easy is the chosen choice.
+        let boxes = easy
+            .ops()
+            .iter()
+            .filter(|op| matches!(op, Op::Fill { rect, color } if *color == palette::ORANGE && (rect.h - 36.0).abs() < 1e-3))
+            .count();
+        assert_eq!(boxes, 3);
+        assert_eq!(
+            cursors(&easy).len(),
+            2,
+            "the category and the preset row; the info rows have no cursor"
+        );
+        // Another value on the Cheats screen: Custom, no choice chosen.
+        cheats.set_index(Setting::Exp, 3);
+        let custom = options_screen(&view(&cheats, 0));
+        assert!(texts(&custom).contains(&"Custom"));
+        let chosen = custom
+            .ops()
+            .iter()
+            .filter(|op| matches!(op, Op::Fill { rect, color } if *color == palette::ORANGE && (rect.h - CHOICE_HEIGHT).abs() < 1e-3))
+            .count();
+        assert_eq!(chosen, 0, "none of Easy, Normal, Hard is highlighted");
+    }
+
+    #[test]
+    fn a_category_with_no_rows_yet_shows_its_note_and_an_empty_help() {
+        for category in Category::ALL.into_iter().filter(|c| c.rows().is_empty()) {
+            let list = options_screen(&options_view(category, 0, None));
+            assert!(texts(&list).contains(&"Coming in a later version."));
+            assert_eq!(cursors(&list).len(), 1, "only the cursor of the category");
+        }
+    }
+
+    #[test]
+    fn the_audio_page_draws_the_volume_bar_with_its_percent_and_the_output_choices() {
+        let list = options_screen(&options_view(Category::Audio, 0, None));
+        let text = texts(&list);
+        assert!(text.contains(&"Volume") && text.contains(&"Sound"));
+        assert!(text.contains(&"100"), "full volume by default");
+        assert!(text.contains(&"Stereo") && text.contains(&"Mono"));
+        let arrows = list.ops().iter().filter(|op| matches!(op, Op::Arrow { .. })).count();
+        assert_eq!(arrows, 2, "one arrow each side of the bar");
+        let mut view = options_view(Category::Audio, 0, None);
+        view.values[0] = 3;
+        let list = options_screen(&view);
+        assert!(texts(&list).contains(&"30"));
+        view.values[0] = 0;
+        let list = options_screen(&view);
+        assert!(texts(&list).contains(&"0"));
+        let filled = |list: &DrawList| {
+            list.ops()
+                .iter()
+                .filter(|op| matches!(op, Op::Fill { color, .. } if *color == palette::HP))
+                .count()
+        };
+        assert_eq!(filled(&list), 0, "silence: an empty bar");
+    }
+
+    #[test]
+    fn the_help_strip_shows_the_help_of_the_row_wrapped_inside_the_window() {
+        let list = options_screen(&options_view(Category::Gameplay, 1, None));
+        let help = Category::Gameplay.rows()[1].help;
+        let shown: Vec<&str> =
+            texts(&list).into_iter().filter(|t| help.contains(*t) && t.len() > 20).collect();
+        assert_eq!(shown.join(" "), help, "the whole help, wrapped");
+    }
+
+    #[test]
+    fn the_reset_all_question_has_a_veil_yes_and_no_and_the_cursor_on_the_choice() {
+        let ask = |choice| options_screen(&options_view(Category::Video, 0, Some(choice)));
+        let list = ask(1);
+        let text = texts(&list);
+        assert!(text.contains(&"Reset all options to their defaults?"));
+        assert!(text.contains(&"Yes") && text.contains(&"No") && text.contains(&"A  OK   B  No"));
+        let veil = list.ops().iter().any(
+            |op| matches!(op, Op::Fill { rect, color } if (rect.w - WIDTH).abs() < 1e-3 && color.0[3] == 140),
+        );
+        assert!(veil);
+        let at = |list: &DrawList| *cursors(list).last().unwrap();
+        let (no, yes) = (at(&list), at(&ask(0)));
+        assert!(no.0 > yes.0 && (no.1 - yes.1).abs() < 1e-3, "the cursor moves from Yes to No");
+        let closed = options_screen(&options_view(Category::Video, 0, None));
+        assert!(texts(&closed).iter().all(|t| *t != "Yes"));
+    }
+    #[test]
     fn the_chosen_choice_is_orange_with_white_text_and_the_others_are_black() {
         let mut cheats = Cheats::neutral();
         cheats.set_index(Setting::Damage, 2);
@@ -1322,20 +2062,48 @@ mod tests {
             cheats.set_z_mode(mode);
             cheats_screen(&cheats_view(Row::Damage, cheats))
         };
+        // The HD card is one step that says which corners are Z
+        let corners = |list: &DrawList| {
+            let cards: Vec<(bool, bool)> = list
+                .ops()
+                .iter()
+                .filter_map(|op| match op {
+                    Op::Card { attack_z, defence_z, .. } => Some((*attack_z, *defence_z)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(cards.len(), 1, "one card");
+            cards[0]
+        };
+        assert_eq!(corners(&card(ZMode::Off)), (false, false));
+        assert_eq!(corners(&card(ZMode::Attack)), (true, false));
+        assert_eq!(corners(&card(ZMode::Defence)), (false, true));
+        assert_eq!(corners(&card(ZMode::Both)), (true, true));
+        // The pixel-style card (no card art) has a Z of three strokes in each Z corner and the
+        // kanji seven in a defence that is not Z
         let strokes =
             |list: &DrawList| list.ops().iter().filter(|op| matches!(op, Op::Line { .. })).count();
-        assert_eq!(strokes(&card(ZMode::Off)), 0);
-        assert_eq!(strokes(&card(ZMode::Attack)), 3, "a Z is three strokes");
-        assert_eq!(strokes(&card(ZMode::Defence)), 3);
-        assert_eq!(strokes(&card(ZMode::Both)), 6);
+        let rect = Rect::new(10.0, 20.0, CARD_WIDTH, CARD_HEIGHT);
+        assert_eq!(strokes(&pixel_card(rect, false, false)), 0);
+        assert_eq!(strokes(&pixel_card(rect, true, false)), 3, "a Z is three strokes");
+        assert_eq!(strokes(&pixel_card(rect, false, true)), 3);
+        assert_eq!(strokes(&pixel_card(rect, true, true)), 6);
+        assert!(
+            texts(&pixel_card(rect, false, false)).contains(&"七"),
+            "the defence of a card that is not Z"
+        );
+        assert!(
+            texts(&pixel_card(rect, true, false)).contains(&"七"),
+            "the defence stays a number"
+        );
+        assert!(
+            !texts(&pixel_card(rect, false, true)).contains(&"七"),
+            "a Z defence has no number"
+        );
         let off = card(ZMode::Off);
-        assert!(texts(&off).contains(&"七"), "the defence of a card that is not Z");
         assert!(texts(&off).contains(&"A card as the"), "{:?}", texts(&off));
         let attack = card(ZMode::Attack);
         assert!(texts(&attack).contains(&"Z in attack"), "{:?}", texts(&attack));
-        assert!(texts(&attack).contains(&"七"), "the defence stays a number");
-        let defence = card(ZMode::Defence);
-        assert!(!texts(&defence).contains(&"七"), "a Z defence has no number");
         assert_eq!(wrap("Z in attack and defence", CAPTION_CHARS), ["Z in attack and", "defence"]);
     }
 

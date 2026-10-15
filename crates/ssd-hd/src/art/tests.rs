@@ -1,6 +1,7 @@
 //! The art passes on synthetic frames: a pack of a few pictures made in a temporary folder, and
 //! frames with one tile or one sprite.
 
+use super::ArtState;
 use super::poses::{self, Pose};
 use crate::art_index::{ArtIndex, Object, Palette, Picture};
 use crate::pack::{Asset, Index, Manifest, Mode, Pack, word_key};
@@ -978,6 +979,30 @@ fn a_field_group_is_found_by_its_key_among_the_fields_art_only() {
 }
 
 #[test]
+fn a_field_frame_draws_a_group_from_the_fields_art_though_a_fighter_has_art_for_it_too() {
+    let dir = tempfile::tempdir().unwrap();
+    write_png(&dir.path().join("art/f.png"), 64, 64, |_, _| [0, 0, 255, 255]);
+    write_png(&dir.path().join("art/b.png"), 64, 64, |_, _| [255, 0, 0, 255]);
+    let (frame, pose) = fighter_log(40, 50);
+    let mut field = object(&pose, "art/f.png", false);
+    field.id = "field-npc-000".to_owned();
+    let battle = object(&pose, "art/b.png", false);
+    let pack = pack_of(dir.path(), Vec::new(), ArtIndex::new(Vec::new(), vec![field, battle]));
+    let kind_of_first = |known: Option<bool>| {
+        let mut art = ArtState::new(Arc::clone(&pack));
+        art.begin(256, 224, 4);
+        art.field_frame = known;
+        let found = art.find_poses(&frame);
+        assert_eq!(found.len(), 1, "one of the two poses is drawn");
+        found[0].0.field
+    };
+    // Where nothing says it, a pose of palette 1 with art made for a fighter is a fighter's
+    assert!(!kind_of_first(None));
+    // In a field frame it is the field's figure, drawn from the field's art
+    assert!(kind_of_first(Some(true)));
+}
+
+#[test]
 fn a_field_group_cut_by_the_edge_is_drawn_from_the_group_that_holds_it() {
     let dir = tempfile::tempdir().unwrap();
     write_png(&dir.path().join("art/w.png"), 64, 32, |x, _| {
@@ -1617,4 +1642,132 @@ fn a_fighter_drawn_with_a_later_palette_is_still_a_fighter_in_a_frame_of_fighter
         "{:?}",
         stats.poses
     );
+}
+
+/// A frame of 239 lines (the overscan some scenes use) with one effect sprite (palette 4) of 8 x 8
+/// pixels in colour 1 (white) at `(x, y)`, the OAM `y` being 224 or more.
+fn overscan_log(x: u8, y: u8) -> FrameLog {
+    let mut log = log(regs());
+    log.height = 239;
+    log.entries = (1..=239_u16)
+        .map(|scanline| LineEntry {
+            scanline,
+            from_pixel: 0,
+            regs: regs(),
+            sprites: SpriteLine { eval_line: scanline - 1, rebuilt: true, ..SpriteLine::default() },
+        })
+        .collect();
+    log.oam_low[0] = x;
+    log.oam_low[1] = y;
+    log.oam_low[3] = 4 << 1;
+    for row in 0..8 {
+        log.vram[row] = 0x00FF;
+    }
+    log.cgram_start[0x80 + 4 * 16 + 1] = 0x7FFF;
+    log
+}
+
+#[test]
+fn the_sprites_under_line_224_are_poses_of_their_own_found_by_their_exact_pixels() {
+    let dir = tempfile::tempdir().unwrap();
+    let frame = overscan_log(40, 232);
+    assert!(poses::sprites(&frame).is_empty(), "the capture kept no sprite under line 224");
+    let low = poses::overscan_sprites_in(&frame, &poses::View::window());
+    assert_eq!(low.len(), 1);
+    let found = poses::overscan_effects(&frame, &low);
+    assert_eq!(found.len(), 1);
+    let pose = &found[0];
+    assert_eq!((pose.w, pose.h, pose.org), (8, 8, (40, 233)));
+    write_png(&dir.path().join("art/l.png"), 32, 32, |_, _| [0, 0, 255, 255]);
+    let pack = pack_of(
+        dir.path(),
+        Vec::new(),
+        ArtIndex::new(Vec::new(), vec![object(pose, "art/l.png", false)]),
+    );
+    let mut renderer = Renderer::new();
+    let plain = renderer.render_hd(&frame, options(4)).unwrap();
+    renderer.set_art(Some(pack));
+    let drawn = renderer.render_hd(&frame, options(4)).unwrap();
+    assert_eq!(pixel(&plain, 41 * 4 + 1, 234 * 4 + 1), [255, 255, 255]);
+    assert_eq!(
+        pixel(&drawn, 41 * 4 + 1, 234 * 4 + 1),
+        [0, 0, 255],
+        "the band is drawn from the art"
+    );
+    assert_eq!(pixel(&drawn, 5, 5), pixel(&plain, 5, 5));
+    // Art for other pixels leaves the sprite as the game draws it
+    let mut other = object(pose, "art/l.png", false);
+    other.key ^= 1;
+    let pack = pack_of(dir.path(), Vec::new(), ArtIndex::new(Vec::new(), vec![other]));
+    renderer.set_art(Some(pack));
+    assert_eq!(renderer.render_hd(&frame, options(4)).unwrap(), plain);
+}
+
+#[test]
+fn a_field_figure_that_runs_under_line_224_is_drawn_whole_from_the_art_of_its_pieces_together() {
+    let dir = tempfile::tempdir().unwrap();
+    write_png(&dir.path().join("art/b.png"), 32, 72, |_, _| [0, 0, 255, 255]);
+    // Two solid 8 x 8 pieces of one figure: one above line 224, one wholly under it (OAM y 224)
+    let mut frame = overscan_log(40, 215);
+    frame.oam_low[4..8].copy_from_slice(&[40, 224, 0, 4 << 1]);
+    let sprites = poses::sprites(&frame);
+    let band = poses::overscan_sprites_in(&frame, &poses::View::window());
+    assert_eq!((sprites.len(), band.len()), (1, 1));
+    let view = poses::View::window();
+    let found = poses::poses(&frame, &sprites);
+    assert_eq!(found.iter().filter(|pose| pose.field).count(), 1);
+    // The art is made for the two pieces together
+    let whole: Vec<&poses::Sprite> = sprites.iter().chain(band.iter()).collect();
+    let whole = poses::field_pose(&whole, &frame, &view, 1).unwrap();
+    let mut art = object(&whole, "art/b.png", false);
+    art.id = "field-band-000".to_owned();
+    let found =
+        poses::join_band(found, &sprites, &band, &frame, &view, &mut |pose| pose.key == art.key);
+    let joined: Vec<_> = found.iter().filter(|pose| pose.field).collect();
+    assert_eq!(joined.len(), 1);
+    assert_eq!(joined[0].sprites, 0b11, "the piece under the line is the figure's");
+    // Without art for the whole, the pieces stay apart
+    let found = poses::poses(&frame, &sprites);
+    let found = poses::join_band(found, &sprites, &band, &frame, &view, &mut |_| false);
+    assert_eq!(found.iter().find(|pose| pose.field).unwrap().sprites, 0b1);
+    // The renderer draws both pieces from the art
+    let pack = pack_of(dir.path(), Vec::new(), ArtIndex::new(Vec::new(), vec![art]));
+    let mut renderer = Renderer::new();
+    let plain = renderer.render_hd(&frame, options(4)).unwrap();
+    renderer.set_art(Some(pack));
+    let drawn = renderer.render_hd(&frame, options(4)).unwrap();
+    assert_eq!(pixel(&plain, 41 * 4 + 1, 228 * 4 + 1), [255, 255, 255]);
+    assert_eq!(pixel(&drawn, 41 * 4 + 1, 228 * 4 + 1), [0, 0, 255]);
+}
+
+#[test]
+fn an_effect_piece_under_line_224_is_placed_beside_the_band_pieces_a_figure_took() {
+    let dir = tempfile::tempdir().unwrap();
+    write_png(&dir.path().join("art/f.png"), 32, 72, |_, _| [0, 0, 255, 255]);
+    write_png(&dir.path().join("art/e.png"), 32, 64, |_, _| [255, 0, 0, 255]);
+    // A figure of palette 4 (a piece above line 224 and one under it) and a piece of palette 3
+    // under it, within 4 pixels of the figure's: the effect cluster holds both lower pieces
+    let mut frame = overscan_log(40, 215);
+    frame.oam_low[4..8].copy_from_slice(&[40, 224, 0, 4 << 1]);
+    frame.oam_low[8..12].copy_from_slice(&[40, 234, 0, 3 << 1]);
+    frame.cgram_start[0x80 + 3 * 16 + 1] = 0x7FFF;
+    let view = poses::View::window();
+    let sprites = poses::sprites(&frame);
+    let band = poses::overscan_sprites_in(&frame, &view);
+    let whole: Vec<&poses::Sprite> = sprites.iter().chain(band.iter().take(1)).collect();
+    let whole = poses::field_pose(&whole, &frame, &view, 1).unwrap();
+    let mut figure = object(&whole, "art/f.png", false);
+    figure.id = "field-band-001".to_owned();
+    let effects = poses::overscan_effects(&frame, &band);
+    assert_eq!(effects.len(), 1);
+    assert_eq!(effects[0].sprites, 0b110, "the cluster holds the figure's lower piece");
+    let effect = object(&effects[0], "art/e.png", false);
+    let pack = pack_of(dir.path(), Vec::new(), ArtIndex::new(Vec::new(), vec![figure, effect]));
+    let mut renderer = Renderer::new();
+    let plain = renderer.render_hd(&frame, options(4)).unwrap();
+    renderer.set_art(Some(pack));
+    let drawn = renderer.render_hd(&frame, options(4)).unwrap();
+    assert_eq!(pixel(&drawn, 41 * 4 + 1, 228 * 4 + 1), [0, 0, 255], "the figure's piece");
+    assert_eq!(pixel(&plain, 41 * 4 + 1, 236 * 4 + 1), [255, 255, 255]);
+    assert_eq!(pixel(&drawn, 41 * 4 + 1, 236 * 4 + 1), [255, 0, 0], "the effect's own piece");
 }

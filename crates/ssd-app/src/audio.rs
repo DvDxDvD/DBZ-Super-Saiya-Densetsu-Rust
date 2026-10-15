@@ -1,3 +1,4 @@
+use crate::options::audio::AudioSettings;
 use ssd_oracle::AudioSink;
 
 const FREQUENCY: u64 = 48_000;
@@ -22,6 +23,7 @@ pub(crate) fn trim_for_latency(queued_bytes: usize, frequency: u64, pending: &mu
 pub struct Audio {
     stream: Option<sdl3::audio::AudioStreamOwner>,
     pending: Vec<f32>,
+    settings: AudioSettings,
 }
 
 pub(crate) fn open_with<F>(open: F) -> Audio
@@ -29,10 +31,14 @@ where
     F: FnOnce() -> Result<sdl3::audio::AudioStreamOwner, String>,
 {
     match open() {
-        Ok(stream) => Audio { stream: Some(stream), pending: Vec::with_capacity(4096) },
+        Ok(stream) => Audio {
+            stream: Some(stream),
+            pending: Vec::with_capacity(4096),
+            settings: AudioSettings::default(),
+        },
         Err(e) => {
             log::warn!("audio unavailable, running muted: {e}");
-            Audio { stream: None, pending: Vec::new() }
+            Audio { stream: None, pending: Vec::new(), settings: AudioSettings::default() }
         }
     }
 }
@@ -59,7 +65,12 @@ impl Audio {
 
     /// A muted output, with no device: what a run without sound has (the bench).
     pub fn muted() -> Audio {
-        Audio { stream: None, pending: Vec::new() }
+        Audio { stream: None, pending: Vec::new(), settings: AudioSettings::default() }
+    }
+
+    /// Sets the volume and the output the samples are shaped by from now on.
+    pub fn set_settings(&mut self, settings: AudioSettings) {
+        self.settings = settings;
     }
 
     pub fn frequency() -> u64 {
@@ -88,6 +99,7 @@ impl Audio {
 impl AudioSink for Audio {
     fn push(&mut self, left: f32, right: f32) {
         if !self.is_muted() {
+            let (left, right) = self.settings.shape(left, right);
             self.pending.push(left);
             self.pending.push(right);
         }

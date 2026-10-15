@@ -300,6 +300,10 @@ fn is_animation(wram: &[u8]) -> bool {
     matches!(wram[GAME_MODE] & 0x7F, 0x04 | 0x0C)
 }
 
+/// The longest run of field frames with map art available but not drawn that `report` accepts: a
+/// map load fades in over about 32 frames in a scene the renderer does not take for the field.
+const MAX_UNBOUND_RUN: u64 = 120;
+
 /// What one replay's frames added up to.
 #[derive(Debug, Default, Clone)]
 struct Outcome {
@@ -317,6 +321,11 @@ struct Outcome {
     /// and in the margins of the 16:9 view (see [`ArtStats::sprites_margin`]).
     field_window: KindPixels,
     field_margin: KindPixels,
+    /// The longest run of frames in a field state whose map has art in the pack but that are not
+    /// drawn from it (a map load fades in for about 32 frames; a longer run is a field the
+    /// renderer does not take for the field), with the frame it ended at.
+    unbound_longest: (u64, u64),
+    unbound_replay: String,
     /// The same by the game mode (`$24` of work RAM), with the frames of each.
     field_modes: BTreeMap<u8, (u64, KindPixels)>,
     /// Frames with a pose whose art draws under half the opaque pixels of its sprites, by game
@@ -447,6 +456,7 @@ fn check_replay(
     let mut run = WideRun::new(rom);
     run.set_art(pack.cloned());
     run.set_art_measure(true);
+    let mut unbound = 0_u64;
     let options = HdOptions { scale, look: Look::Crisp };
     while machine.frame_count() < frames {
         machine.run_frame_with(&mut |f| replay.input(f), &mut NullAudio)?;
@@ -460,6 +470,12 @@ fn check_replay(
         list.push(spent.as_secs_f32() * 1000.0);
         match &picture {
             Some(picture) => {
+                let map = run.art_stats().field_map;
+                unbound =
+                    if map.available.is_some() && map.bound.is_none() { unbound + 1 } else { 0 };
+                if unbound > outcome.unbound_longest.0 {
+                    outcome.unbound_longest = (unbound, machine.frame_count() - 1);
+                }
                 tally(
                     &mut outcome,
                     &run.art_stats(),
@@ -553,6 +569,10 @@ pub fn run_report(
         add(&mut total.field, o.field);
         add(&mut total.field_window, o.field_window);
         add(&mut total.field_margin, o.field_margin);
+        if o.unbound_longest.0 > total.unbound_longest.0 {
+            total.unbound_longest = o.unbound_longest;
+            total.unbound_replay.clone_from(&o.name);
+        }
         for (mode, (frames, poses)) in &o.thin {
             let entry = total.thin.entry(*mode).or_default();
             entry.0 += frames;
@@ -659,6 +679,14 @@ pub fn run_report(
                 ))
         )?;
     }
+    let unbound_fail = total.unbound_longest.0 > MAX_UNBOUND_RUN;
+    if unbound_fail {
+        writeln!(
+            out,
+            "  FAIL: {} frames in a row (replay {}, ending at frame {}) of a field whose map has art in the pack are not drawn from it",
+            total.unbound_longest.0, total.unbound_replay, total.unbound_longest.1
+        )?;
+    }
     let flagged: u64 = total.thin.values().map(|(frames, _)| frames).sum();
     let by_mode: Vec<String> = total
         .thin
@@ -716,7 +744,7 @@ pub fn run_report(
             "  lacks {key:016x}: {pixels} pixels in {frames} frames ({opaque} opaque px)"
         )?;
     }
-    Ok(u8::from(margins_fail))
+    Ok(u8::from(margins_fail || unbound_fail))
 }
 
 /// The colours drawn and the original's under them, summed over the frames of a pose's art.
@@ -1104,7 +1132,8 @@ pub fn run_scan(
             run.note(machine.wram(), machine.frame_log());
             continue;
         }
-        if run.note_hd(machine.wram(), machine.frame_log(), options).is_some() {
+        if let Some(shown) = run.note_hd(machine.wram(), machine.frame_log(), options) {
+            let scene = shown.scene;
             let stats = run.art_stats();
             let units: Vec<String> = stats
                 .poses
@@ -1133,8 +1162,11 @@ pub fn run_scan(
                 .collect();
             writeln!(
                 out,
-                "{number:6} mode {:02X} battle {} fighters {}/{} fx {}/{} portraits {} (no art {}) recoloured {}+{} poses {}",
+                "{number:6} mode {:02X} scene {:?} map {:?}/{:?} battle {} fighters {}/{} fx {}/{} portraits {} (no art {}) recoloured {}+{} poses {}",
                 machine.wram()[GAME_MODE],
+                scene,
+                stats.field_map.available,
+                stats.field_map.bound,
                 u8::from(is_battle(machine.wram())),
                 stats.fighters.art,
                 stats.fighters.total,

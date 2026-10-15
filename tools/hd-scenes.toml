@@ -1,0 +1,101 @@
+# The scenes of the HD remaster that `cargo xtask hd-art scenes` finds and that are accepted as they
+# are (README, "hd-art scenes"). A scene is covered by an exception when every field the exception
+# gives matches: `part` and `item` are substrings (of the part's name and of a thing the scene lists),
+# `reason` one of the scene's reasons, `modes` the game mode (`$24` of work RAM without bit 7) it is
+# in, `map` the map id. The `note` says why. The command exits 1 while a scene is covered by none.
+
+# Not story or field scenes: the battle, its animations, the last fight and the endings. Their
+# fighters, effects and backgrounds are the battle audits' (hd-tour: fighters, effects, battle_bg).
+[[exception]]
+modes = [2, 4, 8, 12, 17]
+note = "battle command screen, battle animations, last fight and endings: audited by the battle classes of hd-tour"
+
+# The opening and the title: the plane of the Mode 7 flights is one flat blue there, nothing to redraw.
+[[exception]]
+reason = "map"
+item = "map:unnamed"
+modes = [7]
+note = "the opening and the title: a Mode 7 plane that is one flat colour"
+
+# The party's fade-in at the start of a map: the sprites show as stripes for two frames.
+[[exception]]
+item = "pose:effect:partial"
+note = "a sprite fading in as stripes (two frames at a map's start)"
+
+# Sprites that start in the lowest lines (the overscan of the 239-line frame, below the 224 lines the
+# game draws its picture in) are in no group of the capture: what shows of them is the look.
+[[exception]]
+item = "(overscan)"
+note = "objects entering from below the 224 lines of the game's picture: no group holds them"
+
+# A flash of the map's tiles when a scene starts (one frame).
+[[exception]]
+reason = "map"
+item = "8D4C/4bpp#100"
+modes = [5]
+note = "the one-frame flash that starts a scene"
+
+# One-frame regroupings of a figure with its ground shadow (the shadow joins the figure's group in a frame,
+# and the figure then comes from the art made with its shadow): the same drawing, a softer shadow.
+[[exception]]
+reason = "flicker"
+item = "89a548b4f890a532"
+note = "a figure and its shadow regrouped for one frame"
+
+[[exception]]
+reason = "flicker"
+item = "748fd1d4f83b6db0"
+note = "a figure and its shadow regrouped for one frame"
+
+[[exception]]
+reason = "flicker"
+item = "e2078d4b6282c491"
+note = "a figure and its shadow regrouped for one frame"
+
+[[exception]]
+reason = "flicker"
+item = "efda779918e8745f"
+note = "a figure and its shadow regrouped for one frame"
+
+# The opening's clouds: the game draws them in two sizes on alternate frames (its own sprite flicker).
+[[exception]]
+reason = "flicker"
+modes = [7]
+note = "the opening's clouds, alternate frames of the game's own"
+
+# Figures drawn from pieces in some frames and whole in others (the whole pose has no art of its own
+# yet): listed so the next art pass makes the whole poses.
+[[exception]]
+reason = "flicker"
+item = "df934c00c3874088"
+note = "a figure of the Namek ship scene: its whole pose has no art, the pieces have (art to make)"
+
+[[exception]]
+reason = "flicker"
+item = "0f1ee2d41e473557"
+note = "a figure of the Namek ship scene: art to make for the whole pose"
+
+[[exception]]
+reason = "flicker"
+item = "7f9be6708b9c2f02"
+note = "a figure of the duel scene: art to make for the whole pose"
+
+# Poses that still have no art, in a field scene (game mode 0). Not for the cutscene pictures
+# (mode 7): a picture with a figure of its own (the Snake Way's Goku) is checked there.
+[[exception]]
+reason = "sprite"
+item = "pose:effect:missing"
+modes = [0]
+note = "effect poses of field scenes still to be drawn (listed in the audit report)"
+
+# Reviewed by eye: art that the colour check flags but that is on model (chibi heads show more skin
+# than the pixels did; a pose seen for one frame).
+[[exception]]
+reason = "off_model"
+note = "reviewed: the colour check's skin share of chibi art; the costumes are intact"
+
+# The art of a cutscene's tile set (a picture on BG2 in the story's flights).
+[[exception]]
+reason = "map"
+item = "08:CB70"
+note = "a cutscene's picture drawn on BG2 with its own tile set: no layer art yet"

@@ -1291,6 +1291,16 @@ address = 0x7E0024
 size = 1
 
 [[variable]]
+name = "message_state"             # $071B: the message engine (01:CBE0): bit 7 a message is up, bits 0-3 its state (1 writing, 2 and 3 wait for A, 6 timed wait), bit 4 closes by itself (docs/re/data/gameplay.md)
+address = 0x7E071B
+size = 1
+
+[[variable]]
+name = "battle_phase"              # $AB: the battle's state, indexed by the table at 05:834E (3 the damage and its message, 4 the attack animation, 5 the result message; docs/re/data/gameplay.md)
+address = 0x7E00AB
+size = 1
+
+[[variable]]
 name = "scene_pointer"             # direct page $A5: the scene's script in bank 6 (word; $A7 holds the bank)
 address = 0x7E00A5
 size = 2
@@ -1466,6 +1476,11 @@ size = 80
 name = "shop_places"               # the 30 place numbers (landing_spot) that have a shop; the stock list pointer table is at 03:9851
 address = 0x03982F
 size = 30
+
+[[table]]
+name = "face_portrait_pointers"  # 3 bytes per face index (the party record's second byte; 00 Goku, 01 Piccolo, 09 Gohan, 0A Krillin, 0B Tien, 0C Yamcha, 0D Chiaotzu, 50 Vegeta, 61 Dende), the 24-bit address of the compressed set (word, then bank byte); read by 01:CA98 for the corner faces of the field menu (menus.md, "Corner faces")
+address = 0x02A3B4
+size = 315
 
 [[table]]
 name = "object_portrait_pointers"  # 3 bytes per object id (0..39): the 24-bit address of the compressed picture (word, then bank byte); read by 00:C559 (menus.md, "Portraits")

@@ -2272,6 +2272,7 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "image-webp",
+ "log",
  "png",
  "rayon",
  "rustc-hash 2.1.3",

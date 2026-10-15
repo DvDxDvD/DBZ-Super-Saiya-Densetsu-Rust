@@ -4,8 +4,13 @@
 //! cursors and reports what was chosen.
 
 use crate::cheats::Row;
+use crate::options::controls::{self, Device};
+use crate::options::{Category, Kind, Opens};
 use crate::screens::PAGE_SIZE;
 use crate::view::{Screen, Sheet, Tab};
+
+/// The line A shows on a tab with no stack: there is nothing under the cursor to use or drop.
+const EMPTY_TAB: &str = "Nothing on this tab.";
 
 /// A navigation key: the host maps its keyboard and gamepad to these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,8 +23,14 @@ pub enum Key {
     Confirm,
     /// Goes back: one level up, or closes the menu from the command window (the SNES B button).
     Cancel,
-    /// The next tab of the bag (the SNES shoulder buttons).
+    /// The next tab of the bag, or the next page of the options (the shoulder button R).
     Tab,
+    /// The previous page of the options (the shoulder button L); the bag treats it as Tab.
+    TabBack,
+    /// The Y button: on the options, Reset this page.
+    ResetPage,
+    /// The Select button: on the options, Reset all.
+    ResetAll,
 }
 
 /// An entry of the command window or of the Menu list.
@@ -38,7 +49,7 @@ pub enum Entry {
     Save,
     /// The cheats screen (M5).
     Cheats,
-    /// Shown greyed out until the options exist.
+    /// The options screen (M7).
     Options,
 }
 
@@ -79,14 +90,15 @@ impl Entry {
             Self::Text => "Set the text speed.",
             Self::Save => "Save the game in a slot.",
             Self::Cheats => "Set the cheats of this run.",
-            Self::Options => "Coming soon.",
+            Self::Options => "Game, picture, sound and keys.",
         }
     }
 
-    /// Whether the entry does something. Options is shown greyed out until it does.
+    /// Whether the entry does something: a greyed entry chooses nothing. Every entry does, since the options exist.
     #[must_use]
     pub const fn enabled(self) -> bool {
-        !matches!(self, Self::Options)
+        let _ = self;
+        true
     }
 }
 
@@ -108,7 +120,7 @@ const TOWN_ROWS: [Entry; 4] = [Entry::Talk, Entry::Look, Entry::Item, Entry::Men
 const FLYING_ROWS: [Entry; 3] = [Entry::Land, Entry::Item, Entry::Menu];
 
 /// The rows of the Menu list: the original's five (Cards to Save, in its order), then Cheats and
-/// Options, which is greyed out.
+/// Options.
 pub const MENU_ROWS: [Entry; 7] = [
     Entry::Cards,
     Entry::Status,
@@ -134,10 +146,6 @@ pub struct ItemRow {
     pub usable: bool,
     /// Can be dropped: Drop is offered.
     pub droppable: bool,
-    /// Asks for a party member: the use-on list comes first.
-    pub member: bool,
-    /// Units in the stack: the most the quantity can be.
-    pub count: u16,
 }
 
 /// What a key chooses.
@@ -149,17 +157,26 @@ pub enum Action {
     Choose(Entry),
     /// Back: from the command window the menu closes; from a list the command window comes back.
     Back,
-    /// Use `units` of the stack `stack` on the party row `member` (`None` when the object needs no
-    /// member).
-    Use { stack: u32, member: Option<u8>, units: u16 },
-    /// Drop `units` of the stack `stack`.
-    Drop { stack: u32, units: u16 },
+    /// Use one unit of the stack `stack`: the original takes the unit, and asks for nothing.
+    Use { stack: u32 },
+    /// Drop one unit of the stack `stack`.
+    Drop { stack: u32 },
     /// A line for the screen's foot: the choice does nothing, and says why.
     Notice(&'static str),
     /// On the cheats screen, the choice of `row` moves by `by` steps (-1 Left, 1 Right or A).
     Adjust { row: Row, by: i8 },
     /// On the cheats screen, Reset all: every cheat is off.
     ResetAll,
+    /// On the options screen, the row `row` of `category` moves by `by` steps (-1 Left, 1 Right or A).
+    OptionChange { category: Category, row: usize, by: i8 },
+    /// On the options screen, Reset this page: every row of `category` goes back to its default.
+    OptionsResetPage(Category),
+    /// On the options screen, Reset all was confirmed: every option goes back to its default.
+    OptionsResetAll,
+    /// On the options screen, a button opens another screen.
+    OptionsOpen(Opens),
+    /// On the options screen, "Apply video changes?" was answered: Keep (`true`) or Revert (`false`).
+    OptionsVideo { keep: bool },
 }
 
 /// The cursors of the HD screens: the command window, the Menu list, the bag and the cheats.
@@ -170,6 +187,38 @@ pub struct Nav {
     menu: usize,
     bag: Bag,
     cheats: usize,
+    options: OptionsNav,
+    /// The Cheats screen was opened from the options, and goes back there.
+    cheats_from_options: bool,
+}
+
+/// A key the Controls page refused: where the cursor was, the action that holds the key, and the frames the
+/// row still flashes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Refusal {
+    pub position: usize,
+    pub by: &'static str,
+    pub flash: u16,
+}
+
+/// The frames the refused row flashes (a second).
+pub const REFUSAL_FLASH: u16 = 60;
+
+/// The cursors of the options screen: the category, the row in it, and Reset all's question while it is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OptionsNav {
+    category: usize,
+    row: usize,
+    /// While Reset all asks: the choice under the cursor, 0 Yes and 1 No.
+    confirm: Option<u8>,
+    /// While "Apply video changes?" asks: the choice under the cursor, 0 Keep and 1 Revert.
+    video_confirm: Option<u8>,
+    /// The Controls page: the device it shows (0 keyboard, 1 gamepad), told by the host from the stored value.
+    device: u8,
+    /// The Controls page waits for the next key or button.
+    listening: bool,
+    /// The Controls page refused the last key.
+    refused: Option<Refusal>,
 }
 
 /// The cursors and the sheet of the bag's screen.
@@ -181,10 +230,6 @@ pub struct Bag {
     sheet: Sheet,
     /// On Choose: 0 Use, 1 Drop; on Confirm: 0 Yes, 1 No.
     choice: u8,
-    /// On Members: the party row.
-    member: u8,
-    /// On Quantity: the units.
-    units: u16,
 }
 
 impl Nav {
@@ -203,6 +248,7 @@ impl Nav {
             Screen::Menu => self.menu,
             Screen::Items => self.bag.cursor % PAGE_SIZE,
             Screen::Cheats => self.cheats,
+            Screen::Options => self.options_row(),
         };
         u8::try_from(row).unwrap_or(0)
     }
@@ -212,7 +258,7 @@ impl Nav {
     pub fn page(&self) -> u8 {
         match self.screen {
             Screen::Items => u8::try_from(self.bag.cursor / PAGE_SIZE).unwrap_or(0),
-            Screen::Command | Screen::Menu | Screen::Cheats => 0,
+            Screen::Command | Screen::Menu | Screen::Cheats | Screen::Options => 0,
         }
     }
 
@@ -220,6 +266,114 @@ impl Nav {
     #[must_use]
     pub fn cheats_row(&self) -> Row {
         Row::ALL[self.cheats.min(Row::ALL.len() - 1)]
+    }
+
+    /// The category the options screen is on.
+    #[must_use]
+    pub fn options_category(&self) -> Category {
+        Category::ALL[self.options.category.min(Category::ALL.len() - 1)]
+    }
+
+    /// The row of the options screen under the cursor (an index of the category's rows; 0 when it has none).
+    /// On the Controls page the cursor is a place in the grid ([`Nav::controls_position`]), and the row is the
+    /// shown device's row of that place.
+    #[must_use]
+    pub fn options_row(&self) -> usize {
+        if self.options_category() == Category::Controls {
+            return match self.controls_action() {
+                Some(action) => controls::row_of(self.controls_device(), action),
+                None => 0,
+            };
+        }
+        self.options.row.min(self.options_category().rows().len().saturating_sub(1))
+    }
+
+    /// The device the Controls page shows.
+    #[must_use]
+    pub fn controls_device(&self) -> Device {
+        Device::from_index(usize::from(self.options.device))
+    }
+
+    /// The host tells the Controls page which device the stored value says.
+    pub fn set_controls_device(&mut self, device: Device) {
+        self.options.device = u8::try_from(device.index()).unwrap_or(0);
+    }
+
+    /// The place of the Controls page's cursor: 0 is the device row, 1 to 16 the actions, two to a line.
+    #[must_use]
+    pub fn controls_position(&self) -> usize {
+        self.options.row.min(controls::ACTIONS)
+    }
+
+    /// The action under the Controls page's cursor (0 to 15), none on the device row.
+    #[must_use]
+    pub fn controls_action(&self) -> Option<usize> {
+        self.controls_position().checked_sub(1)
+    }
+
+    /// Whether the Controls page waits for the next key or button.
+    #[must_use]
+    pub const fn options_listening(&self) -> bool {
+        self.options.listening
+    }
+
+    /// The Controls page stops waiting for a key (one came, or Esc cancelled).
+    pub fn stop_listening(&mut self) {
+        self.options.listening = false;
+    }
+
+    /// The Controls page refused a key: `by` is the action that already holds it. The row flashes for a second.
+    pub fn refuse(&mut self, by: &'static str) {
+        self.options.listening = false;
+        self.options.refused =
+            Some(Refusal { position: self.controls_position(), by, flash: REFUSAL_FLASH });
+    }
+
+    /// The key the Controls page refused, while the refusal still shows.
+    #[must_use]
+    pub const fn options_refusal(&self) -> Option<Refusal> {
+        self.options.refused
+    }
+
+    /// One frame goes by: a refused row's flash runs down.
+    pub fn tick(&mut self) {
+        if let Some(refusal) = self.options.refused.as_mut() {
+            refusal.flash = refusal.flash.saturating_sub(1);
+        }
+    }
+
+    /// While Reset all asks, the choice under the cursor (0 Yes, 1 No).
+    #[must_use]
+    pub const fn options_confirm(&self) -> Option<u8> {
+        self.options.confirm
+    }
+
+    /// While "Apply video changes?" asks, the choice under the cursor (0 Keep, 1 Revert).
+    #[must_use]
+    pub const fn options_video_confirm(&self) -> Option<u8> {
+        self.options.video_confirm
+    }
+
+    /// "Apply video changes?" opens, the cursor on Revert.
+    pub fn open_video_confirm(&mut self) {
+        self.options.video_confirm = Some(1);
+    }
+
+    /// "Apply video changes?" closes (it was answered, or timed out).
+    pub fn close_video_confirm(&mut self) {
+        self.options.video_confirm = None;
+    }
+
+    /// Where B on the Cheats screen goes: the options when they opened it, else the Menu list.
+    #[must_use]
+    pub const fn cheats_back(&self) -> Screen {
+        if self.cheats_from_options { Screen::Options } else { Screen::Menu }
+    }
+
+    /// The Cheats screen opens from a button of the options.
+    pub fn enter_cheats_from_options(&mut self) {
+        self.enter(Screen::Cheats);
+        self.cheats_from_options = true;
     }
 
     /// The tab of the bag.
@@ -246,18 +400,6 @@ impl Nav {
         self.bag.choice
     }
 
-    /// The party row the use-on list is on.
-    #[must_use]
-    pub const fn member(&self) -> u8 {
-        self.bag.member
-    }
-
-    /// The units the quantity selector shows.
-    #[must_use]
-    pub const fn units(&self) -> u16 {
-        self.bag.units
-    }
-
     /// The HD shows `screen` from now on. A list starts at its first row; the command window keeps
     /// the row it had, as the original's does when it comes back from a list.
     pub fn enter(&mut self, screen: Screen) {
@@ -269,7 +411,11 @@ impl Nav {
                 self.bag.cursor = 0;
                 self.bag.sheet = Sheet::Browse;
             }
-            Screen::Cheats => self.cheats = 0,
+            Screen::Cheats => {
+                self.cheats = 0;
+                self.cheats_from_options = false;
+            }
+            Screen::Options => self.options = OptionsNav::default(),
         }
     }
 
@@ -308,7 +454,12 @@ impl Nav {
                     Key::Down => self.command = next(self.command, rows.len()),
                     Key::Confirm => return choose(rows[self.command]),
                     Key::Cancel => return Action::Back,
-                    Key::Left | Key::Right | Key::Tab => {}
+                    Key::Left
+                    | Key::Right
+                    | Key::Tab
+                    | Key::TabBack
+                    | Key::ResetPage
+                    | Key::ResetAll => {}
                 }
             }
             Screen::Menu => match key {
@@ -316,7 +467,12 @@ impl Nav {
                 Key::Down => self.menu = next(self.menu, MENU_ROWS.len()),
                 Key::Confirm => return choose(MENU_ROWS[self.menu]),
                 Key::Cancel => return Action::Back,
-                Key::Left | Key::Right | Key::Tab => {}
+                Key::Left
+                | Key::Right
+                | Key::Tab
+                | Key::TabBack
+                | Key::ResetPage
+                | Key::ResetAll => {}
             },
             // The bag is driven by `key_bag`, which has the stacks.
             Screen::Items => {
@@ -333,22 +489,150 @@ impl Nav {
                 Key::Confirm if self.cheats_row() == Row::ResetAll => return Action::ResetAll,
                 Key::Right | Key::Confirm => return adjust(self.cheats_row(), 1),
                 Key::Cancel => return Action::Back,
-                Key::Tab => {}
+                Key::Tab | Key::TabBack | Key::ResetPage | Key::ResetAll => {}
             },
+            Screen::Options => return self.key_options(key),
+        }
+        Action::None
+    }
+
+    /// What `key` does on the options screen: Up and Down move the row, Left and Right (or A) change it, L and R
+    /// change the page, Y resets the page, Select asks to reset all (a question with the cursor on No).
+    fn key_options(&mut self, key: Key) -> Action {
+        if let Some(choice) = self.options.video_confirm {
+            return match key {
+                Key::Up | Key::Down | Key::Left | Key::Right | Key::Tab | Key::TabBack => {
+                    self.options.video_confirm = Some(choice ^ 1);
+                    Action::None
+                }
+                Key::Confirm => Action::OptionsVideo { keep: choice == 0 },
+                Key::Cancel => Action::OptionsVideo { keep: false },
+                Key::ResetPage | Key::ResetAll => Action::None,
+            };
+        }
+        if let Some(choice) = self.options.confirm {
+            match key {
+                Key::Up | Key::Down | Key::Left | Key::Right | Key::Tab | Key::TabBack => {
+                    self.options.confirm = Some(choice ^ 1);
+                }
+                Key::Confirm => {
+                    self.options.confirm = None;
+                    if choice == 0 {
+                        return Action::OptionsResetAll;
+                    }
+                }
+                Key::Cancel => self.options.confirm = None,
+                Key::ResetPage | Key::ResetAll => {}
+            }
+            return Action::None;
+        }
+        if self.options.listening {
+            // The host gives the next key or button through the capture; a navigation key does nothing meanwhile.
+            return Action::None;
+        }
+        self.options.refused = None;
+        if self.options_category() == Category::Controls
+            && !matches!(
+                key,
+                Key::Tab | Key::TabBack | Key::ResetPage | Key::ResetAll | Key::Cancel
+            )
+        {
+            return self.key_controls(key);
+        }
+        let category = self.options_category();
+        let rows = category.rows();
+        let row = self.options_row();
+        match key {
+            Key::Up if !rows.is_empty() => self.options.row = step_row(rows, row, false),
+            Key::Down if !rows.is_empty() => self.options.row = step_row(rows, row, true),
+            Key::Left | Key::Right | Key::Confirm => {
+                let Some(def) = rows.get(row) else { return Action::None };
+                if let Kind::Button(_) = def.kind {
+                    if key != Key::Left
+                        && let crate::options::Source::Opens(opens) = def.source
+                    {
+                        return Action::OptionsOpen(opens);
+                    }
+                    return Action::None;
+                }
+                let by = if key == Key::Left { -1 } else { 1 };
+                return Action::OptionChange { category, row, by };
+            }
+            Key::Tab => {
+                self.options = OptionsNav {
+                    category: category.next().index(),
+                    device: self.options.device,
+                    ..OptionsNav::default()
+                }
+            }
+            Key::TabBack => {
+                self.options = OptionsNav {
+                    category: category.previous().index(),
+                    device: self.options.device,
+                    ..OptionsNav::default()
+                };
+            }
+            Key::ResetPage => return Action::OptionsResetPage(category),
+            Key::ResetAll => self.options.confirm = Some(1),
+            Key::Cancel => return Action::Back,
+            Key::Up | Key::Down => {}
+        }
+        Action::None
+    }
+
+    /// What `key` does on the Controls page, a grid two to a line under the device row: Up and Down move a line
+    /// (the device row between), Left and Right move across a line or, on the device row, change the device; A
+    /// waits for a new key on a key box.
+    fn key_controls(&mut self, key: Key) -> Action {
+        let at = self.controls_position();
+        match key {
+            Key::Up => {
+                self.options.row = match at {
+                    0 => controls::ACTIONS - 1,
+                    1 | 2 => 0,
+                    _ => at - 2,
+                };
+            }
+            Key::Down => {
+                self.options.row = match at {
+                    0 => 1,
+                    _ if at + 2 > controls::ACTIONS => 0,
+                    _ => at + 2,
+                };
+            }
+            Key::Left | Key::Right if at == 0 => {
+                let by = if key == Key::Left { -1 } else { 1 };
+                return Action::OptionChange { category: Category::Controls, row: 0, by };
+            }
+            Key::Left if at.is_multiple_of(2) => self.options.row = at - 1,
+            Key::Right if at % 2 == 1 => self.options.row = at + 1,
+            Key::Confirm if at == 0 => {
+                return Action::OptionChange { category: Category::Controls, row: 0, by: 1 };
+            }
+            Key::Confirm => self.options.listening = true,
+            _ => {}
         }
         Action::None
     }
 
     /// What `key` does on the bag's screen, with its stacks of the tab as `rows` and the party's
     /// `party` members. The cursors move, a sheet opens or closes, or the choice is reported.
-    pub fn key_bag(&mut self, key: Key, rows: &[ItemRow], party: usize) -> Action {
+    pub fn key_bag(&mut self, key: Key, rows: &[ItemRow]) -> Action {
         if self.screen != Screen::Items {
             return Action::None;
         }
         let last = rows.len().saturating_sub(1);
         self.bag.cursor = self.bag.cursor.min(last);
         let Some(row) = rows.get(self.bag.cursor).copied() else {
-            return if key == Key::Cancel { Action::Back } else { self.tab_key(key) };
+            // An empty tab (or a bag not bound yet): Back and the tabs work, and A says why nothing happens.
+            return match key {
+                Key::Cancel => Action::Back,
+                Key::Confirm => Action::Notice(EMPTY_TAB),
+                Key::Tab | Key::TabBack => self.tab_key(key),
+                Key::Up | Key::Down | Key::Left | Key::Right | Key::ResetPage | Key::ResetAll => {
+                    Action::None
+                }
+            };
         };
         let bag = &mut self.bag;
         match bag.sheet {
@@ -357,7 +641,8 @@ impl Nav {
                 Key::Down => bag.cursor = (bag.cursor + 1).min(last),
                 Key::Left => bag.cursor = bag.cursor.saturating_sub(COLUMN),
                 Key::Right => bag.cursor = (bag.cursor + COLUMN).min(last),
-                Key::Tab => return self.tab_key(key),
+                Key::Tab | Key::TabBack => return self.tab_key(key),
+                Key::ResetPage | Key::ResetAll => {}
                 Key::Cancel => return Action::Back,
                 Key::Confirm => {
                     if !row.usable && !row.droppable {
@@ -376,65 +661,39 @@ impl Nav {
                 Key::Cancel => bag.sheet = Sheet::Browse,
                 Key::Confirm => {
                     if bag.choice == 0 {
-                        if row.member {
-                            bag.member = 0;
-                            bag.sheet = Sheet::Members;
-                        } else {
-                            bag.units = 1;
-                            bag.sheet = Sheet::Quantity;
-                        }
+                        // One unit, as the original takes it: the original asks for nothing on the map.
+                        bag.sheet = Sheet::Browse;
+                        return Action::Use { stack: row.id };
                     } else if row.droppable {
-                        bag.units = 1;
-                        bag.sheet = Sheet::Quantity;
+                        // Drop asks Yes or No, and starts on No.
+                        bag.sheet = Sheet::Confirm;
                     } else {
                         return Action::Notice("This cannot be dropped.");
                     }
                 }
-                Key::Left | Key::Right | Key::Tab => {}
-            },
-            Sheet::Members => match key {
-                Key::Up => bag.member = bag.member.saturating_sub(1),
-                Key::Down => {
-                    bag.member = (usize::from(bag.member) + 1).min(party.saturating_sub(1)) as u8;
-                }
-                Key::Cancel => bag.sheet = Sheet::Choose,
-                Key::Confirm => {
-                    bag.units = 1;
-                    bag.sheet = Sheet::Quantity;
-                }
-                Key::Left | Key::Right | Key::Tab => {}
-            },
-            Sheet::Quantity => match key {
-                Key::Left => bag.units = bag.units.saturating_sub(1).max(1),
-                Key::Right => bag.units = (bag.units + 1).min(row.count.max(1)),
-                Key::Cancel => {
-                    bag.sheet =
-                        if bag.choice == 0 && row.member { Sheet::Members } else { Sheet::Choose };
-                }
-                Key::Confirm => {
-                    let units = bag.units;
-                    if bag.choice == 0 {
-                        let member = row.member.then_some(bag.member);
-                        bag.sheet = Sheet::Browse;
-                        return Action::Use { stack: row.id, member, units };
-                    }
-                    bag.choice = 1;
-                    bag.sheet = Sheet::Confirm;
-                }
-                Key::Up | Key::Down | Key::Tab => {}
+                Key::Left
+                | Key::Right
+                | Key::Tab
+                | Key::TabBack
+                | Key::ResetPage
+                | Key::ResetAll => {}
             },
             Sheet::Confirm => match key {
                 Key::Up | Key::Down | Key::Left | Key::Right => bag.choice ^= 1,
-                Key::Cancel => bag.sheet = Sheet::Quantity,
+                // Back to the choice, which is Drop: its choice (Use or Drop) is not the Yes or No toggled here.
+                Key::Cancel => {
+                    bag.choice = 1;
+                    bag.sheet = Sheet::Choose;
+                }
                 Key::Confirm => {
                     if bag.choice == 0 {
-                        let units = bag.units;
                         bag.sheet = Sheet::Browse;
-                        return Action::Drop { stack: row.id, units };
+                        return Action::Drop { stack: row.id };
                     }
-                    bag.sheet = Sheet::Quantity;
+                    // No: back to the Use or Drop choice, which still shows Drop.
+                    bag.sheet = Sheet::Choose;
                 }
-                Key::Tab => {}
+                Key::Tab | Key::TabBack | Key::ResetPage | Key::ResetAll => {}
             },
         }
         Action::None
@@ -442,7 +701,7 @@ impl Nav {
 
     /// The Tab key on the bag: the next tab, and its first stack under the cursor.
     fn tab_key(&mut self, key: Key) -> Action {
-        if key == Key::Tab {
+        if matches!(key, Key::Tab | Key::TabBack) {
             let next = match self.bag.tab {
                 Tab::All => Tab::Allies,
                 Tab::Allies => Tab::Tools,
@@ -455,6 +714,18 @@ impl Nav {
 }
 
 /// The row above `row` in a list of `rows`, wrapping to the last.
+/// The row after (or before) `row` of `rows` that has a cursor, wrapping: read-only rows are skipped.
+fn step_row(rows: &[crate::options::RowDef], row: usize, down: bool) -> usize {
+    let mut at = row;
+    for _ in 0..rows.len() {
+        at = if down { next(at, rows.len()) } else { previous(at, rows.len()) };
+        if !rows[at].is_info() {
+            return at;
+        }
+    }
+    row
+}
+
 fn previous(row: usize, rows: usize) -> usize {
     if row == 0 { rows - 1 } else { row - 1 }
 }
@@ -478,8 +749,8 @@ fn adjust(row: Row, by: i8) -> Action {
 mod tests {
     use super::*;
 
-    fn stack(id: u32, usable: bool, droppable: bool, member: bool, count: u16) -> ItemRow {
-        ItemRow { id, usable, droppable, member, count }
+    fn stack(id: u32, usable: bool, droppable: bool) -> ItemRow {
+        ItemRow { id, usable, droppable }
     }
 
     #[test]
@@ -517,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_list_opens_the_cheats_and_its_greyed_options_choose_nothing() {
+    fn the_menu_list_opens_the_cheats_and_the_options() {
         let mut nav = Nav::default();
         nav.open();
         nav.enter(Screen::Menu);
@@ -526,14 +797,206 @@ mod tests {
         }
         assert_eq!(nav.cursor(), 5, "Cheats");
         assert_eq!(nav.key(Key::Confirm, false, false, 0), Action::Choose(Entry::Cheats));
-        assert!(Entry::Cheats.enabled() && Entry::Save.enabled() && !Entry::Options.enabled());
+        assert!(Entry::Cheats.enabled() && Entry::Save.enabled() && Entry::Options.enabled());
         assert_eq!(nav.key(Key::Down, false, false, 0), Action::None);
         assert_eq!(nav.cursor(), 6, "Options");
-        assert_eq!(nav.key(Key::Confirm, false, false, 0), Action::None);
+        assert_eq!(nav.key(Key::Confirm, false, false, 0), Action::Choose(Entry::Options));
         assert_eq!(nav.key(Key::Down, false, false, 0), Action::None);
         assert_eq!(nav.cursor(), 0, "the list wraps");
     }
 
+    #[test]
+    fn the_options_screen_moves_between_rows_and_pages_and_reports_the_changes() {
+        let mut nav = Nav::default();
+        nav.enter(Screen::Options);
+        assert_eq!(
+            (nav.options_category(), nav.options_row(), nav.cursor()),
+            (Category::Difficulty, 0, 0)
+        );
+        let key = |nav: &mut Nav, key| nav.key(key, false, false, 0);
+        // The Difficulty page: the preset changes with Left and Right (the rows that only show a value or a note are
+        // skipped), and the Cheats button below opens with A and Right and does nothing on Left.
+        let change = |by| Action::OptionChange { category: Category::Difficulty, row: 0, by };
+        assert_eq!(key(&mut nav, Key::Right), change(1));
+        assert_eq!(key(&mut nav, Key::Left), change(-1));
+        assert_eq!(key(&mut nav, Key::Down), Action::None);
+        assert_eq!(
+            nav.options_row(),
+            5,
+            "Down passes the note and the three values: the Cheats button"
+        );
+        assert_eq!(key(&mut nav, Key::Confirm), Action::OptionsOpen(Opens::Cheats));
+        assert_eq!(key(&mut nav, Key::Right), Action::OptionsOpen(Opens::Cheats));
+        assert_eq!(key(&mut nav, Key::Left), Action::None);
+        assert_eq!(key(&mut nav, Key::Down), Action::None);
+        assert_eq!(nav.options_row(), 0, "the rows wrap to the preset");
+        assert_eq!(key(&mut nav, Key::Up), Action::None);
+        assert_eq!(nav.options_row(), 5, "Up wraps to the button");
+        // R is the next page, with the cursor on its first row; L goes back and wraps.
+        assert_eq!(key(&mut nav, Key::Tab), Action::None);
+        assert_eq!(nav.options_category(), Category::Gameplay);
+        assert_eq!(key(&mut nav, Key::Down), Action::None);
+        assert_eq!(nav.options_row(), 1);
+        assert_eq!(key(&mut nav, Key::Up), Action::None);
+        assert_eq!(nav.options_row(), 0);
+        assert_eq!(key(&mut nav, Key::Up), Action::None);
+        assert_eq!(nav.options_row(), 4, "Up wraps to the last of the five rows");
+        assert_eq!(key(&mut nav, Key::Down), Action::None);
+        assert_eq!(nav.options_row(), 0, "the rows wrap");
+        assert_eq!(key(&mut nav, Key::Down), Action::None);
+        assert_eq!(
+            key(&mut nav, Key::Left),
+            Action::OptionChange { category: Category::Gameplay, row: 1, by: -1 }
+        );
+        assert_eq!(
+            key(&mut nav, Key::Confirm),
+            Action::OptionChange { category: Category::Gameplay, row: 1, by: 1 }
+        );
+        key(&mut nav, Key::TabBack);
+        key(&mut nav, Key::TabBack);
+        assert_eq!(nav.options_category(), Category::Accessibility, "L wraps to the last page");
+        assert_eq!(nav.options_row(), 0);
+        assert_eq!(
+            key(&mut nav, Key::Right),
+            Action::OptionChange { category: Category::Accessibility, row: 0, by: 1 }
+        );
+        assert_eq!(
+            key(&mut nav, Key::ResetPage),
+            Action::OptionsResetPage(Category::Accessibility)
+        );
+        assert_eq!(key(&mut nav, Key::Cancel), Action::Back);
+    }
+
+    #[test]
+    fn the_video_question_starts_on_revert_and_the_cursor_skips_the_read_only_row() {
+        let mut nav = Nav::default();
+        nav.enter(Screen::Options);
+        let key = |nav: &mut Nav, key| nav.key(key, false, false, 0);
+        key(&mut nav, Key::Tab);
+        key(&mut nav, Key::Tab);
+        assert_eq!(nav.options_category(), Category::Video);
+        // Display, Scale, V-Sync, Look, Aspect, [Picture size], Scanlines, CRT filter.
+        for _ in 0..5 {
+            key(&mut nav, Key::Down);
+        }
+        assert_eq!(nav.options_row(), 6, "Down from Aspect skips Picture size");
+        key(&mut nav, Key::Up);
+        assert_eq!(nav.options_row(), 4, "and Up from Scanlines skips it back");
+        nav.open_video_confirm();
+        assert_eq!(nav.options_video_confirm(), Some(1), "the cursor is on Revert");
+        assert_eq!(key(&mut nav, Key::Down), Action::None, "no row moves meanwhile");
+        assert_eq!(nav.options_row(), 4);
+        assert_eq!(nav.options_video_confirm(), Some(0));
+        assert_eq!(key(&mut nav, Key::Confirm), Action::OptionsVideo { keep: true });
+        key(&mut nav, Key::Right);
+        assert_eq!(key(&mut nav, Key::Confirm), Action::OptionsVideo { keep: false });
+        assert_eq!(key(&mut nav, Key::Cancel), Action::OptionsVideo { keep: false }, "B reverts");
+        assert_eq!(key(&mut nav, Key::ResetAll), Action::None);
+        assert_eq!(nav.options_confirm(), None, "Reset all waits");
+        nav.close_video_confirm();
+        assert_eq!(nav.options_video_confirm(), None);
+    }
+
+    #[test]
+    fn the_controls_page_is_a_grid_two_to_a_line_and_a_waits_for_a_key() {
+        let mut nav = Nav::default();
+        nav.enter(Screen::Options);
+        let key = |nav: &mut Nav, key| nav.key(key, false, false, 0);
+        for _ in 0..4 {
+            key(&mut nav, Key::Tab);
+        }
+        assert_eq!(nav.options_category(), Category::Controls);
+        assert_eq!((nav.controls_position(), nav.options_row()), (0, 0), "the device row first");
+        // Down enters the first line: Up (left) then Right to A (right), Down to Down (left).
+        key(&mut nav, Key::Down);
+        assert_eq!(nav.controls_action(), Some(0));
+        assert_eq!(nav.options_row(), controls::row_of(Device::Keyboard, 0));
+        assert_eq!(key(&mut nav, Key::Left), Action::None, "Left on the left box stays");
+        key(&mut nav, Key::Right);
+        assert_eq!(nav.controls_action(), Some(1), "A (confirm) is the box at the right");
+        key(&mut nav, Key::Down);
+        key(&mut nav, Key::Left);
+        assert_eq!(nav.controls_action(), Some(2), "Down is under Up");
+        key(&mut nav, Key::Up);
+        key(&mut nav, Key::Up);
+        assert_eq!(nav.controls_position(), 0, "Up from the first line is the device row");
+        // The cursor follows the device: the gamepad's rows are the table's second block.
+        nav.set_controls_device(Device::Gamepad);
+        key(&mut nav, Key::Down);
+        assert_eq!(nav.options_row(), controls::row_of(Device::Gamepad, 0));
+        // Down to the last line and round: the shortcuts are the last two lines, then the device row.
+        for _ in 0..7 {
+            key(&mut nav, Key::Down);
+        }
+        assert_eq!(nav.controls_action(), Some(14), "Save state, third line of the shortcuts' two");
+        key(&mut nav, Key::Down);
+        assert_eq!(nav.controls_position(), 0, "the grid wraps through the device row");
+        // Left and Right on the device row change the device; A on a key box waits.
+        assert_eq!(
+            key(&mut nav, Key::Right),
+            Action::OptionChange { category: Category::Controls, row: 0, by: 1 }
+        );
+        key(&mut nav, Key::Down);
+        assert_eq!(key(&mut nav, Key::Confirm), Action::None);
+        assert!(nav.options_listening());
+        assert_eq!(
+            key(&mut nav, Key::Cancel),
+            Action::None,
+            "a navigation key does nothing meanwhile"
+        );
+        assert!(nav.options_listening());
+        nav.refuse("Start");
+        assert!(!nav.options_listening());
+        assert_eq!(nav.options_refusal().map(|r| (r.position, r.by)), Some((1, "Start")));
+        nav.tick();
+        assert_eq!(nav.options_refusal().map(|r| r.flash), Some(REFUSAL_FLASH - 1));
+        key(&mut nav, Key::Down);
+        assert_eq!(nav.options_refusal(), None, "the next key forgets the refusal");
+        assert_eq!(key(&mut nav, Key::Cancel), Action::Back);
+        // L and R still change the page, and the device is kept.
+        assert_eq!(key(&mut nav, Key::TabBack), Action::None);
+        assert_eq!(nav.options_category(), Category::Audio);
+        key(&mut nav, Key::Tab);
+        assert_eq!(nav.controls_device(), Device::Gamepad);
+    }
+
+    #[test]
+    fn reset_all_asks_first_with_the_cursor_on_no() {
+        let mut nav = Nav::default();
+        nav.enter(Screen::Options);
+        let key = |nav: &mut Nav, key| nav.key(key, false, false, 0);
+        assert_eq!(key(&mut nav, Key::ResetAll), Action::None);
+        assert_eq!(nav.options_confirm(), Some(1), "No");
+        assert_eq!(key(&mut nav, Key::Confirm), Action::None, "A on No closes the question");
+        assert_eq!(nav.options_confirm(), None);
+        key(&mut nav, Key::ResetAll);
+        assert_eq!(key(&mut nav, Key::Cancel), Action::None, "B is No");
+        assert_eq!(nav.options_confirm(), None);
+        key(&mut nav, Key::ResetAll);
+        assert_eq!(key(&mut nav, Key::Down), Action::None);
+        assert_eq!(nav.options_confirm(), Some(0), "Down moves between the two");
+        assert_eq!(nav.options_category(), Category::Difficulty, "the page does not change");
+        key(&mut nav, Key::Left);
+        assert_eq!(nav.options_confirm(), Some(1));
+        key(&mut nav, Key::Right);
+        assert_eq!(nav.options_confirm(), Some(0), "Yes");
+        assert_eq!(key(&mut nav, Key::Confirm), Action::OptionsResetAll);
+        assert_eq!(nav.options_confirm(), None);
+    }
+
+    #[test]
+    fn the_cheats_opened_from_the_options_go_back_to_them() {
+        let mut nav = Nav::default();
+        nav.enter(Screen::Cheats);
+        assert_eq!(nav.cheats_back(), Screen::Menu);
+        nav.enter(Screen::Options);
+        nav.enter_cheats_from_options();
+        assert_eq!((nav.screen(), nav.cheats_back()), (Screen::Cheats, Screen::Options));
+        nav.resume(Screen::Options);
+        assert_eq!(nav.options_category(), Category::Difficulty);
+        nav.enter(Screen::Cheats);
+        assert_eq!(nav.cheats_back(), Screen::Menu, "opened from the Menu again");
+    }
     #[test]
     fn the_cheats_screen_moves_its_rows_and_changes_the_row_under_the_cursor() {
         let mut nav = Nav::default();
@@ -571,106 +1034,218 @@ mod tests {
 
     #[test]
     fn the_bag_moves_by_one_and_by_a_column_within_its_stacks() {
-        let rows: Vec<ItemRow> = (0..3).map(|i| stack(i, true, true, false, 1)).collect();
+        let rows: Vec<ItemRow> = (0..3).map(|i| stack(i, true, true)).collect();
         let mut nav = Nav::default();
         nav.enter(Screen::Items);
-        assert_eq!(nav.key_bag(Key::Up, &rows, 2), Action::None);
+        assert_eq!(nav.key_bag(Key::Up, &rows), Action::None);
         assert_eq!(nav.cursor(), 0, "the first stack stays first");
-        nav.key_bag(Key::Right, &rows, 2);
+        nav.key_bag(Key::Right, &rows);
         assert_eq!(nav.bag_cursor(), 2, "a column jump is clamped to the last stack");
-        nav.key_bag(Key::Left, &rows, 2);
+        nav.key_bag(Key::Left, &rows);
         assert_eq!(nav.bag_cursor(), 0);
-        let many: Vec<ItemRow> = (0..10).map(|i| stack(i, true, true, false, 1)).collect();
+        let many: Vec<ItemRow> = (0..10).map(|i| stack(i, true, true)).collect();
         for _ in 0..9 {
-            nav.key_bag(Key::Down, &many, 2);
+            nav.key_bag(Key::Down, &many);
         }
         assert_eq!((nav.page(), nav.cursor()), (1, 1), "stack 9 is on the second page");
-        assert_eq!(nav.key_bag(Key::Cancel, &many, 2), Action::Back);
+        assert_eq!(nav.key_bag(Key::Cancel, &many), Action::Back);
     }
 
     #[test]
     fn the_tab_key_cycles_and_puts_the_cursor_on_the_first_stack() {
-        let rows: Vec<ItemRow> = (0..3).map(|i| stack(i, true, true, false, 1)).collect();
+        let rows: Vec<ItemRow> = (0..3).map(|i| stack(i, true, true)).collect();
         let mut nav = Nav::default();
         nav.enter(Screen::Items);
-        nav.key_bag(Key::Down, &rows, 2);
-        nav.key_bag(Key::Tab, &rows, 2);
+        nav.key_bag(Key::Down, &rows);
+        nav.key_bag(Key::Tab, &rows);
         assert_eq!((nav.tab(), nav.bag_cursor()), (Tab::Allies, 0));
-        nav.key_bag(Key::Tab, &rows, 2);
-        nav.key_bag(Key::Tab, &rows, 2);
+        nav.key_bag(Key::Tab, &rows);
+        nav.key_bag(Key::Tab, &rows);
         assert_eq!(nav.tab(), Tab::All, "the tabs cycle");
     }
 
     #[test]
-    fn use_on_a_member_then_the_quantity_then_the_use() {
-        let rows = [stack(7, true, true, true, 5)];
+    fn a_use_is_one_unit_at_once() {
+        let rows = [stack(4, true, true)];
         let mut nav = Nav::default();
         nav.enter(Screen::Items);
-        nav.key_bag(Key::Confirm, &rows, 2);
+        nav.key_bag(Key::Confirm, &rows);
         assert_eq!(nav.sheet(), Sheet::Choose);
-        nav.key_bag(Key::Confirm, &rows, 2);
-        assert_eq!(nav.sheet(), Sheet::Members, "Use asks for the member");
-        nav.key_bag(Key::Down, &rows, 2);
-        nav.key_bag(Key::Down, &rows, 2);
-        assert_eq!(nav.member(), 1, "the member list stops at the last member");
-        nav.key_bag(Key::Up, &rows, 2);
-        nav.key_bag(Key::Confirm, &rows, 2);
-        assert_eq!(nav.sheet(), Sheet::Quantity);
-        for _ in 0..9 {
-            nav.key_bag(Key::Right, &rows, 2);
-        }
-        assert_eq!(nav.units(), 5, "the quantity stops at the stack's units");
-        nav.key_bag(Key::Left, &rows, 2);
         assert_eq!(
-            nav.key_bag(Key::Confirm, &rows, 2),
-            Action::Use { stack: 7, member: Some(0), units: 4 }
+            nav.key_bag(Key::Confirm, &rows),
+            Action::Use { stack: 4 },
+            "A use is the use itself: no fighter and no quantity is asked"
         );
+        assert_eq!(nav.sheet(), Sheet::Browse);
+    }
+
+    #[test]
+    fn a_drop_asks_yes_or_no_and_drops_one_unit() {
+        let rows = [stack(3, false, true)];
+        let mut nav = Nav::default();
+        nav.enter(Screen::Items);
+        nav.key_bag(Key::Confirm, &rows);
+        assert_eq!(nav.choice(), 1, "an object not usable here starts on Drop");
+        nav.key_bag(Key::Confirm, &rows);
+        assert_eq!(nav.sheet(), Sheet::Confirm, "Drop one? asks first");
+        assert_eq!(nav.choice(), 1, "No is the choice to start on");
+        assert_eq!(nav.key_bag(Key::Confirm, &rows), Action::None, "No goes back");
+        assert_eq!(nav.sheet(), Sheet::Choose, "to the Use or Drop choice, still on Drop");
+        assert_eq!(nav.choice(), 1);
+        nav.key_bag(Key::Confirm, &rows);
+        nav.key_bag(Key::Up, &rows);
+        assert_eq!(nav.key_bag(Key::Confirm, &rows), Action::Drop { stack: 3 });
         assert_eq!(nav.sheet(), Sheet::Browse, "the list is back");
     }
 
     #[test]
-    fn a_drop_asks_for_the_quantity_and_then_for_a_yes() {
-        let rows = [stack(3, false, true, false, 2)];
+    fn b_on_the_drop_question_leaves_the_choice_on_drop() {
+        let rows = [stack(3, false, true)];
         let mut nav = Nav::default();
         nav.enter(Screen::Items);
-        nav.key_bag(Key::Confirm, &rows, 2);
-        assert_eq!(nav.choice(), 1, "an object not usable here starts on Drop");
-        nav.key_bag(Key::Confirm, &rows, 2);
-        nav.key_bag(Key::Right, &rows, 2);
-        nav.key_bag(Key::Confirm, &rows, 2);
-        assert_eq!(nav.sheet(), Sheet::Confirm, "Drop 2? comes after the quantity");
-        assert_eq!(nav.choice(), 1, "No is the choice to start on");
-        assert_eq!(nav.key_bag(Key::Confirm, &rows, 2), Action::None, "No goes back");
-        assert_eq!(nav.sheet(), Sheet::Quantity);
-        nav.key_bag(Key::Confirm, &rows, 2);
-        nav.key_bag(Key::Up, &rows, 2);
-        assert_eq!(nav.key_bag(Key::Confirm, &rows, 2), Action::Drop { stack: 3, units: 2 });
+        nav.key_bag(Key::Confirm, &rows);
+        nav.key_bag(Key::Confirm, &rows);
+        nav.key_bag(Key::Up, &rows);
+        assert_eq!(nav.choice(), 0, "Yes is toggled");
+        assert_eq!(nav.key_bag(Key::Cancel, &rows), Action::None);
+        assert_eq!(nav.sheet(), Sheet::Choose);
+        assert_eq!(nav.choice(), 1, "the choice is Drop again: an unusable object is never used");
+        assert_eq!(nav.key_bag(Key::Confirm, &rows), Action::None, "and A opens the question");
+        assert_eq!(nav.sheet(), Sheet::Confirm);
+    }
+
+    #[test]
+    fn an_empty_tab_answers_a_with_a_line_and_its_tabs_and_back_still_work() {
+        let mut nav = Nav::default();
+        nav.enter(Screen::Items);
+        assert_eq!(nav.key_bag(Key::Confirm, &[]), Action::Notice(EMPTY_TAB));
+        assert_eq!(nav.key_bag(Key::Tab, &[]), Action::None);
+        assert_eq!(nav.tab(), Tab::Allies, "the tab changes on an empty list");
+        assert_eq!(nav.key_bag(Key::Cancel, &[]), Action::Back);
     }
 
     #[test]
     fn a_pinned_stack_cannot_be_dropped_and_an_unusable_one_says_so() {
-        let rows = [stack(9, false, false, false, 1)];
+        let rows = [stack(9, false, false)];
         let mut nav = Nav::default();
         nav.enter(Screen::Items);
         assert_eq!(
-            nav.key_bag(Key::Confirm, &rows, 2),
+            nav.key_bag(Key::Confirm, &rows),
             Action::Notice("This cannot be used or dropped here.")
         );
-        let rows = [stack(9, true, false, false, 1)];
-        nav.key_bag(Key::Confirm, &rows, 2);
-        nav.key_bag(Key::Down, &rows, 2);
+        let rows = [stack(9, true, false)];
+        nav.key_bag(Key::Confirm, &rows);
+        nav.key_bag(Key::Down, &rows);
         assert_eq!(nav.choice(), 0, "Drop is not offered: the choice stays on Use");
-        nav.key_bag(Key::Confirm, &rows, 2);
-        assert_eq!(nav.sheet(), Sheet::Quantity);
+        assert_eq!(nav.key_bag(Key::Confirm, &rows), Action::Use { stack: 9 });
     }
 
     #[test]
     fn every_help_line_fits_the_help_window() {
-        // The help window holds about 28 characters of the 32 px text on one line.
+        // The help window (560 px, 22 px of padding inside its frame) holds 31 characters of the 30 px text on one line.
         let all =
             MENU_ROWS.iter().chain(command_rows(true, false)).chain(command_rows(false, false));
         for entry in all {
-            assert!(entry.help().chars().count() <= 28, "{}: {}", entry.label(), entry.help());
+            assert!(entry.help().chars().count() <= 31, "{}: {}", entry.label(), entry.help());
+        }
+    }
+
+    #[test]
+    fn every_a_and_b_does_something_or_is_a_documented_no_op() {
+        // The command window of the field, of a town and of the flying party: A chooses the row, B goes back.
+        for (flying, town) in [(false, false), (false, true), (true, false)] {
+            for row in 0..command_rows(flying, town).len() {
+                let mut nav = Nav::default();
+                nav.open();
+                for _ in 0..row {
+                    nav.key(Key::Down, flying, town, 0);
+                }
+                assert!(matches!(nav.key(Key::Confirm, flying, town, 0), Action::Choose(_)));
+                assert_eq!(nav.key(Key::Cancel, flying, town, 0), Action::Back);
+            }
+        }
+        // The Menu list: every row chooses, except Options, which is greyed out and says "Coming soon." in
+        // its help line: the one documented no-op of A on the menus.
+        for (row, entry) in MENU_ROWS.iter().enumerate() {
+            let mut nav = Nav::default();
+            nav.open();
+            nav.enter(Screen::Menu);
+            for _ in 0..row {
+                nav.key(Key::Down, false, false, 0);
+            }
+            let action = nav.key(Key::Confirm, false, false, 0);
+            if entry.enabled() {
+                assert!(matches!(action, Action::Choose(_)), "{}", entry.label());
+            } else {
+                assert_eq!(action, Action::None, "Options is greyed out");
+            }
+            assert_eq!(nav.key(Key::Cancel, false, false, 0), Action::Back);
+        }
+        // The cheats screen: every row answers A (a choice, or Reset all), and B goes back to the Menu list.
+        for row in 0..Row::ALL.len() {
+            let mut nav = Nav::default();
+            nav.enter(Screen::Cheats);
+            for _ in 0..row {
+                nav.key(Key::Down, false, false, 0);
+            }
+            assert_ne!(
+                nav.key(Key::Confirm, false, false, 0),
+                Action::None,
+                "{:?}",
+                nav.cheats_row()
+            );
+            assert_eq!(nav.key(Key::Cancel, false, false, 0), Action::Back);
+        }
+        // The Item screen, the list first: A on an empty tab says so, and on a stack it opens the sheet
+        // or says why nothing happens; B goes back from the list and steps back one sheet at a time.
+        let mut nav = Nav::default();
+        nav.enter(Screen::Items);
+        assert_eq!(nav.key_bag(Key::Confirm, &[]), Action::Notice(EMPTY_TAB));
+        assert_eq!(nav.key_bag(Key::Cancel, &[]), Action::Back);
+        let rows = [
+            stack(1, true, true),
+            stack(2, true, true),
+            stack(3, false, true),
+            stack(4, true, false),
+            stack(5, false, false),
+        ];
+        for index in 0..rows.len() {
+            let mut nav = Nav::default();
+            nav.enter(Screen::Items);
+            for _ in 0..index {
+                nav.key_bag(Key::Down, &rows);
+            }
+            let row = rows[index];
+            if !row.usable && !row.droppable {
+                assert_eq!(
+                    nav.key_bag(Key::Confirm, &rows),
+                    Action::Notice("This cannot be used or dropped here.")
+                );
+                assert_eq!(nav.key_bag(Key::Cancel, &rows), Action::Back);
+                continue;
+            }
+            assert_eq!(nav.key_bag(Key::Confirm, &rows), Action::None, "a stack opens its sheet");
+            assert_eq!(nav.sheet(), Sheet::Choose);
+            if row.usable {
+                // Use: the use itself, at once.
+                let mut use_nav = nav;
+                assert_eq!(use_nav.key_bag(Key::Confirm, &rows), Action::Use { stack: row.id });
+            }
+            if row.droppable {
+                // Drop: Yes or No, and No goes back to the choice, which still shows Drop.
+                let mut drop_nav = nav;
+                if row.usable {
+                    drop_nav.key_bag(Key::Down, &rows);
+                }
+                assert_eq!(drop_nav.key_bag(Key::Confirm, &rows), Action::None);
+                assert_eq!(drop_nav.sheet(), Sheet::Confirm);
+                assert_eq!(drop_nav.key_bag(Key::Confirm, &rows), Action::None, "No goes back");
+                assert_eq!(drop_nav.sheet(), Sheet::Choose);
+            }
+            // B on the choice goes back to the list, and B on the list goes back to the command window.
+            assert_eq!(nav.key_bag(Key::Cancel, &rows), Action::None);
+            assert_eq!(nav.sheet(), Sheet::Browse);
+            assert_eq!(nav.key_bag(Key::Cancel, &rows), Action::Back);
         }
     }
 

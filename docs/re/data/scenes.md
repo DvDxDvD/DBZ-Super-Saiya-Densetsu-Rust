@@ -162,10 +162,9 @@ Map ids are places, and one chapter uses several. From the set-up routines, the 
 | Map | Place |
 |---|---|
 | 0, 2 | the first chapter's island and cave (enemies: Saibamen) |
-| 1 | the training field (Gohan and Piccolo) |
-| 3 | King Kai's cave |
+| 1, 7 | King Kai's planet (7: Goku; 1: Piccolo's own stay, TR-09) - seen for 7 |
+| 3 | Piccolo's cave, where Gohan trains (talk to Piccolo: scene `$04`) - seen |
 | 5 | Earth in the Saiyan chapter (recruits, Nappa, Vegeta) |
-| 7 | Goku alone, the grass field |
 | 6, 9, 10, 11 | Namek, first chapter there: village (9), archipelago (11), soldiers of Frieza as enemies |
 | 8, 12 to 15 | Namek's caves and the Guru area |
 | 16 | the Ginyu squad's chapter (landing field, caves) |

@@ -126,3 +126,12 @@ make ending-super-vegeta mash-17000 party=gohan,piccolo,vegeta,goku goku.level=4
 make ending-normal mash-17000 party=gohan,piccolo,goku goku.level=47 gohan.level=40 \
     piccolo.level=40 image:01=3B goku.bp=4999999 map=24 flags=none,+0,+1,+2,+8 page:B0=00 \
     leader=2100,2592 follower=1972,2472 scene=0 image:2A0=0102FF image:303=0100 image:30A=D007
+
+# Piccolo's cave (map 3, Gohan alone, flag 1): talking to Piccolo starts the training scene and the practice fight
+# (group $1D, scene $04); Gohan at level 30 wins it, then the Snake Way picture, the flight and the arrival on
+# King Kai's planet (map 7, Goku).
+make piccolo-snake-way talk-piccolo party=gohan gohan.level=30 map=3 flags=none,+1 leader=128,52 \
+    follower=128,90 scene=0
+# King Kai's planet (map 7): Goku (flag 0) walks about, talks to King Kai from above, fights him (Goku at
+# level 40 wins), Shenron brings him back and the Earth chapter begins.
+make king-kai-planet talk-king-kai party=goku goku.level=40 map=7 flags=none,+0 leader=128,60 follower=128,60 scene=0

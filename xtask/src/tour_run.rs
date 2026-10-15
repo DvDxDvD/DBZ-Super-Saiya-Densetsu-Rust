@@ -40,6 +40,10 @@ pub struct Env<'a> {
     pub base_save: Vec<u8>,
     /// One frame in `stride` of a long part is drawn and counted.
     pub stride: u64,
+    /// With the scene audit, `burst` consecutive frames of each `stride` are counted instead.
+    pub burst: u64,
+    /// The scene audit stops a replay after this many frames (`SCENES_UNTIL`, to look at a scene).
+    pub limit: Option<u64>,
     /// A folder to write the pictures of the frames counted to (for checking the tour itself),
     /// and every how many counted frames.
     pub dump: Option<(PathBuf, u64)>,
@@ -56,6 +60,8 @@ pub struct Env<'a> {
     pub formations: Option<PathBuf>,
     /// The HD text font, whose cells count as drawn from art (`None`: the text is the filter's).
     pub font: Option<Arc<ssd_hd::Font>>,
+    /// Where `hd-art scenes` collects the scenes the frames make (see `scenes`).
+    pub scenes: Option<Arc<crate::scenes::Sink>>,
     /// The state of each scenario's map, once booted: the episodes of a scenario start from it.
     boots: Mutex<BTreeMap<String, Arc<[u8]>>>,
 }
@@ -77,11 +83,14 @@ impl<'a> Env<'a> {
             game,
             base_save,
             stride: stride.max(1),
+            burst: 1,
+            limit: None,
             dump: None,
             gaps: None,
             audit: None,
             formations: None,
             font: None,
+            scenes: None,
             boots: Mutex::new(BTreeMap::new()),
         }
     }
@@ -119,6 +128,8 @@ pub struct Recorder<'a> {
     uses: Vec<ssd_hd::PoseStat>,
     /// The fighters of the frame just counted, when it is a battle's.
     enemies: Option<usize>,
+    /// The scene audit of `hd-art scenes`.
+    watcher: Option<crate::scenes::Watcher>,
 }
 
 /// The frame of a battle where the most enemies show: its 4x picture and its poses.
@@ -186,6 +197,15 @@ impl<'a> Recorder<'a> {
             best: None,
             uses: Vec::new(),
             enemies: None,
+            watcher: env.scenes.as_ref().map(|sink| {
+                crate::scenes::Watcher::new(
+                    Arc::clone(sink),
+                    part,
+                    env.rom,
+                    &env.pack,
+                    env.font.as_ref(),
+                )
+            }),
         }
     }
 
@@ -194,6 +214,9 @@ impl<'a> Recorder<'a> {
     pub fn trust_field(&mut self, trust: bool) {
         self.trust = trust;
         self.run.set_trust_field(trust);
+        if let Some(watcher) = &mut self.watcher {
+            watcher.set_trust(trust);
+        }
     }
 
     /// Forgets the frames seen: the machine jumped (a loaded state), so the field variables the
@@ -201,11 +224,17 @@ impl<'a> Recorder<'a> {
     pub fn reset(&mut self) {
         self.run = new_run(self.env);
         self.run.set_trust_field(self.trust);
+        if let Some(watcher) = &mut self.watcher {
+            watcher.reset(self.env.rom, self.env.font.as_ref());
+        }
     }
 
     /// A frame ran and is not counted.
     pub fn skip(&mut self, machine: &Machine) {
         self.run.skip(machine.wram());
+        if let Some(watcher) = &mut self.watcher {
+            watcher.skip(machine);
+        }
         if let Some(big) = &mut self.big {
             big.skip(machine.wram());
         }
@@ -242,10 +271,19 @@ impl<'a> Recorder<'a> {
     pub fn feed(&mut self, machine: &Machine, frame: u64) {
         self.offered += 1;
         self.enemies = None;
-        if (self.offered - 1).is_multiple_of(self.env.stride) {
+        let (stride, burst) = if self.env.scenes.is_some() && !self.part.starts_with("replay-") {
+            (1, 1)
+        } else {
+            (self.env.stride, self.env.burst)
+        };
+        if (self.offered - 1) % stride < burst {
             self.count(machine, frame);
         } else {
             self.run.skip(machine.wram());
+            // the scene audit's runs follow every frame too: their field state must not lag the gap
+            if let Some(watcher) = &mut self.watcher {
+                watcher.skip(machine);
+            }
         }
         self.big_frame(machine, frame);
     }
@@ -256,6 +294,9 @@ impl<'a> Recorder<'a> {
         let options = HdOptions { scale: 1, look: Look::Crisp };
         let Some(picture) = self.run.note_hd(wram, machine.frame_log(), options) else {
             self.totals.refused += 1;
+            if let Some(watcher) = &mut self.watcher {
+                watcher.skip(machine);
+            }
             return;
         };
         if picture.scene == Scene::Bordered
@@ -275,6 +316,9 @@ impl<'a> Recorder<'a> {
         }
         let tally = self.run.tally();
         let ctx = Context::of_wram(wram);
+        if let Some(watcher) = &mut self.watcher {
+            watcher.observe(machine, frame, &tally, picture.scene, &self.env.table);
+        }
         if ctx.battle {
             if let Some(audit) = &mut self.audit {
                 audit.note(&tally.uses, &self.env.pack, &self.part, frame);
@@ -432,7 +476,10 @@ impl<'a> Recorder<'a> {
 
     /// The result: the totals and the crops of the items that took the most pixels in each class.
     #[must_use]
-    pub fn finish(self, notes: Vec<String>) -> PartOutput {
+    pub fn finish(mut self, notes: Vec<String>) -> PartOutput {
+        if let Some(watcher) = &mut self.watcher {
+            watcher.finish();
+        }
         let mut keep = std::collections::BTreeSet::new();
         for class in crate::tour_account::CLASSES {
             for (key, _) in self.totals.unbound(class).into_iter().take(CROPS_PER_CLASS) {
@@ -565,7 +612,7 @@ pub fn play_replay(env: &Env<'_>, name: &str, path: &Path) -> anyhow::Result<Par
     let mut machine = replay.power_on(env.rom.to_vec())?;
     machine.set_line_log(true);
     let mut recorder = Recorder::new(env, name);
-    while machine.frame_count() < replay.frames() {
+    while machine.frame_count() < replay.frames().min(env.limit.unwrap_or(u64::MAX)) {
         machine.run_frame_with(&mut |f| replay.input(f), &mut NullAudio)?;
         if machine.frame_count() <= from {
             recorder.skip(&machine);
@@ -709,6 +756,7 @@ pub fn kind_shows(kind: &str, class: Class) -> bool {
                 | Class::Pictures
         ),
         "map" => matches!(class, Class::Map | Class::FieldSprites | Class::Text),
+        "walk" => matches!(class, Class::Map | Class::FieldSprites),
         "replay" => true,
         "menus" => {
             matches!(class, Class::Portraits | Class::Text | Class::CardsUi | Class::Pictures)

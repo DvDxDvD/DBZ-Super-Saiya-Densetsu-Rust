@@ -34,7 +34,7 @@ portraits and faces on the field and in battle, the fighters' poses and the effe
 screen's portraits. `--hd-pack DIR` names another pack folder, `--no-hd-art` draws the look alone. The field's sprites
 (the party, NPCs, ships and objects) are found as groups of the visible sprites (runs of one OAM palette, split into sets
 within 2 pixels of each other) and drawn the same way, recoloured to the palette in use; a group cut by the edge of the
-view is drawn from the group of the index that holds it. In the 16:9 view the groups are found over the whole view, so an
+view is drawn from the group of the index that holds it, and a group that runs under line 224 (where the art's capture ends, the 239-line view shows the band below) takes the sprites of its palette that touch it there, when the index holds art for the whole figure. In the 16:9 view the groups are found over the whole view, so an
 object in the margins (one the original never draws, which the wide view adds beside its window) takes the same art,
 recolouring, mirroring and soft shadow as one inside the original window, and one across the window's edge is one group
 (its parts keep the order of the original's loop whatever side of the edge they lie on), so nothing changes when it
@@ -44,7 +44,9 @@ one dark flat ellipse) is drawn again as a smooth ellipse of the original's box 
 edge, under the fighters and whatever the art index holds for it. It darkens the HD picture by multiplying it with the light
 the original's shadow left against the picture around it (never below 14 percent, so a black shadow still shows the water's
 ripples); a silhouette that is not an ellipse keeps its own shape and colour through a soft alpha. The Enhanced picture is shown
-with linear filtering, so the art's anti-aliased edges survive a window that is not a whole multiple of it. The 16:9 picture is drawn in segments of lines on the thread pool (the
+with linear filtering, so the art's anti-aliased edges survive a window that is not a whole multiple of it. The sprites that start under line 224 (the 15 lines that a frame of 239 lines shows below the original's 224: the ending's speed lines reach into
+them) are effect poses of their own, found by the exact pixels the index has art for (the capture of the art kept no sprite there; they are clustered on
+their own so that the poses above them keep their keys). The 16:9 picture is drawn in segments of lines on the thread pool (the
 same picture as in one piece; `SSD_HD_SERIAL=1` in the environment draws it in one piece, to compare).
 
 HD text: at a scale of 2 or more the game's own UI text (dialogue, menus, names, item and shop lists, the HP/KI/BP
@@ -99,10 +101,11 @@ from line to line: the perspective of a flight is the original's lines, not a st
 bilinearly there, and a plane that is far away on a line (the horizon) is read from a smaller copy of the art, two copies blended, so it does not shimmer. The
 view is the PPU's picture wherever the plane is not the top layer, wherever the art has no pixel (alpha 0: its edges are soft) and wherever the frame loads
 VRAM while it is displayed; a palette that is not the one the art was made in (a fade, a flash) changes the art as it changed the game's pixel, as the
-backgrounds' art does, and the colour math and the brightness of the pixel apply. It works in the 16:9 view, where the plane continues past the window. What
+backgrounds' art does, and the colour math and the brightness of the pixel apply. It works in the 16:9 view, where the plane continues past the window where it has texels (where it has none, as beside a picture drawn on the plane, the sides are black like those of any picture). What
 the flights show is not a world map: they are the cutscenes' planes, a character flying over a flat backdrop (a small picture on the plane) and three
-landscapes of 256 x 256 pixels (a grassland, a coast and a lake, and a view of mesas under a sky); the title's two planes (`$87`) are big pictures and are
-not in the Mode 7 art.
+landscapes of 256 x 256 pixels (a grassland, a coast and a lake, and a view of mesas under a sky). The title's two planes (`$87`) are in the art too: the
+logo that zooms in (the art of the title logo's picture layer, which is the same drawing at the same place on the plane) and Goku and Gohan on the Flying
+Nimbus, whose close-up is the same plane magnified by the game's matrix.
 
 HD cards: when the pack holds card art (`xtask hd-import`, `cards\` folder) the Enhanced picture draws the battle cards
 again at a scale of 2 or more (it needs the HD text pass, so not with `--no-hd-font`): the black body in its cream frame,
@@ -115,6 +118,18 @@ card a small window in the game's style says what the card's kanji means (for in
 `docs/re/data/cards.md`); it sits above the hand and never covers the original's own message for a favourite card ("Attack
 everyone!", which the original shows to the right of the card under the cursor). Classic is untouched.
 
+The Cheats screen's "Next card" preview is the same card: `ssd_hd::CardArt::preview` composes it from the tiles of a card (a 4 x 6 grid of the
+codes the battle's hand uses: the attack ball with four dots or the Z, the symbol 必, the defence ball with the numeral seven or the Z) at 8x, and
+the app paints it as one picture in the preview's box (`Op::Card` of the draw list); a pack with no card art keeps the pixel-style card
+(`ssd_menus::screens::pixel_card`).
+
+The same pass draws the art of other tiles of the 2-bit sets, by their content: an entry of the cards' index may be a tile of the title set
+(`"set": "title"`, bound in both forms the game's VRAM holds it in) and may carve its shape out of the tile's colour 1 (`"carve": true`: the art is
+drawn over the tile's own background colour, so a shape need not cover every pixel the tile shows). They are the window frame's pieces (UI set
+tiles 50 to 54 and 59 to 61: the credits' picture frame, and every window built from them) with their rounded caps, and the credits' green
+separators (title set tile 203), both drawn by a program from the tile's pattern in its surroundings; the glyph indexes of the art start at 104,
+which makes room for 152 tiles.
+
 HD maps: when the pack holds map art (`xtask hd-import`, `maps\` folder) the Enhanced picture draws the field's map layer
 (BG2: the Earth and Namek maps, the caves and the rooms) again from a redrawn picture of the whole map, at 4x and in the
 game's colours, with the same layout (every wall, path, shore, tree and house stays on the original's grid). The layer is
@@ -124,13 +139,21 @@ in the margins of the 16:9 view, whatever the camera. The art is cut into tiles 
 frames show them. A fade, a flash, the water's palette cycle and a map shown in another palette (the same cave in blue and
 in red) change the art's colours as they change the game's (`bgart::adapt`); the sprites (party, people, houses) are the
 field sprites' art. The mechanism is the battle backgrounds' (`ssd_hd::bgart`): a field map is a
-layer slot whose position is the world position instead of the scroll registers'.
+layer slot whose position is the world position instead of the scroll registers'. A picture that shows the field's map on BG2
+(a menu laid over the map, a scripted scene on it, a town's room: the main loop is not in a field state, so the picture keeps
+its 256-pixel window with black beside it) is drawn from the same art when BG2 holds the tiles the map lookup gives at the world
+position the scroll registers and the camera say (`ssd_hd::world`, `shows_map`).
+A town's rooms are maps 48 to 63 of the same table (1 x 1 blocks); the game does not load their header into work RAM while the party is in
+the town, so `FieldState::in_room` reads the size and the grid from the table record and the art is found like any layer. The field is main loop state `$00`
+(after a load, a battle or a scene), `$06` (after a flight) or `$05`: the map the party walks back to after a building
+(`$01`), where it stays until the next battle, so the art is drawn in all three.
 
 ## Keys
 
 Arrows = D-pad, X = A, Z = B, S = X, A = Y, Q = L, W = R, Enter = Start, Right Shift = Select.
 F5 = save state, F9 = load state, 1–4 = state slot, Tab = cycle speed ×1/×2/×4/×8, P = pause, Esc = quit.
-F1 = show or hide the debug panel (see below).
+F1 = show or hide the debug panel (see below). These are the defaults: in Enhanced mode the Controls page of the Options
+remaps the buttons and the four shortcuts (save, load, speed, pause), keyboard and gamepad apart (see "Options (M7)").
 
 The debug panel docks to the right of the game. Closed (the default), the window shows only a small "F1 debug" label
 top-right and, when a verified routine diverges, a short message bottom-right. Open, it has a header (frame, frames
@@ -156,11 +179,13 @@ In Enhanced mode the map menus are drawn at 1280x720 in the original's style (cr
 Share Tech Mono font of the game's own HD text, DotGothic16 for the two kanji of the cards, the original portraits
 upscaled) over the field as it was when the menu opened: the command window of
 the field, the towns and the flying party with its help window, the corner portraits with their HP and KI bars and the
-Zeni window; the Menu list (Cheats opens the cheats screen below; Options is shown greyed out, "coming soon"); and the Item screen.
+Zeni window; the Menu list (Cheats opens the cheats screen below; Options opens the options screen, see "Options (M7)"); and the Item screen.
 While an HD menu is up the keys belong to it: the arrows move its cursor, X confirms, Z goes back and Q or W changes
 the bag's tab (the game gets no buttons until the original draws a message or a screen of its own, such as Cards, Save
-or the take-off). The original menu keeps running unseen underneath and performs every consequence (Talk, Look, the
-take-off, saving, the effects of the objects): the HD only presses its buttons, so Classic stays byte-exact.
+or the take-off). The original menu keeps running underneath and performs every consequence (Talk, Look, the take-off,
+saving, the effects of the objects): the HD only presses its buttons, so Classic stays byte-exact. While the HD plays
+a choice (a few seconds), its keys wait for it to end. Options is greyed out: A on it does nothing, and its help line
+says "Coming soon."
 
 Enhanced mode is shown at 16:9: every frame is drawn 372 pixels wide, the original's 256 in the middle (where the view
 stops at a map's edge the picture moves toward it, and the frame still fills the width). The field shows its map beyond
@@ -169,13 +194,26 @@ sides. The HD menus are drawn over that frame. The view is read from the PPU's r
 and it never changes what the game does.
 
 The Item screen is a bag of 60 slots with up to 99 units in a stack (both options later), two columns with `x NN`
-counts, the tabs All, Allies and Tools, the picture, the Pt price and the help of the object under the cursor, and for a
-use the list of the party (LV, HP, KI, BP), the quantity (a left arrow, `x NN`, a right arrow) and, for Drop, a confirm.
-The Dragon Balls and the story's objects are pinned at the top and cannot be dropped, and a full bag refuses what it is
-offered, with a notice. The bag lives in `saves/ssd.bag` beside the battery save (one bag per save slot, keyed by the
-slot's checksum: a save changed by Classic play rebuilds its bag from the game's list; a file that cannot be read is
-kept as `ssd.bag.bad` and the bags are rebuilt). Loading a state rebuilds the bag from the game's list. The battle's Item
-screen keeps the original's look.
+counts, the tabs All, Allies and Tools, the picture, the Pt price and the help of the object under the cursor. A use
+takes one unit, as the original takes it, with no quantity and no fighter list on the map: the object is used at once,
+and the original decides what it does. From then the curtain lifts, so the original's own use window, messages and
+effects are what the player sees, and the Dragon Radar's screen stays up until B leaves it. An object the original
+refuses (Saiba) is greyed out; one refused at the moment of use (Mr. Popo or Puar at full KI) keeps its unit and the
+menu stays open for the player. Drop asks Yes or No and drops one unit. A tab with no stack says so when A is pressed
+on it. The Dragon Balls and the story's objects are pinned at the top and cannot be dropped, and a full bag refuses
+what it is offered, with a notice. The bag lives in `saves/ssd.bag` beside the battery save (one bag per save slot,
+keyed by the slot's checksum: a save changed by Classic play rebuilds its bag from the game's list; a file that cannot
+be read is kept as `ssd.bag.bad` and the bags are rebuilt). Loading a state rebuilds the bag from the game's list.
+The battle's Item screen keeps the original's look.
+
+The pictures: a picture box shows its object's picture (the HD art when the pack holds it, the original's pixels
+otherwise), and stays empty, never with a placeholder text, when nothing is under the cursor. The corner portraits are
+the original's faces: Goku, Piccolo, Gohan, Krillin, Tien, Yamcha, Chiaotzu, Vegeta and Dende are drawn from their
+picture sets in the corner palette; Nail, Tsumuri and Maima have no face yet, as no party with them has been seen. The
+objects with no price (the story's helpers and the Dragon Balls) show no figure, where the original draws a kanji mark
+that the menu does not draw yet. Four objects (Yemma, Baba, 27 and Goku) have a run-time slot in their help that the
+original fills from a message: the menu shows an ellipsis there. `menu-test items` checks all of this (the `pictures`
+check names each gap).
 
 ### Cheats (M5)
 
@@ -214,6 +252,81 @@ and the scripted loss of Nail (with `--save`).
 `battle.md`). `replay-from-save` takes `--title` (stop at the title's slot list) and `--cheats` (write extreme cheats into
 the block at frame 300, Enhanced mode), and `menu show cheats` in a UI script checks the screen.
 
+### Options (M7)
+
+In Enhanced mode the Menu list's Options entry opens the Options screen (original style, over the field; the original's Menu
+list stays open unseen underneath, as for the Cheats). A category list on the left (Difficulty, Gameplay, Video, Audio,
+Controls, Accessibility, each labelled "Saved with the game" or "This PC"), the rows of the chosen category on the right, and a
+help strip with the key hints. Up and Down choose a row, Left and Right (or X) change it, L and R change the page, Y is Reset
+this page, Select is Reset all (a Yes/No question, the cursor on No), Z goes back. The rows so far: Gameplay has the text
+speed (the original Menu's Text entry: the same byte, `$01D0`, five speeds) and the random-encounter rate (the Cheats
+screen's rows Random battles and How often); Video is applied at once, no restart (see below);
+Difficulty has the preset (Easy, Normal, Hard), the three values it sets and a button that opens the Cheats screen. The pages of the later tasks show a note until their rows land.
+
+The Gameplay page (saved with the game, per slot in `saves/ssd.options`; keys `gameplay.auto_run`, `gameplay.auto_wait`,
+`gameplay.anim_speed`): Messages has the Text speed (the Menu's Text entry, the byte `$01D0`: 0 writes the most characters a
+frame and 4 the fewest, so the row reads Slowest, Slow, Normal, Fast, Fastest; five steps as the original), Auto-run messages
+(Off, On) and its wait (Short 0.75 s, Normal 1.5 s, Long 3 s); Battle has the animation speed (Normal, x2, x3, x4); Exploring
+has the encounter rate. Auto-run: when a message has written its last page, or a page that waits, and shows the arrow for A
+(`$071B` = `$82` or `$83`), the driver puts A into the joypad of the frame once the wait is up, for three frames (a press of the
+player's own starts the wait again); it is a joypad bit of the frame like any other, so a recording carries it and a replay plays
+it. The animation speed runs 2 to 4 machine frames for one frame on the screen during the battle's attack animation only (the
+sound of the first is played), so the machine, the turn order, the numbers and the random draws are the original's; shortening
+the waits inside the game would shift the free-running random generators (`docs/re/data/gameplay.md`). Neither installs a hook:
+Classic is untouched. `menu-test cheats screen-gameplay` plays the page through its keys (the text speed byte, the three values, Save and Continue, the auto-run on a
+waiting message); `cargo test -p ssd-game --release --test gameplay_real_rom -- --ignored` (with `SSD_ROM_PATH`) plays the auto-run on the
+story replay and checks that the animation frames ignore the pad on the reference battle.
+
+Difficulty presets: Easy is enemy power x1/2, EXP x2, money x2; Normal is the original (all x1, clean); Hard is enemy power x2, EXP x1, money x1/2. Enemy power and EXP are the Cheats screen's own values; the money multiplier is one more value of the cheat block (`MONEY`, a num/den pair after the marker, outside the settings bytes) that the Cheats screen has no row for. It scales the zeni of the story's events (`01:D7F9`, which adds `$0D53` to the zeni): a battle itself pays no zeni (`docs/re/data/battle.md`). The preset is read off the three values, never stored apart, so changing one on the Cheats screen reads Custom (the last change wins). Easy and Hard are cheats, so the save made on them carries the CHEATS badge; only Normal is clean. The money step is kept per slot in `saves/ssd.options` as `s<slot>.difficulty.money` (the preset is written there as `difficulty.preset` for reading, Normal leaves both out); the power and the EXP travel in `ssd.cheats` as ever. `menu-test cheats money` plays the event at x1/2, x1 and x2 against Classic.
+
+The rows are a table per category (`crates/ssd-menus/src/options/<category>.rs`); a task adds rows to its own file. Where a
+value lives: Difficulty and Gameplay are saved with the game, per save slot, in `saves/ssd.options` (keyed by the slot's
+checksum word like `ssd.cheats`; a Save writes the slot it chose); Video, Audio, Controls and Accessibility are per PC in
+`saves/ssd.settings`. Both are text files, a first line `ssd-options 1` or `ssd-settings 1` and then `key=value` lines of
+whole numbers (`s<slot>.sum=` and `s<slot>.<key>=` in the slot file): a missing key is the default, an unknown key is kept, a
+damaged line is skipped, and a file that is not an options file is kept aside as `.bad`. The rule: only a windowed run
+reads and writes the two files. A headless run (`--headless-frames`), a UI snapshot, a benchmark (`--bench-app`) and a
+replay (`--replay`) read neither and write neither; their settings stay in memory for that run.
+`menu show options` in a UI script checks the screen.
+
+The Video page (this PC, keys `video.display`, `video.scale`, `video.vsync`, `video.look`, `video.aspect`, `video.scanlines`,
+`video.crt`): Display (window or fullscreen), Scale (2x to 8x), V-Sync, Look (crisp or smooth), Aspect (16:9 shows the extra
+map at the sides, 4:3 shows only the original window), the size of the picture it gives, and two filters, Scanlines (light,
+strong) and CRT filter (soft, full). Every row works while the game runs. A change of display, scale or aspect asks "Apply
+video changes?": Keep writes it to `ssd.settings`, Revert (B) puts the old choice back, and after 10 s without an answer it
+reverts (the cursor starts on Revert). A `--hd-scale` or `--enhanced-look` flag wins for its run until that very row is
+changed on the page; headless runs, snapshots and replays ignore the saved file. Scanlines, the CRT filter and the 4:3 crop
+are a last pass of the app over the picture (`crates/ssd-app/src/filter.rs`), not part of `ssd-hd`: with them off the picture
+is the renderer's own, byte for byte.
+
+The Accessibility page (this PC, keys `access.text_size`, `access.contrast`, `access.cursor`) changes how all the HD menus look (Menu, Items, Cheats,
+Options and the notices), never the game's own picture or Classic: Text size (Large makes every text a quarter bigger where there
+is room beside it and inside its window, and never less than drawn), High contrast (white windows, black text and frame, black
+selections) and Cursor (Safe is a bigger blue arrow with a bar under the row). The "Sample" window under the rows shows the choices
+at once. With the three at their defaults the menus are the design exactly: `ssd_menus::Style` is applied to each finished draw list
+and returns it unchanged. The windows keep their size, so a text grows only as far as its window and its neighbours allow.
+
+The Audio page (this PC, keys `audio.volume`, `audio.output`): Volume (0 to 100 in steps of ten, default 100) and Sound (stereo or
+mono). The game's sound reaches the host as one mix, so music and effects cannot be told apart without a change to the vendored
+core (`docs/re/audio-voices.md`): there is one Volume, not two. Both rows act on the samples handed to the speakers only
+(`crates/ssd-app/src/audio.rs`, `options/audio.rs`): at full volume in stereo the samples are unchanged bit for bit, at 0 they are
+silence, mono plays the mean of both sides on both. The machine, Classic and the replays never see them.
+
+The Controls page (this PC; keys `controls.device`, `controls.kb.<action>`, `controls.pad.<action>`): the Device row (Keyboard
+or Gamepad: each device has its own map) and a key box per action, two to a line: the SNES buttons (the d-pad and the
+shoulders on the left, the buttons on the right) and four shortcuts (speed, pause, save state, load state). A on a box
+waits for the next key (or, on the Gamepad page, button); Esc cancels and Backspace clears a shortcut (a SNES button keeps
+its key). A key or button an action already has is refused, there is no swap: the box says "Key in use" and flashes, and
+the help strip says "Key already used by <action>. Choose another key." The window's own keys (Esc, F1, 1 to 4) cannot be
+given away and are refused by what they do. L and R still change the page (the device is the first row). A key is stored
+as its USB usage number (SDL's scancode), a gamepad button as SDL's button number plus one, and 0 as none; a missing,
+unknown or wild value is the action's default (the keys above), and a value equal to the default is not written. The
+map drives the game window and the HD menus alike (the menus read the same joypad), in Classic runs too. The joypad a
+replay records is the SNES buttons after the map, so a replay is the same under any map and plays without it; the map
+is read only by the live window. In a UI script, `menu press <key>` (or `esc`, `backspace`, `pad <button>`) answers a box
+that waits.
+
+
 ## Debug panel
 
 F1 shows or hides the panel. Its tabs:
@@ -241,11 +354,19 @@ Saves, save states and the ROM cache live in `%LOCALAPPDATA%\dbz-ssd-recompiled\
 
 The environment variable `SSD_DATA_DIR` overrides that directory (the tests use it).
 
+Only a windowed run writes the saves and states folders. A run that does not persist (a headless run, a UI snapshot, a
+benchmark or a `--replay` run) writes none of their files and does not create the folders: its battery save, bag and cheat
+changes and its save states stay in memory for the run. It still reads the battery save, the bag and cheat files and the
+states that exist, so a snapshot shows the player's saves; a replay plays its own SRAM instead. The option files are neither
+read nor written by such a run (see "Options (M7)"). The ROM cache and the HD pack under `cache\` are written by any run that
+is given `--rom` or installs a pack: they are caches of the ROM, not saves.
+
 Headless test mode: `ssd-recompiled --headless-frames N --screenshot out.bmp` runs N frames without a window and
 writes the last frame as a BMP.
 
 UI snapshots: `ssd-recompiled --headless-frames N --ui-snapshot out.png [--ui-script actions.txt] [--ui-size 1440x900]`
-runs N frames without a window, applies the script to the debug panel and writes the whole picture as a PNG. The panel
+runs N frames without a window, applies the script to the debug panel and writes the whole picture as a PNG. It writes no
+file of the saves or states folders and reads no option file (see "Data and files" and "Options (M7)"). The panel
 is drawn offscreen by the window's own code: no window or surface is created and no input is read, so this is how
 the UI is checked without opening a window (`CONTRIBUTING.md`). `--replay` and `--hooks` work as in a headless run, and a verify run still
 exits with code 5 on divergences. The script has one action per line; blank lines and lines starting with `#` are
@@ -259,8 +380,8 @@ skipped, and a line that is not an action is a usage error (exit 2) that names i
 - `select SYMBOL` (or an address, as the Memory tab's "Go to" field takes it)
 - `breakpoint SYMBOL` (or an address, as the Debugger's field takes it)
 - `mode ROUTINE original`, `mode ROUTINE rust` or `mode ROUTINE verify`
-- `menu open` (A on the field), `menu key up|down|left|right|a|b` (the HD menu's keys: a confirms, b cancels),
-  `menu tab all|allies|tools` (the bag's tab) and `menu show field|menu|items|cheats` (checks the HD screen): with
+- `menu open` (A on the field), `menu key up|down|left|right|a|b|l|r|y|select` (the HD menu's keys: a confirms, b cancels, l and r change a page, y and select reset on the options),
+  `menu tab all|allies|tools` (the bag's tab), `menu press <key>` (a raw key or `pad <button>` for a Controls box that waits) and `menu show field|menu|items|cheats|options` (checks the HD screen): with
   `--mode enhanced` only. A menu line plays its choice to its
   end before the next line; a replay still playing stops there, and the menu presses live (`--replay` with
   `--headless-frames` to the field first)
@@ -318,7 +439,7 @@ exact bound can unlock.
 
 Replays: `--record run.ssdreplay` records the session (every frame's joypad from power-on and the SRAM at power-on;
 needs `--hooks original`). `--replay run.ssdreplay` plays one back from power-on with its own SRAM in memory (the
-save file is neither read nor written) and works with any `--hooks` mode; a headless run stops at its end, a windowed
+save file is neither read nor written, and a state saved while it plays stays in memory) and works with any `--hooks` mode; a headless run stops at its end, a windowed
 one runs on with all buttons released. Both together record what is played (to another file). F9 (load state) is off
 while a replay records, and while one plays until its last frame. A replay is tied to the ROM and to the emulator version it was recorded with. The recording is
 written when the run ends, after an error or a panic too, but not when the console is closed or Ctrl+C kills it.
@@ -467,7 +588,9 @@ draws every frame of the replays in the wide view (`ssd-hd::world`: 372 pixels i
 one, 256 the Classic frame) and checks it. At 256 the frame is the Classic frame. At the wider widths the original's
 256 pixels are the Classic frame, except under the objects the original drops (the field's). Beside a picture (battle,
 title, cutscenes, interiors) every pixel is black; beside the window the frame is the same at every wide width (the map,
-the flight's plane, the seams of the chunks); the field draws no tile from outside its map. It prints the frames of each
+the flight's plane, the seams of the chunks); the field draws no tile from outside its map (a scripted camera can show the game's own words beyond a small map's
+edge inside the 256-pixel window: those stay the original's, the margins draw nothing for them, and the lookup
+check counts only the tiles inside the map). It prints the frames of each
 scene class (field, flight, bordered) and exits 1 when a check fails. `shots` writes the default frame of each scene class
 (or the frames named) as PNGs under `.work/hd-wide/`, with a line per frame: its class, its window and its outside checks.
 
@@ -531,7 +654,8 @@ in the palette it was made for: `palette 09:xxxx` of the entry, or the source pi
 palette-index array of a fighter's sprites, or of an effect's colours, see `ssd_hd::art`) and
 `cards\index.json` and its PNGs (the battle cards: one 64 x 64 picture, 8x, per tile of the UI set that a card is made of,
 in a `base` layer of fixed colours and a `roles` layer whose channels are the weights of the tile palette's colours 3, 2
-and 1; `tips` are the tooltip pictures, by the code of the kanji's tile; see `ssd_hd::cards` and `docs/re/data/cards.md`,
+and 1; an entry may name the tile's `set` (`title`: the code is of the title set, not the UI set) and `carve` (the art is drawn over
+the tile's own colour 1); `tips` are the tooltip pictures, by the code of the kanji's tile; see `ssd_hd::cards` and `docs/re/data/cards.md`,
 copied to `art\cards` of the pack and listed in `art\cards\cards.toml`). The portraits' and poses' PNGs are copied to
 `art\picture` and `art\object` of the pack and listed in `art.bin`; `luma` marks greyscale shapes that take their colours
 from the game's pixels. `--masks` is a folder of the poses' silhouettes (`<source key>.png`, white where the pose is
@@ -626,7 +750,8 @@ sprites (drawn from art, of a pose the index lacks, of a partial or cut pose), t
 battle backgrounds (the layers of `ssd_hd::bgart::BATTLE_LAYERS` and their backdrop where nothing is in front) drawn from the
 art of a layer, and the mean time of a frame. For the frames drawn as the field it also compares every pixel of the object
 layer inside the original window with the ones in the margins of the view: the share drawn from art must match (it exits 1
-when the margins fall more than 3 points below the window, once each has 400 pixels). `shots` writes the frames named (`label=replay:frame`) at the 16:9 view, 4x by default, three
+when the margins fall more than 3 points below the window, once each has 400 pixels); it also exits 1 when a replay shows the
+field's map, in any main loop state, for more than 120 frames in a row without drawing the pack's map art for it. `shots` writes the frames named (`label=replay:frame`) at the 16:9 view, 4x by default, three
 times: with the art (`<label>-art.png`), without (`-plain.png`) and the two side by side (`-both.png`), in `.work/m6-art/`.
 `colours` measures, for each art file, the mean colour the art draws inside the pose's mask against the mean colour of
 the original's pixels it replaces, and lists the files that differ most, for fighters and effects, drawn from colour art
@@ -642,7 +767,7 @@ and `-palette.txt`, the CGRAM the layer reads, for the `palette` field). `bgmaps
 replay reaches: from a crafted save on each map (or the maps of `--maps`) it forces a battle in each of the encounter zones 1 to 3
 and plays `--frames` frames of it (900 by default). `mapshots` draws frame `T` of such a battle with the art and without (the
 files of `shots`), with the party `PARTY` (`goku,piccolo`) instead of the map's own; zone 0 is the map's field, no battle.
-`bgdump` writes the frames named and
+`bgdump` prints each layer's content key (`key`, as `picscan` gives it), writes the frames named and
 the whole image of each of their BG layers (`-bgN-src.png`, transparent where the layer is, and `-bgN-fill.png` over the
 backdrop) into the folder, with the layers' scroll tables and the objects on screen. `picscan` writes, per replay, one JSON
 line per frame (`<out dir>/<replay>.jsonl`): the game mode and, for each BG layer shown, its registers, content key over
@@ -720,6 +845,30 @@ each redrawn on its own) are all drawn from the unit with the most poses, in the
 `--formations DIR` writes `<part>.png`, the 4x picture with the art of the frame of the first 3000 of each battle where
 most fighters show (a formation sheet), with `<part>.json` (the frame, and where each pose is and where its art came from). Nothing the tour writes is tracked.
 
+    cargo run --release -p xtask -- hd-art scenes [--replays [name,..]] [--maps [N,..]] [--menus] [--title] [--only part,..]
+        [--out DIR] [--jobs N] [--base SAVE]
+    cargo run --release -p xtask -- hd-art scenes merge <out dir> <run dir>...
+
+the scene audit of the HD remaster: it plays the frames of the parts of the tour (every reference replay, a visit of every map
+and a walk of the party's characters in the four directions on a map, the menus and the title; `--replays`, `--maps`,
+`--menus` and `--title` choose, the battle groups are the tour's), three consecutive frames of every eight of a replay (and
+every frame of the other parts: consecutive frames are what the flicker check needs), and finds the **scenes**: ranges of frames of one map and one
+game state where something visible is not drawn from the art, as original pixels, as the filter's fallback, or as art that is
+drawn wrong. A frame is faulty when it shows (reason, in the report) a map layer or a flight's plane (`map`), a big picture
+(`picture`), a battle background (`background`), a character sprite (`sprite`) or a portrait (`portrait`) that is not drawn
+from art; a sprite whose art is much darker than the original's pixels (`dark`, a silhouette) or draws under half of its
+pixels (`thin`); a figure whose pixels did not change between two frames while its art did (`flicker`: the grouping of
+the sprites differs, or a piece of the figure takes its sprites; not when an effect that the original draws over the figure in
+one of the frames was drawn from art made with the figure in it); and a field sprite whose art lacks a colour the original
+has a good share of, or has far more skin than the original (`off_model`, the gi that became a bare chest). Frames faded to
+black or in the mosaic of a fade are left out. The report is `.work/scenes/index.html` (one 4x frame of each scene, plain and
+with the art, its part and frame range, the map and the game mode, and what is missing with its pixels) and `scenes.json`; the
+poses with no art are also written to `.work/scenes/gaps/` (as `hd-tour --gaps` does), which is what art is made from.
+`tools/hd-scenes.toml` lists the scenes that are accepted as they are (`part`, `map`, `reason` and `item`, each a substring or
+a value, and a `note` that says why); the command exits 1 while a scene is not covered by one. `SCENES_SNAP=N` writes the
+picture of every Nth frame, `SCENES_TRACE=A-B` prints what the frames A to B are made of (their poses, with where each one's
+art came from) and `SCENES_FULL=1` counts every frame of the replays (not three of eight) and `SCENES_UNTIL=N` stops the replays after N frames, to look at one scene without playing the rest. `merge` puts the reports of runs made in parts (one `--out` folder each, below `<out dir>`) into one report with the exceptions applied.
+
     cargo run --release -p xtask -- menu-test field --save <file.sav> [--slot N] [name...]
     cargo run --release -p xtask -- menu-test town --replay <file.ssdreplay> --frames N [name...]
     cargo run --release -p xtask -- menu-test diff --save <file.sav> [--slot N] [name...]
@@ -733,11 +882,16 @@ that cannot reach its state closes the menu, and the party walks again); each ch
 when one fails. `town` runs the town's command window (four rows, no Fly), its Item and Menu, and its Talk. `diff` plays
 each choice with the HD driver and checks that its joypad words (its presses), replayed as a plain Classic run, end in
 the same work RAM, every byte, and that the hand-written Classic presses of the same choice reach the same game state
-(items, money, party, travel, map and position). `items` plays the bag on saves it crafts from `<file.sav>` (any save
-with a party): the original's own Bubbles, Escape and Dragon Radar (the Radar is a keepsake: its screen is left with B
-and it stays in the bag), a use of Bulma x2 from a stack of 5, a pickup, a purchase, a drop, a save then Continue, a save
+(items, money, party, travel, map and position). `items` plays the bag on saves it crafts from `<file.sav>` (any save with a party, with the window's hooks installed):
+the original's own Bubbles, Escape and Dragon Radar; a use of Bulma from a stack of 5 (one unit, the first fighter
+healed); the Radar on its own (its screen is left to the player with B, and it stays in the bag); a healing item
+(Roshi) on the first fighter with the second left alone; Vegeta on the Allies tab, greyed on the map (A says why);
+`kinds`, every object the HD offers for use from its own bag with the party hurt (each use is taken and its stack is
+consumed, a card's list and the Radar's screen are left to the player, and no use is refused); `dead-input`, the Item
+screen's keys on an empty tab and the way back; a pickup, a purchase, a drop (one unit), a save then Continue, a save
 changed by Classic play, a full bag, and the recording of an Enhanced session (format 2) played back to the same final
-state. Nothing is written but the report (the crafted saves of `items` go to a temporary directory it removes).
+state.
+Nothing is written but the report (the crafted saves of `items` go to a temporary directory it removes).
 
 ### Recompiler (M3)
 

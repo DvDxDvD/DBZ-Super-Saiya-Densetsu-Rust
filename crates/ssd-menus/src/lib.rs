@@ -9,12 +9,18 @@
 
 pub mod bag;
 pub mod cheats;
+mod controls_page;
 pub mod draw;
 pub mod layout;
 pub mod nav;
+pub mod options;
 pub mod screens;
+pub mod style;
 pub mod view;
 
 pub use draw::{Align, Color, DrawList, Op, Rect};
 pub use nav::{Action, Entry, Key, Nav};
-pub use view::{CharacterLabel, Labels, Member, MenuView, ObjectLabel, Screen, Selected, Slot};
+pub use style::Style;
+pub use view::{
+    CharacterLabel, Labels, Member, MenuView, ObjectLabel, Picture, Screen, Selected, Slot,
+};

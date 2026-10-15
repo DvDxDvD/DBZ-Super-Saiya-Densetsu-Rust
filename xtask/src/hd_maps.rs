@@ -488,7 +488,7 @@ pub fn run_scan(
                 continue;
             }
             let wram = machine.wram();
-            if !matches!(wram[GAME_MODE] & 0x7F, 0 | 6) {
+            if !ssd_hd::world::is_field_mode(wram[GAME_MODE]) {
                 continue;
             }
             let Some(state) = FieldState::from_wram(wram) else { continue };

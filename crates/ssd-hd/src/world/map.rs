@@ -49,6 +49,24 @@ pub(crate) const OBJECT_SIZE: usize = 6;
 const BLOCK_TABLE: u16 = 0xF1EE;
 const BLOCK_TABLE_BANK: u8 = 0x06;
 
+/// Whether `game_mode` (`$24`, bit 7 set while the state was just entered) is a main loop state that
+/// shows the field's map: `$00` (the map after a load, a battle or a scene), `$06` (the map after a
+/// flight) and `$05`, the map the party walks back to after a building (`$01`, the town's and the
+/// interiors' state) and stays in until the next battle.
+#[must_use]
+pub fn is_field_mode(game_mode: u8) -> bool {
+    matches!(game_mode & 0x7F, 0x00 | 0x05 | 0x06)
+}
+
+/// The main loop's state of a town and its rooms.
+const TOWN_MODE: u8 = 0x01;
+/// The first map id of the rooms of the towns (the ids below it are the field maps).
+pub const FIRST_ROOM: u8 = 48;
+/// The table of the map headers (`06:F2DE`, a word per map id: the record of the map's width and
+/// height in blocks, then its grid of block ids).
+const MAP_TABLE: u16 = 0xF2DE;
+const MAP_TABLE_BANK: u8 = 0x06;
+
 /// A map header as `00:8E26` leaves it in work RAM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FieldMap {
@@ -166,10 +184,32 @@ impl FieldState {
         })
     }
 
-    /// Whether the main loop is in a state that shows the field (`$00` or `$06`).
+    /// Whether the main loop is in a state that shows the field (see [`is_field_mode`]).
     #[must_use]
     pub fn is_field(&self) -> bool {
-        matches!(self.game_mode & 0x7F, 0x00 | 0x06)
+        is_field_mode(self.game_mode)
+    }
+
+    /// The state of a frame in a town (`$01`) whose room is on screen. The game draws a room
+    /// through the same lookup as a field map (map ids `$30` to `$3F` are 1 x 1 rooms in the
+    /// same table, `06:F2DE`), but it does not load the room's header into work RAM while it
+    /// stays in the town: the size and the grid there are the last field map's. This reads the
+    /// room's from its record; the metatile table is the room's own in work RAM. Any other state
+    /// is returned as it is.
+    #[must_use]
+    pub fn in_room(mut self, rom: Rom<'_>) -> Self {
+        if self.game_mode & 0x7F != TOWN_MODE || self.map_id < FIRST_ROOM {
+            return self;
+        }
+        let record = rom.word(MAP_TABLE_BANK, MAP_TABLE.wrapping_add(u16::from(self.map_id) * 2));
+        let (width, height) =
+            (rom.byte(MAP_TABLE_BANK, record), rom.byte(MAP_TABLE_BANK, record.wrapping_add(1)));
+        if width == 0 || height == 0 {
+            return self;
+        }
+        self.map.blocks = (width, height);
+        self.map.grid = (MAP_TABLE_BANK, record.wrapping_add(2));
+        self
     }
 }
 
@@ -271,7 +311,35 @@ pub(crate) mod tests {
         assert_eq!(state.map.metatiles, (0x0C, 0xA000));
         assert_eq!(state.camera, (0x123, 0x456));
         assert!(state.is_field(), "bit 7 only says 'just entered'");
+        wram[GAME_MODE] = 0x05;
+        assert!(FieldState::from_wram(&wram).unwrap().is_field(), "the map after a building");
         wram[GAME_MODE] = 0x07;
         assert!(!FieldState::from_wram(&wram).unwrap().is_field());
+    }
+
+    #[test]
+    fn a_towns_room_is_read_from_its_record_in_the_map_table() {
+        let mut rom = synthetic_rom();
+        // The record of map 48: 1 x 1 blocks, its grid (one block id) right after
+        put(&mut rom, 6, 0xF2DE + 2 * 48, &0xF846_u16.to_le_bytes());
+        put(&mut rom, 6, 0xF846, &[1, 1, 0x70]);
+        let mut wram = vec![0; 0x20000];
+        wram[MAP_WIDTH] = 9;
+        wram[MAP_HEIGHT] = 11;
+        wram[MAP_GRID..MAP_GRID + 3].copy_from_slice(&[0x60, 0xF3, 0x06]);
+        wram[MAP_METATILES..MAP_METATILES + 3].copy_from_slice(&[0x00, 0xFA, 0x08]);
+        wram[MAP_ID] = 48;
+        wram[GAME_MODE] = 0x01;
+        let state = FieldState::from_wram(&wram).unwrap().in_room(Rom(&rom));
+        assert_eq!(state.map.blocks, (1, 1));
+        assert_eq!(state.map.grid, (6, 0xF848));
+        assert_eq!(state.map.metatiles, (8, 0xFA00), "the room's own table is in work RAM");
+        wram[GAME_MODE] = 0x06;
+        let state = FieldState::from_wram(&wram).unwrap().in_room(Rom(&rom));
+        assert_eq!(state.map.blocks, (9, 11), "only a town's frames");
+        wram[GAME_MODE] = 0x01;
+        wram[MAP_ID] = 0;
+        let state = FieldState::from_wram(&wram).unwrap().in_room(Rom(&rom));
+        assert_eq!(state.map.blocks, (9, 11), "only a room");
     }
 }

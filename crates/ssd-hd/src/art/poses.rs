@@ -134,6 +134,18 @@ pub(crate) fn sprites(log: &FrameLog) -> Vec<Sprite> {
 /// of the field is made of the same sprites in the same order whatever side of the window's edge
 /// the pieces of its object lie.
 pub(crate) fn sprites_in(log: &FrameLog, view: &View) -> Vec<Sprite> {
+    sprites_band(log, view, false)
+}
+
+/// The sprites of the frame `log` describes that start at line 224 or below and lie wholly under it: the
+/// band a frame of 239 lines shows under the original's 224 lines, where the capture of the art kept no
+/// sprite ([`sprites_in`] leaves them out). The speed lines of the ending reach into it.
+pub(crate) fn overscan_sprites_in(log: &FrameLog, view: &View) -> Vec<Sprite> {
+    sprites_band(log, view, true)
+}
+
+/// [`sprites_in`] (`overscan` false) or [`overscan_sprites_in`].
+fn sprites_band(log: &FrameLog, view: &View, overscan: bool) -> Vec<Sprite> {
     // (the entry the sprite follows, 0 for an entry of the OAM and 1 for an extra part, the order)
     let mut found: Vec<((i32, u8, u32), Sprite)> = Vec::new();
     let mut entries: Vec<Raw> = Vec::new();
@@ -185,10 +197,16 @@ pub(crate) fn sprites_in(log: &FrameLog, view: &View) -> Vec<Sprite> {
         if sx + w as i32 <= view.left || sx >= view.right {
             continue;
         }
-        if y >= 224 && i32::from(y) + h as i32 <= 256 {
+        let below = y >= 224 && i32::from(y) + h as i32 <= 256;
+        if below != overscan {
             continue;
         }
-        let sy = if y >= 224 { i32::from(y) - 256 } else { i32::from(y) };
+        // A sprite parked at line 240 or below (where the game hides the ones it does not use) is
+        // not on the screen, even in a frame of 239 lines
+        if overscan && i32::from(y) + 1 > i32::from(log.height) {
+            continue;
+        }
+        let sy = if y >= 224 && !overscan { i32::from(y) - 256 } else { i32::from(y) };
         let (x_flip, y_flip) = (attr & 0x40 != 0, attr & 0x80 != 0);
         let mut pix = vec![0_u8; w * h];
         for ty in 0..h / 8 {
@@ -302,6 +320,36 @@ impl Pose {
 /// The frame row of the first row of a pose's array, less the `y` of [`Pose::org`]: the capture
 /// counts a sprite's rows from `y + 1`, the PPU draws row 0 of a sprite at the row `y`.
 pub(crate) const ROW_OF_CAPTURE: i32 = -1;
+
+/// A digest of the pixels the sprites of `sprites` show inside the box `(org, w, h)` that does not
+/// depend on the order of the sprites (OAM rotates them from frame to frame): for each sprite whose
+/// box meets the box, its place in it, its palette and its pixels, added up. Two frames in which
+/// the original shows the same pixels there have the same digest, however the sprites are grouped.
+pub(crate) fn region_digest(sprites: &[Sprite], org: (i32, i32), w: usize, h: usize) -> u64 {
+    let mut total = 0_u64;
+    for s in sprites {
+        let (top, left) = (s.y + 1, s.x);
+        if left >= org.0 + w as i32
+            || left + s.w as i32 <= org.0
+            || top >= org.1 + h as i32
+            || top + s.h as i32 <= org.1
+        {
+            continue;
+        }
+        let mut hash = 0xCBF2_9CE4_8422_2325_u64;
+        let mut mix = |value: u64| {
+            hash = (hash ^ value).wrapping_mul(0x0000_0100_0000_01B3);
+        };
+        mix((left - org.0) as u64);
+        mix((top - org.1) as u64);
+        mix(u64::from(s.pal));
+        for &pixel in &s.pix {
+            mix(u64::from(pixel));
+        }
+        total = total.wrapping_add(hash);
+    }
+    total
+}
 
 fn digest(data: &[u8], tail: [u8; 2]) -> u64 {
     let mut hash = Sha1::new();
@@ -660,19 +708,219 @@ pub(crate) fn poses_in(log: &FrameLog, sprites: &[Sprite], view: &View) -> Vec<P
     }
     // The field's sprite groups (class 3): keyed over their palette indexes like a fighter's,
     // and never taken for a fighter
-    let none = |_: &Sprite, _: usize, _: u8| [0_u8; 3];
     for group in field_groups(sprites) {
-        if let Some(mut pose) = assemble(&group, true, &none)
-            && pose.arr.iter().filter(|&&c| c != 0).count() >= FIELD_MIN
-        {
-            pose.fighter = false;
-            pose.field = true;
-            pose.cut = group.iter().any(|s| at_edge(s, log.height, view));
+        if let Some(pose) = field_pose(&group, log, view, FIELD_MIN) {
             out.push(pose);
         }
     }
     out
 }
+
+/// The effects the sprites of the overscan band make ([`overscan_sprites_in`]): clusters of the sprites
+/// under line 224 on their own, so that the poses of the sprites above them (whose art the capture made)
+/// keep their keys. They are found only by the exact pixels the index has art for.
+pub(crate) fn overscan_effects(log: &FrameLog, sprites: &[Sprite]) -> Vec<Pose> {
+    let effects: Vec<&Sprite> = sprites.iter().filter(|s| !matches!(s.pal, 1 | 2)).collect();
+    if effects.is_empty() {
+        return Vec::new();
+    }
+    let palettes = Palettes::of(log);
+    let colors = |s: &Sprite, row: usize, color: u8| {
+        palettes.color(log, s.y + 1 + row as i32 + 1, s.pal, color)
+    };
+    components(&effects, 4)
+        .into_iter()
+        .filter_map(|cluster| {
+            let group: Vec<&Sprite> = cluster.iter().map(|&i| effects[i]).collect();
+            assemble(&group, false, &colors)
+        })
+        .collect()
+}
+
+/// The field group made of `group` as a pose, when it has at least `min` opaque pixels.
+pub(crate) fn field_pose(
+    group: &[&Sprite],
+    log: &FrameLog,
+    view: &View,
+    min: usize,
+) -> Option<Pose> {
+    let none = |_: &Sprite, _: usize, _: u8| [0_u8; 3];
+    let mut pose = assemble(group, true, &none)?;
+    if pose.arr.iter().filter(|&&c| c != 0).count() < min {
+        return None;
+    }
+    pose.fighter = false;
+    pose.field = true;
+    pose.cut = group.iter().any(|s| at_edge(s, log.height, view));
+    Some(pose)
+}
+
+/// How far apart (pixels) two groups of one palette may be for the art of both together to be
+/// looked for.
+const MERGE_GAP: i32 = 4;
+
+/// The fewest opaque pixels of what is left of a group when a piece of it is taken away (a halo
+/// over a head is a few pixels).
+const LEFTOVER_MIN: usize = 8;
+
+/// The gap between the boxes of two poses (0 when they touch or overlap).
+fn box_gap(a: &Pose, b: &Pose) -> i32 {
+    let dx = (a.org.0 - (b.org.0 + b.w as i32)).max(b.org.0 - (a.org.0 + a.w as i32)).max(0);
+    let dy = (a.org.1 - (b.org.1 + b.h as i32)).max(b.org.1 - (a.org.1 + a.h as i32)).max(0);
+    dx.max(dy)
+}
+
+/// The field groups of `found` the art index has nothing for, read again: the game cuts its
+/// sprites into groups by runs of one palette in OAM order, and the order rotates, so a figure can
+/// come out as two groups (two runs apart), or as one group with something that is not part of it
+/// (a halo over a head). The art is made for the pixels of a whole figure, so a group with no art
+/// is tried as the union with a neighbour of its palette, and without one or two of its sprites;
+/// what is left of such a group is a group of its own. `has_art` says whether the index holds art
+/// for a pose.
+pub(crate) fn refine_field(
+    found: Vec<Pose>,
+    sprites: &[Sprite],
+    log: &FrameLog,
+    view: &View,
+    has_art: &mut dyn FnMut(&Pose) -> bool,
+) -> Vec<Pose> {
+    let of_mask = |mask: u128| -> Vec<&Sprite> {
+        sprites.iter().filter(|s| mask >> s.idx & 1 != 0).collect()
+    };
+    let bare: Vec<usize> = (0..found.len())
+        .filter(|&n| found[n].field && !found[n].shadow && !has_art(&found[n]))
+        .collect();
+    if bare.is_empty() {
+        return found;
+    }
+    let mut dropped = vec![false; found.len()];
+    let mut added: Vec<Pose> = Vec::new();
+    // Two groups that are one figure
+    for (at, &a) in bare.iter().enumerate() {
+        for &b in &bare[at + 1..] {
+            if dropped[a] || dropped[b] || found[a].palette != found[b].palette {
+                continue;
+            }
+            if box_gap(&found[a], &found[b]) > MERGE_GAP {
+                continue;
+            }
+            let union = of_mask(found[a].sprites | found[b].sprites);
+            if let Some(pose) = field_pose(&union, log, view, FIELD_MIN)
+                && has_art(&pose)
+            {
+                added.push(pose);
+                dropped[a] = true;
+                dropped[b] = true;
+            }
+        }
+    }
+    // A group with something that is not part of the figure
+    for &a in &bare {
+        if dropped[a] {
+            continue;
+        }
+        let members = of_mask(found[a].sprites);
+        if members.len() < 2 || members.len() > MAX_SPLIT {
+            continue;
+        }
+        let mut best: Option<(usize, Pose, Vec<&Sprite>)> = None;
+        let mut without = |taken: &[usize]| -> Option<(usize, Pose)> {
+            let rest: Vec<&Sprite> = members
+                .iter()
+                .enumerate()
+                .filter(|(n, _)| !taken.contains(n))
+                .map(|(_, &s)| s)
+                .collect();
+            let pose = field_pose(&rest, log, view, FIELD_MIN)?;
+            let opaque = pose.arr.iter().filter(|&&c| c != 0).count();
+            has_art(&pose).then_some((opaque, pose))
+        };
+        let mut tries: Vec<Vec<usize>> = (0..members.len()).map(|one| vec![one]).collect();
+        if members.len() >= 3 {
+            for one in 0..members.len() {
+                for two in one + 1..members.len() {
+                    tries.push(vec![one, two]);
+                }
+            }
+        }
+        // One sprite away first; two only when that finds nothing
+        for (round, taken) in tries.iter().enumerate() {
+            if round >= members.len() && best.is_some() {
+                break;
+            }
+            if let Some((opaque, pose)) = without(taken)
+                && best.as_ref().is_none_or(|(most, _, _)| opaque > *most)
+            {
+                best = Some((opaque, pose, taken.iter().map(|&n| members[n]).collect()));
+            }
+        }
+        if let Some((_, pose, gone)) = best {
+            dropped[a] = true;
+            added.push(pose);
+            let gone: Vec<&Sprite> = gone;
+            for cluster in components(&gone, FIELD_GAP) {
+                let part: Vec<&Sprite> = cluster.iter().map(|&i| gone[i]).collect();
+                if let Some(left) = field_pose(&part, log, view, LEFTOVER_MIN) {
+                    added.push(left);
+                }
+            }
+        }
+    }
+    let mut out: Vec<Pose> =
+        found.into_iter().enumerate().filter(|(n, _)| !dropped[*n]).map(|(_, p)| p).collect();
+    out.extend(added);
+    out
+}
+
+/// The field groups of `found` that run to line 224, read again with the sprites of the band under
+/// it (`band`, see [`overscan_sprites_in`]): the capture of the art ends at line 224, so a figure that
+/// reaches under it was seen as two pieces, and the art of the whole figure is keyed over all of it.
+/// A group takes the pieces of its palette that touch it when the index holds art for the whole
+/// (`has_art`); otherwise it stays as it was.
+pub(crate) fn join_band(
+    found: Vec<Pose>,
+    sprites: &[Sprite],
+    band: &[Sprite],
+    log: &FrameLog,
+    view: &View,
+    has_art: &mut dyn FnMut(&Pose) -> bool,
+) -> Vec<Pose> {
+    if band.is_empty() {
+        return found;
+    }
+    let mut taken = 0_u128;
+    let mut out = Vec::with_capacity(found.len());
+    for pose in found {
+        let near =
+            pose.field && !pose.shadow && pose.org.1 + pose.h as i32 + FIELD_GAP > KEPT_LINES;
+        if near {
+            let members: Vec<&Sprite> =
+                sprites.iter().filter(|s| pose.sprites >> s.idx & 1 != 0).collect();
+            if let Some(first) = members.first() {
+                let pal = first.pal;
+                let mut all = members.clone();
+                all.extend(band.iter().filter(|s| s.pal == pal && taken >> s.idx & 1 == 0));
+                let joined = components(&all, FIELD_GAP)
+                    .into_iter()
+                    .find(|cluster| cluster.contains(&0))
+                    .map(|cluster| cluster.iter().map(|&i| all[i]).collect::<Vec<&Sprite>>());
+                if let Some(group) = joined.filter(|g| g.len() > members.len())
+                    && let Some(whole) = field_pose(&group, log, view, FIELD_MIN)
+                    && has_art(&whole)
+                {
+                    taken |= whole.sprites;
+                    out.push(whole);
+                    continue;
+                }
+            }
+        }
+        out.push(pose);
+    }
+    out
+}
+
+/// The most sprites of a group that is tried without some of them.
+const MAX_SPLIT: usize = 10;
 
 /// The fewest opaque pixels of a field group (the capture left smaller ones out).
 const FIELD_MIN: usize = 40;
@@ -1013,5 +1261,119 @@ mod tests {
         let all = [&a, &b, &c];
         assert_eq!(components(&all, 4), vec![vec![0, 1], vec![2]]);
         assert_eq!(components(&all, 1), vec![vec![0], vec![1], vec![2]]);
+    }
+
+    fn log() -> FrameLog {
+        FrameLog {
+            complete: true,
+            height: 224,
+            h_hi_res: false,
+            v_hi_res: false,
+            entries: Vec::new(),
+            cgram_start: vec![0; 256],
+            cgram_writes: Vec::new(),
+            vram: vec![0; 32768],
+            vram_writes: Vec::new(),
+            oam_low: vec![0; 512],
+            oam_high: vec![0; 32],
+            oam_writes: Vec::new(),
+        }
+    }
+
+    /// A figure of two stacked sprites (key `body`), and what the art index would hold for sets of
+    /// sprites: the keys of the poses it has art for.
+    fn art_for<'a>(
+        log: &'a FrameLog,
+        sprites: &'a [Sprite],
+        keys: Vec<u64>,
+    ) -> impl FnMut(&Pose) -> bool + 'a {
+        let _ = (log, sprites);
+        move |pose: &Pose| keys.contains(&pose.key)
+    }
+
+    #[test]
+    fn a_halo_over_a_head_is_read_apart_from_the_body() {
+        let log = log();
+        let view = View::window();
+        let body = [sprite(0, 40, 40, 4, filled(3)), sprite(1, 40, 48, 4, filled(5))];
+        let halo = sprite(2, 40, 32, 4, filled(7));
+        let refs: Vec<&Sprite> = body.iter().collect();
+        let body_key = field_pose(&refs, &log, &view, 40).expect("a pose").key;
+        let sprites = vec![
+            sprite(0, 40, 40, 4, filled(3)),
+            sprite(1, 40, 48, 4, filled(5)),
+            sprite(2, 40, 32, 4, filled(7)),
+        ];
+        let _ = halo;
+        // The three sprites make one group: the halo is within the gap of the head
+        let all: Vec<&Sprite> = sprites.iter().collect();
+        let whole = field_pose(&all, &log, &view, 40).expect("a pose");
+        assert_ne!(whole.key, body_key);
+        let found = vec![whole];
+        let mut has = art_for(&log, &sprites, vec![body_key]);
+        let out = refine_field(found, &sprites, &log, &view, &mut has);
+        // The body is a pose of its own; what is left is the halo, a pose of its own too
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().any(|pose| pose.key == body_key));
+        let halo = out.iter().find(|pose| pose.key != body_key).expect("the halo");
+        assert_eq!(halo.sprites, 1 << 2);
+    }
+
+    #[test]
+    fn two_groups_of_one_figure_are_read_as_one() {
+        let log = log();
+        let view = View::window();
+        let sprites = vec![sprite(0, 40, 40, 4, filled(3)), sprite(9, 40, 48, 4, filled(5))];
+        let upper: Vec<&Sprite> = vec![&sprites[0]];
+        let lower: Vec<&Sprite> = vec![&sprites[1]];
+        let all: Vec<&Sprite> = sprites.iter().collect();
+        let union = field_pose(&all, &log, &view, 40).expect("a pose").key;
+        let found = vec![
+            field_pose(&upper, &log, &view, 40).expect("a pose"),
+            field_pose(&lower, &log, &view, 40).expect("a pose"),
+        ];
+        let mut has = art_for(&log, &sprites, vec![union]);
+        let out = refine_field(found, &sprites, &log, &view, &mut has);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].key, union);
+        assert_eq!(out[0].sprites, 1 | 1 << 9);
+    }
+
+    #[test]
+    fn a_group_with_art_and_groups_far_apart_are_left_as_they_are() {
+        let log = log();
+        let view = View::window();
+        let sprites = vec![sprite(0, 10, 10, 4, filled(3)), sprite(1, 120, 100, 4, filled(5))];
+        let a: Vec<&Sprite> = vec![&sprites[0]];
+        let b: Vec<&Sprite> = vec![&sprites[1]];
+        let (pa, pb) = (
+            field_pose(&a, &log, &view, 40).expect("a pose"),
+            field_pose(&b, &log, &view, 40).expect("a pose"),
+        );
+        let keys = vec![pa.key];
+        let mut has = art_for(&log, &sprites, keys);
+        let out = refine_field(vec![pa.clone(), pb.clone()], &sprites, &log, &view, &mut has);
+        assert_eq!(out.iter().map(|p| p.key).collect::<Vec<_>>(), vec![pa.key, pb.key]);
+    }
+
+    #[test]
+    fn the_digest_of_a_region_does_not_depend_on_the_order_of_the_sprites() {
+        let a = sprite(0, 40, 40, 4, filled(3));
+        let b = sprite(1, 44, 44, 4, filled(5));
+        let forward = region_digest(
+            &[sprite(0, 40, 40, 4, filled(3)), sprite(1, 44, 44, 4, filled(5))],
+            (40, 41),
+            16,
+            16,
+        );
+        let backward = region_digest(&[b, a], (40, 41), 16, 16);
+        assert_eq!(forward, backward);
+        let moved = region_digest(
+            &[sprite(0, 41, 40, 4, filled(3)), sprite(1, 44, 44, 4, filled(5))],
+            (40, 41),
+            16,
+            16,
+        );
+        assert_ne!(forward, moved);
     }
 }

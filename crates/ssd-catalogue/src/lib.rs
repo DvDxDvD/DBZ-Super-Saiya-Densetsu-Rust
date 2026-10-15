@@ -18,7 +18,7 @@ mod names;
 mod rom;
 mod text;
 
-pub use art::{Portrait, lz_decode, object_portrait};
+pub use art::{Portrait, face_portrait, lz_decode, object_portrait};
 pub use cards::{Card, CardRules, CardValue};
 pub use characters::{Character, LevelRow};
 pub use encounters::{Encounter, Slot};

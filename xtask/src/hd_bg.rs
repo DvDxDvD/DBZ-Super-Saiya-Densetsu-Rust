@@ -640,9 +640,21 @@ pub fn dump(
                 }
             }
             let r = lines[0].regs;
+            let planes = if r.bg_mode == 0 || bg >= 2 { 2 } else { 4 };
+            let (_, height) = ssd_hd::bgart::layer_size(r.bg_screen_size[bg], r.bg_large_tiles[bg]);
+            let rows = (height / if r.bg_large_tiles[bg] { 16 } else { 8 }) as u16;
+            let key = layer_key(
+                &log.vram,
+                r.bg_map_base[bg],
+                r.bg_char_base[bg],
+                r.bg_screen_size[bg],
+                r.bg_large_tiles[bg],
+                planes,
+                [0, rows],
+            );
             writeln!(
                 out,
-                "  bg{} {w}x{h} map {:04X} chr {:04X} large {} size {} mosaic {} lines {}..{} scroll runs {}",
+                "  bg{} {w}x{h} key {key:016x} map {:04X} chr {:04X} large {} size {} mosaic {} lines {}..{} scroll runs {}",
                 bg + 1,
                 r.bg_map_base[bg],
                 r.bg_char_base[bg],

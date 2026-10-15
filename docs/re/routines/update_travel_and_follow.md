@@ -44,3 +44,11 @@ a byte; the follow flags are set from a table when a step happens.
 
 ## Callers
 - `$00:9784` (3,492 calls in the replays).
+
+## Cost depends on the copy select (found by the secret replays of the King Kai planet and the Snake Way)
+- With bit 7 of `$01A1` clear, the copy branch reads `$01E7` and shifts bit 1 of it into the carry. A short
+  forward branch on that carry, two instructions later, is always followed by the next instruction, so it changes
+  no state, but it is one cycle (6 master cycles) dearer when taken (carry clear) than when not (carry set).
+  Every cost in the table above is for carry clear; a call with `$01E7` bit 1 set costs 6 less (for example 522
+  instead of 528 on the idle path B). The old reference replays never had that bit set there; the King Kai planet
+  has it set on every call. The cost bound and the declared cost now follow it (`TravelKey::copy_carry`).

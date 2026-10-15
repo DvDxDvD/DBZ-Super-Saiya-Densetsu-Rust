@@ -4,20 +4,36 @@
 use crate::Catalogue;
 use ssd_menus::{CharacterLabel, Labels, ObjectLabel};
 
-/// The labels of the menus, from the catalogue: a character's face is the picture of the object of
-/// the same name (the game's own face table is not mapped yet, `docs/re/data/menus.md`).
+/// The face index of each character, in the order of the catalogue's characters (the second byte of its party
+/// record, which the field menu uses for the corner face). Measured on the field menu: Goku 00, Piccolo 01, Gohan
+/// 09, Krillin 0A, Tien 0B, Yamcha 0C, Chiaotzu 0D, Vegeta 50 and Dende 61. Nail, Tsumuri and Maima have not been
+/// seen in a party yet, so they have no face (`docs/re/data/menus.md`, "Corner faces").
+const CHARACTER_FACES: [Option<u8>; 12] = [
+    Some(0x00),
+    Some(0x09),
+    Some(0x01),
+    Some(0x0A),
+    Some(0x0B),
+    Some(0x0C),
+    Some(0x0D),
+    Some(0x50),
+    None,
+    None,
+    None,
+    Some(0x61),
+];
+
+/// The labels of the menus, from the catalogue: a character's face is the face index of the field menu's corner
+/// picture ([`CHARACTER_FACES`]).
 #[must_use]
 pub fn labels(catalogue: &Catalogue) -> Labels {
     let characters = catalogue
         .characters
         .iter()
-        .map(|character| CharacterLabel {
+        .enumerate()
+        .map(|(index, character)| CharacterLabel {
             name: plain(character.name.trimmed()),
-            face: catalogue
-                .items
-                .iter()
-                .find(|item| item.name.trimmed() == character.name.trimmed())
-                .map(|item| item.id),
+            face: CHARACTER_FACES.get(index).copied().flatten(),
         })
         .collect();
     let objects = catalogue

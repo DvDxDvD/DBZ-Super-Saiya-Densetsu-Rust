@@ -53,6 +53,14 @@ pub enum Until {
     DropAsk,
     /// The field is free: the menu is closed.
     Closed,
+    /// The original's answer to a use: the field is free, or its menu is idle on its command window or after an
+    /// effect that was refused (the object stays, and the player decides what comes next).
+    ItemAnswered,
+    /// A message of a use waits for A (`menu_busy` 1 on the message steps 3, 4 and 7: the message after the use, the
+    /// effect's own, and its result).
+    ItemMessage,
+    /// Not a message that waits for A any more (the state a press of A has moved on from).
+    Moved,
     /// The field is free, or the menu is open on its command window (the field's or a town's).
     Settled,
 }
@@ -75,6 +83,12 @@ pub enum Step {
     MemberIf { row: u8, rows: u8 },
     /// Runs `frames` frames with no press: the original settles after a menu closes.
     Pause { frames: u32 },
+    /// The original draws the screens from here on: the curtain lifts, so the player sees what the
+    /// original shows (its use window, its party list, its message, its effect). No frame is run for it.
+    Lift,
+    /// The original's answer after a use: each message that waits for A takes a press of A, and the step ends when
+    /// the original is idle (see [`Until::ItemAnswered`]). Frames pass while its effect runs.
+    Answer,
 }
 
 /// What a plan leaves.
@@ -97,6 +111,8 @@ pub enum Next {
     Done(Outcome),
     /// The driver stages the stack `id` (its writes go before the next frame), then asks again.
     Stage(u32),
+    /// The driver lifts the curtain (the original draws what comes next), then asks again.
+    Lift,
 }
 
 /// Frames a step waits for its state after a press: a press shows within a few frames, a screen or a
@@ -145,13 +161,15 @@ pub struct Player {
     reason: &'static str,
     /// Repeats of the press of the current step so far.
     retries: u8,
+    /// Frames the answer step has waited for the original's answer.
+    answering: u32,
 }
 
 impl Player {
     /// A plan of `steps`, not started yet.
     #[must_use]
     pub fn new(steps: Vec<Step>) -> Self {
-        Self { steps, index: 0, phase: Phase::Start, reason: "", retries: 0 }
+        Self { steps, index: 0, phase: Phase::Start, reason: "", retries: 0, answering: 0 }
     }
 
     /// The next frame of the plan, given the menu state after the frame before it.
@@ -180,6 +198,28 @@ impl Player {
                     Step::Pause { frames } => {
                         self.index += 1;
                         self.phase = Phase::Pausing { left: frames };
+                    }
+                    Step::Lift => {
+                        self.advance();
+                        return Next::Lift;
+                    }
+                    Step::Answer => {
+                        if satisfied(probe, Until::ItemAnswered) {
+                            self.advance();
+                        } else if satisfied(probe, Until::ItemMessage) {
+                            // A message that waits for A takes it; the answer is asked again after it.
+                            let press = Step::Press { button: Button::A, until: Until::Moved };
+                            self.steps.splice(self.index..=self.index, [press, Step::Answer]);
+                            self.phase = Phase::Ready { waited: 0 };
+                        } else if self.answering >= READY_FRAMES {
+                            // The original keeps its menu on a state of its own: it is the player's to leave.
+                            self.phase =
+                                Phase::Finished(Outcome::Stuck { reason: "the use has no answer" });
+                        } else {
+                            // The effect runs: a frame, and the answer is asked again.
+                            self.answering += 1;
+                            self.phase = Phase::Pausing { left: 1 };
+                        }
                     }
                     Step::MemberIf { row, rows } => {
                         let members = probe.screen() == Some(2) && probe.step() == Some(5);
@@ -259,6 +299,13 @@ impl Player {
                             } if self.retries < PRESS_RETRIES && again == until => {
                                 self.retries += 1;
                                 self.phase = Phase::Holding { button, until, held: 0 };
+                            }
+                            // The original does not take the use (a refusal, such as a fighter at full KI): its
+                            // menu stays open on its use window, for the player.
+                            Step::Press { until: Until::UseTaken, .. } => {
+                                self.phase = Phase::Finished(Outcome::Stuck {
+                                    reason: "the original does not take the use",
+                                });
                             }
                             _ => self.abort("a press did not reach the state it should"),
                         }
@@ -350,6 +397,20 @@ fn satisfied(probe: &MenuProbe<'_>, until: Until) -> bool {
         }
         Until::DropAsk => probe.menu_open() && probe.screen() == Some(2) && probe.step() == Some(6),
         Until::Closed => probe.field_free(),
+        Until::ItemAnswered => {
+            probe.field_free()
+                || (probe.menu_open()
+                    && !probe.busy()
+                    && (matches!(probe.screen(), Some(0 | 13))
+                        || (probe.screen() == Some(2) && probe.step() == Some(10))))
+        }
+        Until::ItemMessage => {
+            probe.menu_open()
+                && probe.screen() == Some(2)
+                && matches!(probe.step(), Some(3 | 4 | 7))
+                && probe.message_waits()
+        }
+        Until::Moved => !satisfied(probe, Until::ItemMessage),
         Until::Settled => {
             probe.field_free() || (probe.menu_open() && matches!(probe.screen(), Some(0 | 13)))
         }
@@ -388,7 +449,7 @@ mod tests {
                     menu.tick(pad);
                 }
                 Next::Done(outcome) => return (pads, Some(outcome)),
-                Next::Stage(_) => {}
+                Next::Stage(_) | Next::Lift => {}
             }
         }
         (pads, None)

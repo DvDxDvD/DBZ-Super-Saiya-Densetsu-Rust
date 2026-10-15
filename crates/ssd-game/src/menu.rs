@@ -216,6 +216,12 @@ impl<'a> MenuProbe<'a> {
         }
     }
 
+    /// Whether a message of the Item screen waits for A (`menu_busy` is 1 while its text waits).
+    #[must_use]
+    pub fn message_waits(&self) -> bool {
+        self.byte(d::MENU_BUSY) == Some(1)
+    }
+
     /// The view of the open menu as the original shows it, when it is a screen the HD draws (the
     /// command window of the field or of a town, the Menu list, or the item list). `None` on the
     /// field, on the other screens of the menu, and for a snapshot too short to hold work RAM.
@@ -249,7 +255,7 @@ impl<'a> MenuProbe<'a> {
         let items = self.items()?;
         let selected = match screen {
             Screen::Items => self.selected(&items, cursor, page),
-            Screen::Command | Screen::Menu | Screen::Cheats => None,
+            Screen::Command | Screen::Menu | Screen::Cheats | Screen::Options => None,
         };
         Some(MenuView {
             bag: None,
@@ -263,6 +269,12 @@ impl<'a> MenuProbe<'a> {
             items,
             selected,
         })
+    }
+
+    /// The original's text speed (`text_speed`, `$01D0`), the cursor of its Text screen: 0 when the snapshot lacks it.
+    #[must_use]
+    pub fn text_speed(&self) -> u8 {
+        self.byte(d::TEXT_SPEED).unwrap_or(0)
     }
 
     /// The byte at a bus address of work RAM.

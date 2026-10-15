@@ -295,6 +295,66 @@ pub fn play_map(env: &Env<'_>, name: &str, id: u8) -> anyhow::Result<PartOutput>
     Ok(recorder.finish(notes))
 }
 
+/// The map the walk cycles are seen on, and the frames each direction is held (a few steps of
+/// every frame of the cycle) and the party rests between them.
+const WALK_MAP: u8 = 0;
+const WALK_FRAMES: u64 = 90;
+const WALK_REST: u64 = 20;
+
+/// The party of the walk gallery of `who`: the character leads, the others follow.
+fn walk_party(who: &str) -> String {
+    let mut party = vec![who];
+    for other in ["goku", "gohan", "krillin", "piccolo", "vegeta"] {
+        if other != who && party.len() < 3 {
+            party.push(other);
+        }
+    }
+    party.join(",")
+}
+
+/// A gallery of the walk cycles of `who`: the party on a map with `who` leading, walking down,
+/// right, up and left, every frame offered to the recorder.
+///
+/// # Errors
+///
+/// The save or the game fails.
+pub fn play_walk(env: &Env<'_>, name: &str, who: &str) -> anyhow::Result<PartOutput> {
+    let mut sets = map_sets(WALK_MAP);
+    sets.retain(|(field, _)| field != "party");
+    sets.push(set("party", walk_party(who)));
+    let sram = crafted_bytes(env.game, &env.base_save, &sets)?;
+    let mut session = Session::boot(env.rom, &sram)?;
+    let mut recorder = Recorder::new(env, name);
+    let mut frame = 0_u64;
+    recorder.trust_field(false);
+    let mut notes = Vec::new();
+    if !until_free(&mut session, &mut recorder, &mut frame, BOOT_LIMIT)? {
+        notes.push(format!("the party was not free (mode {:02X})", session.mode()));
+        return Ok(recorder.finish(notes));
+    }
+    close_menus(&mut session, &mut recorder)?;
+    for (direction, pad) in [
+        ("down", Joypad { down: true, ..Joypad::default() }),
+        ("right", Joypad { right: true, ..Joypad::default() }),
+        ("up", Joypad { up: true, ..Joypad::default() }),
+        ("left", Joypad { left: true, ..Joypad::default() }),
+    ] {
+        for t in 0..WALK_FRAMES + WALK_REST {
+            session.step(if t < WALK_FRAMES { pad } else { Joypad::default() })?;
+            frame += 1;
+            if !matches!(session.mode(), 0 | 6) {
+                notes.push(format!(
+                    "walking {direction}: a scene took over (mode {:02X})",
+                    session.mode()
+                ));
+                break;
+            }
+            recorder.feed(&session.machine, frame);
+        }
+    }
+    Ok(recorder.finish(notes))
+}
+
 /// The input of the menu walk: Talk, Look, Item, the Menu list (Cards, Status, Order, Text speed,
 /// Save) and a flight. Only key presses.
 const MENUS_TIMELINE: &str = include_str!("tour_menus.txt");

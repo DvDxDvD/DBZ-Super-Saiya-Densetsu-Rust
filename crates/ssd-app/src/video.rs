@@ -26,6 +26,12 @@ pub(crate) fn pick_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::Textu
         .or_else(|| formats.first().copied())
 }
 
+/// The presentation mode of the Video page's V-sync: waits for the screen's refresh when on, else shows frames as soon as
+/// they are ready (the main loop paces them itself).
+pub(crate) fn present_mode(vsync: bool) -> wgpu::PresentMode {
+    if vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync }
+}
+
 /// A surface configuration that is due but not made yet. Configuring a surface while one of its
 /// textures is alive panics in wgpu, so a `Suboptimal` texture is drawn and presented as it is, and
 /// the surface is configured again at the start of the next present.
@@ -109,6 +115,7 @@ pub struct Video {
     text_input: TextInputUtil,
     text_input_on: bool,
     minimized: bool,
+    fullscreen: bool,
     reconfigure: Reconfigure,
     started: Instant,
     window: Window,
@@ -161,7 +168,7 @@ impl Video {
             width: width.max(1),
             height: height.max(1),
             // The main loop paces the frames itself.
-            present_mode: wgpu::PresentMode::AutoNoVsync,
+            present_mode: present_mode(false),
             desired_maximum_frame_latency: 1,
             alpha_mode: capabilities.alpha_modes.first().copied().unwrap_or_default(),
             view_formats: vec![],
@@ -180,6 +187,7 @@ impl Video {
             text_input,
             text_input_on: false,
             minimized: false,
+            fullscreen: false,
             reconfigure: Reconfigure::default(),
             started: Instant::now(),
             window,
@@ -190,6 +198,26 @@ impl Video {
     /// (`WindowEvent::Minimized` / `WindowEvent::Restored`).
     pub fn set_minimized(&mut self, minimized: bool) {
         self.minimized = minimized;
+    }
+
+    /// Window or fullscreen (the desktop's own mode, so the picture keeps its aspect in the window's size).
+    pub fn set_fullscreen(&mut self, on: bool) {
+        if self.fullscreen == on {
+            return;
+        }
+        match self.window.set_fullscreen(on) {
+            Ok(()) => self.fullscreen = on,
+            Err(e) => log::warn!("setting fullscreen {on} failed: {e}"),
+        }
+    }
+
+    /// V-sync on or off: the surface is configured again at the next present.
+    pub fn set_vsync(&mut self, on: bool) {
+        let mode = present_mode(on);
+        if self.surface_config.present_mode != mode {
+            self.surface_config.present_mode = mode;
+            self.reconfigure.request();
+        }
     }
 
     pub fn set_title(&mut self, title: &str) {
@@ -311,6 +339,16 @@ impl Video {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vsync_picks_the_presentation_mode() {
+        assert_eq!(
+            present_mode(false),
+            wgpu::PresentMode::AutoNoVsync,
+            "off is what the window always did"
+        );
+        assert_eq!(present_mode(true), wgpu::PresentMode::AutoVsync);
+    }
 
     #[test]
     fn zero_sized_window_is_not_rendered() {

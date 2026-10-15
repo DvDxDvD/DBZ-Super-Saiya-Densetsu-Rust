@@ -217,6 +217,9 @@ pub enum Kind {
     Replay(PathBuf),
     Menus,
     Title,
+    /// A character leads the party on a map and walks in the four directions (a gallery of the
+    /// walk cycles, for the scene audit).
+    Walk(String),
 }
 
 /// One part of the tour.
@@ -374,13 +377,14 @@ pub fn find_base_save(root: &Path) -> anyhow::Result<PathBuf> {
     )
 }
 
-fn play_job(env: &Env<'_>, job: &Job) -> anyhow::Result<PartOutput> {
+pub fn play_job(env: &Env<'_>, job: &Job) -> anyhow::Result<PartOutput> {
     match &job.what {
         Kind::Map(id) => tour_visit::play_map(env, &job.name, *id),
         Kind::Episode(scenario, episode) => play_episode(env, &job.name, scenario, episode),
         Kind::Replay(path) => play_replay(env, &job.name, path),
         Kind::Menus => tour_visit::play_menus(env, &job.name),
         Kind::Title => tour_visit::play_title(env, &job.name),
+        Kind::Walk(who) => tour_visit::play_walk(env, &job.name, who),
     }
 }
 
@@ -462,7 +466,11 @@ pub fn run(
         env.audit.clone_from(&args.audit);
         env.formations.clone_from(&args.formations);
         if !args.no_font {
-            env.font = Some(Arc::new(ssd_hd::Font::standard(rom).context("the HD text font")?));
+            // With the pack's card art: the cards and the UI tiles it draws count as drawn from art
+            env.font = Some(Arc::new(
+                ssd_hd::Font::standard_with_pack(rom, Some(&pack.dir))
+                    .context("the HD text font")?,
+            ));
         }
         writeln!(
             out,

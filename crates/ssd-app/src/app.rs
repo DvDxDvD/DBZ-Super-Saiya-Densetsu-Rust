@@ -1,11 +1,18 @@
 use crate::canvas::GameView;
 use crate::debugger::{self, Banner, StepKind};
 use crate::egui_input::InputAdapter;
+use crate::filter;
 use crate::hd::{self, Hd};
 use crate::hd_art;
 use crate::hook_setup::{DEFAULT_DIVERGENCE_DIR, HookSetup, HookSwitch, HooksArg};
 use crate::hotkeys::{self, Speed};
 use crate::input::InputState;
+
+use crate::options::audio::AudioSettings;
+
+use crate::options::controls::{self as bindings, Bindings};
+
+use crate::options::video::{Start, VideoSettings};
 use crate::panel::{
     Controls, DebugAction, DivergenceWatch, Effect, FpsCounter, HooksSwitch, KeyRoute, PanelAction,
     PanelState, ReplayAction, Tab, route_key,
@@ -17,7 +24,7 @@ use crate::tab_memory;
 use crate::tab_routines::{self, FrameHistory};
 use crate::ui::{self, Status, View};
 use crate::ui_script::{Command, Line, MenuCommand, MenuShow};
-use crate::{audio, paths, video};
+use crate::{audio, paths, saves, video};
 use anyhow::Context;
 use sdl3::event::{Event, WindowEvent};
 use sdl3::gamepad::Gamepad;
@@ -26,11 +33,12 @@ use ssd_game::menu::driver::Curtain;
 use ssd_hd::world::WideFrame;
 use ssd_hd::{HdFrame, HdOptions, png};
 use ssd_menus::Screen;
+use ssd_menus::options::Values;
 use ssd_oracle::report::ReproHeader;
 use ssd_oracle::{
-    AudioSink, CORE_VERSION, Frame, FrameSize, FsSaveStore, HookAction, HookMode, HookStats,
-    HostEvent, Joypad, LockstepRun, LockstepStep, MODE_ENHANCED, Machine, NullAudio, Replay,
-    SaveStore, StepOptions, Stopped, Stops, Symbols, repro,
+    AudioSink, CORE_VERSION, Frame, FrameSize, HookAction, HookMode, HookStats, HostEvent, Joypad,
+    LockstepRun, LockstepStep, MODE_ENHANCED, Machine, NullAudio, Replay, StepOptions, Stopped,
+    Stops, Symbols, repro,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -48,17 +56,14 @@ const VERIFY_SLICE: Duration = Duration::from_millis(10);
 /// the picture waits for it): a choice takes a few hundred frames.
 const HD_BURST: u32 = 64;
 
-/// The machine of a run at power-on (the replay's when `session` plays one, else with the save
-/// files of the data directory), hooks installed.
+/// The machine of a run at power-on (the replay's when `session` plays one, else with the battery
+/// save of the saves folder, see [`saves::battery_saves`]), hooks installed.
 fn new_machine(
     rom: Vec<u8>,
     hooks: Option<&HookSetup>,
     session: &mut Session,
 ) -> anyhow::Result<Machine> {
-    let saves = || -> anyhow::Result<Box<dyn SaveStore>> {
-        Ok(Box::new(FsSaveStore::new(paths::saves_dir(), "ssd")?))
-    };
-    let mut machine = session.power_on(rom, saves)?;
+    let mut machine = session.power_on(rom, saves::battery_saves)?;
     if let Some(hooks) = hooks {
         hooks.install(&mut machine);
     }
@@ -73,10 +78,7 @@ fn fresh_machine(
     mode: HooksArg,
     switch: Option<&HookSwitch>,
 ) -> anyhow::Result<Machine> {
-    let saves = || -> anyhow::Result<Box<dyn SaveStore>> {
-        Ok(Box::new(FsSaveStore::new(paths::saves_dir(), "ssd")?))
-    };
-    let mut machine = session.power_on(rom.to_vec(), saves)?;
+    let mut machine = session.power_on(rom.to_vec(), saves::battery_saves)?;
     if let Some(switch) = switch.filter(|_| mode != HooksArg::Original) {
         switch.apply(&mut machine, mode)?;
     }
@@ -214,6 +216,19 @@ struct WindowState {
     stages: Stages,
     /// The last frames run were a fast-forward's batch (see [`run_frames`]).
     fast_forward: bool,
+    /// The Video page's choices as the run shows them (the command line's scale and look included).
+    video: VideoSettings,
+    /// The choices the PC file held when they were last read: the player's changes are measured from them.
+    video_saved: VideoSettings,
+    /// The window is to be told of a change of the choices.
+    video_apply: bool,
+    /// The save states a run that does not persist made, by slot: they stay in memory, as no state file is written
+    /// (see [`apply_controls`]).
+    kept_states: BTreeMap<u8, Vec<u8>>,
+    /// The keys and buttons of the player's Controls page.
+    bindings: Bindings,
+    /// The Controls page changed the map: the keys held under the old one are let go.
+    release_input: bool,
 }
 
 /// The time the frame loop spent in its first stages: the HD menu's driver, the machine's frames,
@@ -249,7 +264,25 @@ impl WindowState {
             hd_view: None,
             stages: Stages::default(),
             fast_forward: false,
+            video: VideoSettings::default(),
+            video_saved: VideoSettings::default(),
+            video_apply: false,
+            kept_states: BTreeMap::new(),
+            bindings: Bindings::default(),
+            release_input: false,
         }
+    }
+
+    /// The Video page changed to the PC file's `values`: what the player changed takes effect, and the picture is
+    /// made at the new scale and look from the next frame.
+    fn video_changed(&mut self, values: &Values) {
+        let new = VideoSettings::from_values(values);
+        self.video.follow(&self.video_saved, &new);
+        self.video_saved = new;
+        if self.scaled.is_some() {
+            self.scaled = Some(self.video.hd());
+        }
+        self.video_apply = true;
     }
 }
 
@@ -276,7 +309,7 @@ fn enhanced_session(session: &mut Session, ruleset: Ruleset) -> anyhow::Result<(
 /// the session applies. The menu runs on every frame, so its bag and the original's list stay in
 /// step. A replay that plays gives its recorded joypad and events, and its recorded bind goes to the
 /// bag and its recorded cheats to the run. A save that changed its bag or its cheats is kept in the sidecar
-/// files, unless a replay plays.
+/// files, unless a replay plays (and a run that does not persist writes none: see [`hd::write_beside`]).
 fn hd_frame(
     state: &mut WindowState,
     machine: &mut Machine,
@@ -293,6 +326,7 @@ fn hd_frame(
     hd.note_cheats(machine.wram());
     let frame = hd.frame(machine.wram(), machine.sram(), live);
     let (write_bags, write_cheats) = sidecar_writes(&frame, playing);
+    let settings = frame.settings.clone().filter(|_| !playing);
     let (pad, events) = match session.playback_at(machine.frame_count()) {
         Some((pad, events)) => {
             for event in &events {
@@ -309,8 +343,26 @@ fn hd_frame(
     if write_bags && let Err(error) = hd.save_sidecar() {
         log::warn!("{error:#}");
     }
+    if let Some(values) = settings.as_ref() {
+        let map = Bindings::from_values(values);
+        if map != state.bindings {
+            state.bindings = map;
+            state.release_input = true;
+        }
+    }
+    if let Some(settings) = settings
+        && let Err(error) = crate::options::write_settings(&settings)
+    {
+        log::warn!("{error:#}");
+    }
+    if write_cheats && let Err(error) = hd.save_options_sidecar() {
+        log::warn!("{error:#}");
+    }
     if write_cheats && let Err(error) = hd.save_cheats_sidecar() {
         log::warn!("{error:#}");
+    }
+    if let Some(values) = frame.video.as_ref() {
+        state.video_changed(values);
     }
     (pad, events)
 }
@@ -423,22 +475,37 @@ fn apply_controls(
         }
         None => {}
         Some(Effect::StepFrame) => state.step_once = true,
-        Some(Effect::Save(slot)) => match save_state(machine, slot) {
-            Ok(path) => log::info!("state saved to {}", path.display()),
-            Err(e) => log::warn!("saving state failed: {e:#}"),
-        },
-        Some(Effect::Load(slot)) => match load_state(machine, slot) {
-            Ok(()) => {
-                // The stop banner described the position the load has just left.
-                state.panel.debug.clear_banner();
-                // The HD menu and the bag described the game that was there.
-                if let Some(hd) = state.hd.as_mut() {
-                    hd.reset();
+        Some(Effect::Save(slot)) => {
+            if paths::persists() {
+                match save_state(machine, slot) {
+                    Ok(path) => log::info!("state saved to {}", path.display()),
+                    Err(e) => log::warn!("saving state failed: {e:#}"),
                 }
-                log::info!("state loaded from slot {slot}");
+            } else {
+                // A run that does not persist keeps the state in memory: no state file is written.
+                state.kept_states.insert(slot, machine.save_state());
+                log::info!("state of slot {slot} kept in memory: this run writes no state file");
             }
-            Err(e) => log::warn!("loading state failed: {e:#}"),
-        },
+        }
+        Some(Effect::Load(slot)) => {
+            // A state this run kept is loaded from memory; any other is read from the states folder.
+            let loaded = match state.kept_states.get(&slot) {
+                Some(bytes) => machine.load_state(bytes).map_err(anyhow::Error::from),
+                None => load_state(machine, slot),
+            };
+            match loaded {
+                Ok(()) => {
+                    // The stop banner described the position the load has just left.
+                    state.panel.debug.clear_banner();
+                    // The HD menu and the bag described the game that was there.
+                    if let Some(hd) = state.hd.as_mut() {
+                        hd.reset();
+                    }
+                    log::info!("state loaded from slot {slot}");
+                }
+                Err(e) => log::warn!("loading state failed: {e:#}"),
+            }
+        }
         Some(Effect::SetHooks(mode)) => {
             let Some(switch) = env.switch else { return };
             keep_means(state, machine);
@@ -898,6 +965,10 @@ fn window_frames(
         state.replay_over_logged = true;
     }
     let symbols = env.symbols();
+    // The Audio page's volume and output, as the menu holds them now: they shape the samples sent to the device only.
+    if let Some(hd) = state.hd.as_ref() {
+        audio.set_settings(AudioSettings::from_values(&hd.driver().options().pc));
+    }
     // A choice of the HD menu runs its presses behind the curtain: as many frames as it
     // takes, in one go, without waiting for the clock or drawing them.
     let burst = if state.hd.as_ref().is_some_and(hd::Hd::busy) { HD_BURST } else { 1 };
@@ -951,6 +1022,20 @@ fn game_views<'a>(
             let wide = game_frame(current_view(view, machine), machine);
             vec![GameView::classic(&wide)]
         }
+    }
+}
+
+/// The pictures of the window with the last pass of the Video page: the 4:3 crop, the scanlines and the CRT filter
+/// over the one picture of the game (a verification's two pictures are shown as they are). With nothing on, the
+/// pictures are the renderer's own.
+fn shape_views<'a>(
+    views: Vec<GameView<'a>>,
+    shape: filter::Shape,
+    buffer: &'a mut Vec<u8>,
+) -> Vec<GameView<'a>> {
+    match <[GameView<'a>; 1]>::try_from(views) {
+        Ok([one]) => vec![filter::shape(one, shape, buffer)],
+        Err(views) => views,
     }
 }
 
@@ -1450,6 +1535,7 @@ impl Pacer {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn windowed_loop(
     machine: &mut Machine,
     rom: &[u8],
@@ -1458,6 +1544,7 @@ fn windowed_loop(
     switch: Option<&HookSwitch>,
     layer: Option<Hd>,
     enhanced: Option<HdOptions>,
+    start: Start,
 ) -> anyhow::Result<()> {
     let sdl = sdl3::init()?;
     let video_subsystem = sdl.video()?;
@@ -1475,15 +1562,25 @@ fn windowed_loop(
     ));
     state.hd = layer;
     state.scaled = enhanced.as_ref().map(|enhanced| enhanced.options);
+    (state.video, state.video_saved) = (start.shown, start.saved);
+    state.bindings = crate::options::read_settings()
+        .map(|values| Bindings::from_values(&values))
+        .unwrap_or_default();
     refresh_controls(&mut state, session, machine, &env);
     refresh_replays(&mut state, &env);
     let mut shown = (state.controls.speed, state.controls.slot);
     let mut video = video::Video::new(&video_subsystem, &window_title(shown.0, shown.1))?;
+    video.set_fullscreen(state.video.fullscreen);
+    video.set_vsync(state.video.vsync);
+    let mut shape_buffer: Vec<u8> = Vec::new();
     let mut ui_input = InputAdapter::default();
     let mut hd_previous = Joypad::default();
     let mut actions: Vec<PanelAction> = Vec::new();
     let mut fps = FpsCounter::default();
     let mut audio = audio::Audio::open(&sdl);
+    audio.set_settings(AudioSettings::from_values(
+        &crate::options::read_settings().unwrap_or_default(),
+    ));
     machine.set_audio_frequency(audio::Audio::frequency());
     let mut events = sdl.event_pump()?;
     // Keyboard keeps working without gamepad support. Opened pads are kept alive here; SDL also
@@ -1501,16 +1598,41 @@ fn windowed_loop(
             match event {
                 Event::Quit { .. } => break 'main,
                 Event::KeyDown { scancode: Some(sc), repeat: false, .. } => {
-                    match route_key(hotkeys::key_to_hotkey(sc), video.text_focus()) {
-                        KeyRoute::Quit => break 'main,
-                        KeyRoute::Action(action) => actions.push(action),
-                        KeyRoute::Game => input.key(sc, true),
-                        KeyRoute::TextField => {}
+                    if let Some(device) = state.hd.as_ref().and_then(Hd::listening) {
+                        // A key box of the Controls page waits: it gets the press, the game and the
+                        // shortcuts do not.
+                        if let (Some(capture), Some(hd)) =
+                            (bindings::capture_key(device, sc), state.hd.as_mut())
+                        {
+                            hd.capture(capture);
+                        }
+                    } else {
+                        let hotkey = state.bindings.key_hotkey(sc);
+                        match route_key(hotkey, video.text_focus()) {
+                            KeyRoute::Quit => break 'main,
+                            KeyRoute::Action(action) => actions.push(action),
+                            KeyRoute::Game => input.key(&state.bindings, sc, true),
+                            KeyRoute::TextField => {}
+                        }
                     }
                 }
-                Event::KeyUp { scancode: Some(sc), .. } => input.key(sc, false),
-                Event::GamepadButtonDown { button, .. } => input.gamepad_button(button, true),
-                Event::GamepadButtonUp { button, .. } => input.gamepad_button(button, false),
+                Event::KeyUp { scancode: Some(sc), .. } => input.key(&state.bindings, sc, false),
+                Event::GamepadButtonDown { button, .. } => {
+                    if let Some(device) = state.hd.as_ref().and_then(Hd::listening) {
+                        if let (Some(capture), Some(hd)) =
+                            (bindings::capture_button(device, button), state.hd.as_mut())
+                        {
+                            hd.capture(capture);
+                        }
+                    } else if let Some(hotkey) = state.bindings.pad_hotkey(button) {
+                        actions.extend(PanelAction::from_hotkey(hotkey));
+                    } else {
+                        input.gamepad_button(&state.bindings, button, true);
+                    }
+                }
+                Event::GamepadButtonUp { button, .. } => {
+                    input.gamepad_button(&state.bindings, button, false);
+                }
                 Event::GamepadAdded { which, .. } => {
                     if let Some(subsystem) = &gamepad_subsystem {
                         match subsystem.open(which) {
@@ -1541,6 +1663,9 @@ fn windowed_loop(
                 _ => {}
             }
         }
+        if std::mem::take(&mut state.release_input) {
+            input.clear();
+        }
         // The game does not see the keys a text field is typing.
         let pad = if video.text_focus() { Joypad::default() } else { input.joypad() };
         // The keys of the host are the HD's navigation while the HD has the curtain; the game only
@@ -1561,16 +1686,26 @@ fn windowed_loop(
             video.set_title(&window_title(shown.0, shown.1));
         }
 
+        // The Gameplay page's battle animation speed: the attack animation runs that many machine frames to one frame
+        // of the screen (every frame whole, so the outcome is the original's), on top of the speed of the hotkey.
+        let boost = state.hd.as_ref().map_or(1, |hd| hd.driver().animation_factor(machine.wram()));
+        let multiplier = speed.multiplier() * boost;
         let mut frames_run = 0_u32;
         let mut requested = 0_u32;
         if env.verify.is_none() && (!state.controls.paused || state.step_once) {
-            requested =
-                if state.step_once { 1 } else { pacer.frames(speed.multiplier(), Instant::now()) };
+            requested = if state.step_once { 1 } else { pacer.frames(multiplier, Instant::now()) };
             state.stages = Stages::default();
             frames_run =
                 window_frames(&mut state, machine, session, &env, pad, &mut audio, requested)?;
             pacer.note_cost(frames_run, state.stages.frames());
             stats_frames += frames_run;
+        }
+        if std::mem::take(&mut state.video_apply) {
+            video.set_fullscreen(state.video.fullscreen);
+            video.set_vsync(state.video.vsync);
+            if let Some(enhanced) = enhanced.as_mut() {
+                enhanced.options = state.video.hd();
+            }
         }
         if verify_tick(&mut state, &mut env) {
             refresh_replays(&mut state, &env);
@@ -1608,6 +1743,7 @@ fn windowed_loop(
             picture.as_ref(),
             env.verify.as_ref(),
         );
+        let views = shape_views(views, state.video.shape(), &mut shape_buffer);
         // The HD menu on screen, from this frame's state: nothing on the field, nothing in Classic.
         let scene = state.hd.as_ref().and_then(|hd| hd.scene(machine.wram()));
         let overlay = state.hd.as_ref().and_then(|hd| hd.overlay(machine.wram(), machine.sram()));
@@ -1638,7 +1774,7 @@ fn windowed_loop(
             stats_frames = 0;
         }
 
-        pacer.wait(speed.multiplier(), requested, env.verify.is_some());
+        pacer.wait(multiplier, requested, env.verify.is_some());
     }
     Ok(())
 }
@@ -1646,6 +1782,7 @@ fn windowed_loop(
 /// Windowed run: clock-paced at the core's target rate, audio queued to SDL, video via wgpu.
 /// `mode` is the hook mode the machine starts in; `switch` lets the panel change it and run
 /// the replays' checks.
+#[allow(clippy::too_many_arguments)]
 pub fn run_windowed(
     rom: Vec<u8>,
     hooks: Option<&HookSetup>,
@@ -1654,6 +1791,7 @@ pub fn run_windowed(
     ruleset: Ruleset,
     mut session: Session,
     enhanced: Option<HdOptions>,
+    start: Start,
 ) -> anyhow::Result<RunStats> {
     enhanced_session(&mut session, ruleset)?;
     let mut layer = hd_layer(&rom, ruleset)?;
@@ -1661,7 +1799,8 @@ pub fn run_windowed(
         hd.set_replaying();
     }
     let mut machine = new_machine(rom.clone(), hooks, &mut session)?;
-    let result = windowed_loop(&mut machine, &rom, &mut session, mode, switch, layer, enhanced);
+    let result =
+        windowed_loop(&mut machine, &rom, &mut session, mode, switch, layer, enhanced, start);
     let result = flush_after(&mut machine, result);
     session.finish(result)?;
     Ok(machine.hook_stats())
@@ -1714,6 +1853,9 @@ fn draw_snapshot(
     }
     let mut env = Env { rom, switch, verify: None };
     state.scaled = request.enhanced;
+    if let Some(options) = request.enhanced {
+        (state.video.scale, state.video.look) = (options.scale, options.look);
+    }
     if request.enhanced.is_some() {
         machine.set_line_log(true);
     }
@@ -1751,10 +1893,12 @@ fn draw_snapshot(
     let status = header_status(machine, &state.history, machine.target_fps() as f32);
     let controls = state.controls;
     let wide = game_frame(current_view(state.view.as_ref(), machine), machine);
+    let mut shape_buffer = Vec::new();
     let views = match shown_picture {
-        Some(picture) => [GameView::enhanced(picture, &machine.frame())],
-        None => [GameView::classic(&wide)],
+        Some(picture) => GameView::enhanced(picture, &machine.frame()),
+        None => GameView::classic(&wide),
     };
+    let views = [filter::shape(views, state.video.shape(), &mut shape_buffer)];
     let mut actions = Vec::new();
     let scene = state.hd.as_ref().and_then(|hd| hd.scene(machine.wram()));
     let overlay = state.hd.as_ref().and_then(|hd| hd.overlay(machine.wram(), machine.sram()));
@@ -1859,12 +2003,22 @@ fn run_script_line(
                     }
                     run_hd_choice(state, machine, session)?;
                 }
+                MenuCommand::Press(capture) => {
+                    let hd = state.hd.as_mut().context("menu lines need --mode enhanced")?;
+                    anyhow::ensure!(
+                        hd.listening().is_some(),
+                        "line {}: no key box waits for a key",
+                        line.number
+                    );
+                    hd.capture(capture);
+                }
                 MenuCommand::Show(show) => {
                     let wanted = match show {
                         MenuShow::Field => Screen::Command,
                         MenuShow::Menu => Screen::Menu,
                         MenuShow::Items => Screen::Items,
                         MenuShow::Cheats => Screen::Cheats,
+                        MenuShow::Options => Screen::Options,
                     };
                     let hd = state.hd.as_ref().context("menu lines need --mode enhanced")?;
                     let curtain = hd.driver().curtain();
@@ -1956,7 +2110,32 @@ mod tests {
     use super::*;
     use crate::test_support::{SharedStore, sram_counter_machine, sram_counter_rom};
     use crate::ui_script;
-    use ssd_oracle::{FrameStats, MemorySaveStore};
+    use ssd_oracle::{FrameStats, FsSaveStore, MemorySaveStore};
+
+    #[test]
+    fn a_change_of_the_page_reaches_the_picture_and_the_window_but_a_flag_keeps_its_choice() {
+        let controls = Controls::new(HooksArg::Original, HooksSwitch::Allowed, true, true);
+        let mut state = WindowState::new(controls);
+        let start = crate::options::video::start(&Values::new(), Some(3), None);
+        (state.video, state.video_saved) = (start.shown, start.saved);
+        state.scaled = Some(state.video.hd());
+        let mut values = Values::new();
+        values.set("video.scanlines", 2);
+        state.video_changed(&values);
+        assert!(std::mem::take(&mut state.video_apply), "the window is told");
+        assert_eq!(state.video.filters.scanlines, 2);
+        assert_eq!(state.scaled.map(|o| o.scale), Some(3), "the flag's scale stays");
+        values.set("video.scale", 4);
+        state.video_changed(&values);
+        assert_eq!(
+            state.scaled.map(|o| o.scale),
+            Some(6),
+            "the page's scale shows once it is changed"
+        );
+        values.remove("video.scale");
+        state.video_changed(&values);
+        assert_eq!(state.scaled.map(|o| o.scale), Some(4), "a revert goes back to the default");
+    }
 
     #[test]
     fn a_replay_that_plays_writes_no_sidecar_file() {
@@ -1968,6 +2147,9 @@ mod tests {
             events: Vec::new(),
             saved: None,
             saved_cheats: Some(saved),
+            saved_options: true,
+            settings: None,
+            video: None,
         };
         assert_eq!(sidecar_writes(&frame, false), (false, true), "a live run saves its cheats");
         assert_eq!(sidecar_writes(&frame, true), (false, false), "a replay keeps the sidecars");
@@ -2158,6 +2340,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: serialised by ENV_LOCK.
         unsafe { std::env::set_var("SSD_DATA_DIR", dir.path()) };
+        paths::set_persistent(true);
         let switch = HookSwitch::load(
             Some(std::path::Path::new(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -2208,6 +2391,46 @@ mod tests {
         assert_eq!(machine.frame_count(), 2);
         act(&mut state, &mut machine, PanelAction::LoadState);
         assert_eq!(machine.frame_count(), 1, "the state of slot 2 is back");
+        paths::set_persistent(false);
+        unsafe { std::env::remove_var("SSD_DATA_DIR") };
+    }
+
+    #[test]
+    fn a_run_that_does_not_persist_keeps_its_states_in_memory() {
+        let _guard = paths::ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: serialised by ENV_LOCK.
+        unsafe { std::env::set_var("SSD_DATA_DIR", dir.path()) };
+        paths::set_persistent(false);
+        let (mut machine, _store) = sram_counter_machine();
+        let mut state = window_state(HooksSwitch::Allowed);
+        let mut session = Session::default();
+        let mut env = Env { rom: &[], switch: None, verify: None };
+        let mut audio = NullAudio;
+        machine.run_frame(Joypad::default(), &mut audio).unwrap();
+        apply_action(
+            PanelAction::SaveState,
+            &mut state,
+            &mut machine,
+            &mut session,
+            &mut env,
+            Joypad::default(),
+            &mut audio,
+        );
+        assert!(!paths::states_dir().exists(), "no state file, and no states folder");
+        machine.run_frame(Joypad::default(), &mut audio).unwrap();
+        assert_eq!(machine.frame_count(), 2);
+        apply_action(
+            PanelAction::LoadState,
+            &mut state,
+            &mut machine,
+            &mut session,
+            &mut env,
+            Joypad::default(),
+            &mut audio,
+        );
+        assert_eq!(machine.frame_count(), 1, "the state saved in this run is back");
+        assert!(!paths::states_dir().exists());
         unsafe { std::env::remove_var("SSD_DATA_DIR") };
     }
 

@@ -15,11 +15,17 @@ use super::keeper::{BIND_TAG, Keeper, good_checksum};
 use super::presses::{Button, Next, Outcome, Player, Step, Until};
 use super::{MenuProbe, PORUNGA, SAVE_DONE_STEP, SAVE_LIST_STEP, SAVE_SCREEN};
 use crate::cheats::{CHEATS_TAG, block_events, frame_events, hand_events};
+use crate::data as d;
+use crate::gameplay::{self, AutoRun};
 use ssd_menus::bag::{Bag, Rules, SavedBag, Sidecar};
 use ssd_menus::cheats::{CHARACTERS, CheatSidecar, Cheats, SavedCheats};
 use ssd_menus::nav::{Action, Entry, ItemRow, Key, Nav, ORIGINAL_MENU_ROWS, command_rows};
+use ssd_menus::options::{
+    Category, Effect, Opens, Options, SlotOptions, Values, controls, difficulty, video,
+};
 use ssd_menus::view::{
-    BagView, CheatsView, Labels, MenuView, ObjectLabel, Screen, Selected, StackView,
+    BagView, CheatsView, ControlsView, Labels, MenuView, ObjectLabel, OptionsView, RefusedKey,
+    Screen, Selected, StackView,
 };
 use ssd_menus::{DrawList, screens};
 use ssd_oracle::{HostEvent, Joypad};
@@ -72,6 +78,12 @@ pub struct Frame {
     pub events: Vec<HostEvent>,
     pub saved: Option<SavedBag>,
     pub saved_cheats: Option<SavedCheats>,
+    /// The options of the save slot a Save wrote (kept in `saves/ssd.options`): the file is to be written.
+    pub saved_options: bool,
+    /// The options kept for this PC, when one changed this frame (kept in `saves/ssd.settings`).
+    pub settings: Option<Values>,
+    /// The video options to apply now (they changed this frame, or a question about them was answered).
+    pub video: Option<Values>,
 }
 
 /// Context the menu needs of the game at each frame: its labels and its rules.
@@ -112,7 +124,24 @@ struct State {
     save_slot: Option<u8>,
     /// Whether the Save was at its completion step at the last frame (a completion is seen once).
     save_done: bool,
+    /// The options of the run: the values saved with the game (the bound save's) and the ones of this PC.
+    options: Options,
+    /// The options of the save slots (`saves/ssd.options`).
+    option_slots: SlotOptions,
+    /// The PC options changed: the frame hands them to the host to be written.
+    settings_changed: bool,
+    /// While "Apply video changes?" asks: the PC options as they were before the change, which a Revert restores.
+    video_backup: Option<Values>,
+    /// The frames left before the question reverts the change.
+    video_frames: u32,
+    /// The video options changed: the frame hands them to the host to be applied.
+    video_apply: bool,
+    /// The message auto-run: the wait of a finished message and the press (the Gameplay page).
+    auto_run: AutoRun,
 }
+
+/// The frames a second the video question counts its ten seconds in (the console's rate, which the host paces to).
+const VIDEO_FPS: u32 = 60;
 
 /// The HD menu of a run: the curtain, the HD cursors, the bag and the plan that is running, if one is.
 pub struct Driver {
@@ -151,6 +180,13 @@ impl Driver {
                 cheat_events: Vec::new(),
                 save_slot: None,
                 save_done: false,
+                options: Options::default(),
+                option_slots: SlotOptions::empty(),
+                settings_changed: false,
+                video_backup: None,
+                video_frames: 0,
+                video_apply: false,
+                auto_run: AutoRun::default(),
             },
         }
     }
@@ -164,11 +200,47 @@ impl Driver {
         self
     }
 
+    /// The run keeps the options of the save slots of `sidecar` (`saves/ssd.options`) and the ones of this PC
+    /// (`saves/ssd.settings`).
+    #[must_use]
+    pub fn with_options(mut self, sidecar: SlotOptions, pc: Values) -> Self {
+        self.state.option_slots = sidecar;
+        self.state.options.pc = pc;
+        self
+    }
+
+    /// The options of the run.
+    #[must_use]
+    pub fn options(&self) -> &Options {
+        &self.state.options
+    }
+
+    /// The machine frames to run for one frame of the screen now (the Gameplay page's battle animation speed in the
+    /// attack animation, else 1): see [`gameplay::animation_factor`]. `wram` is the work RAM after the last frame.
+    #[must_use]
+    pub fn animation_factor(&self, wram: &[u8]) -> u32 {
+        gameplay::animation_factor(wram, &self.state.options.game)
+    }
+
+    /// The options of the save slots, as the slot file keeps them.
+    #[must_use]
+    pub fn option_slots(&self) -> &SlotOptions {
+        &self.state.option_slots
+    }
+
     /// The machine's state was replaced under the menu (a state loaded, not a frame run): the curtain
     /// comes down, no plan runs, and the bag binds again to what the game now holds (the sidecar's
     /// bag of the save it matches, or a rebuild from the list). The sidecars, the rules, the labels
     /// and the binding mode are kept; the cheats bind again with the bag.
     pub fn reset(&mut self) {
+        // A video change still being asked about is reverted: the question goes with the state.
+        let mut pc = self.state.options.pc.clone();
+        let reverted = self
+            .state
+            .video_backup
+            .take()
+            .inspect(|before| video::restore(&mut pc, before))
+            .is_some();
         self.state = State {
             curtain: Curtain::Down,
             nav: Nav::default(),
@@ -185,6 +257,13 @@ impl Driver {
             cheat_events: Vec::new(),
             save_slot: None,
             save_done: false,
+            options: Options { game: Values::new(), pc },
+            option_slots: self.state.option_slots.clone(),
+            settings_changed: reverted,
+            video_backup: None,
+            video_frames: 0,
+            video_apply: reverted,
+            auto_run: AutoRun::default(),
         };
     }
 
@@ -273,6 +352,19 @@ impl Driver {
         self.state.key(key, &probe, &self.labels, wram);
     }
 
+    /// Whether the Controls page waits for the next key or button, and for which device: the host then gives
+    /// it the raw press through [`Driver::capture`] and keeps it from the menu's keys.
+    #[must_use]
+    pub fn listening(&self) -> Option<controls::Device> {
+        (self.state.curtain == Curtain::Up && self.state.nav.options_listening())
+            .then(|| self.state.nav.controls_device())
+    }
+
+    /// A raw key or button pressed while the Controls page waits for one: see [`Driver::listening`].
+    pub fn capture(&mut self, capture: controls::Capture) {
+        self.state.capture(capture);
+    }
+
     /// The frame of the menu on the game of `wram` (its work RAM after the frame before it, and the
     /// battery save `sram`): the bag is bound and kept in step with the list, a plan's next press is
     /// chosen, and the live joypad is given to the game when the curtain is not up.
@@ -336,8 +428,51 @@ impl State {
         self.start(steps, Arrival::Show(Screen::Command));
     }
 
-    /// A key of the HD: see [`Driver::key`].
+    /// The Controls page was waiting for a key or button and got `capture`: Esc stops, Backspace clears a
+    /// shortcut, a code is taken for the action under the cursor unless another action already holds it.
+    fn capture(&mut self, capture: controls::Capture) {
+        if self.curtain != Curtain::Up || !self.nav.options_listening() {
+            return;
+        }
+        let device = self.nav.controls_device();
+        let Some(action) = self.nav.controls_action() else {
+            self.nav.stop_listening();
+            return;
+        };
+        match capture {
+            controls::Capture::Cancel => self.nav.stop_listening(),
+            controls::Capture::Clear => {
+                if controls::clear(&mut self.options.pc, device, action) {
+                    self.settings_changed = true;
+                    self.nav.stop_listening();
+                }
+            }
+            controls::Capture::Code(code) => {
+                match controls::assign(&mut self.options.pc, device, action, code) {
+                    Ok(()) => {
+                        self.settings_changed = true;
+                        self.nav.stop_listening();
+                    }
+                    Err(by) => self.nav.refuse(by),
+                }
+            }
+        }
+    }
+
+    /// The device the Controls page shows is the stored one.
+    fn sync_device(&mut self) {
+        self.nav.set_controls_device(controls::device(&self.options.pc));
+    }
+
+    /// A key of the HD: see [`Driver::key`]. The Controls page shows the stored device before and after it.
     fn key(&mut self, key: Key, probe: &MenuProbe<'_>, labels: &Labels, wram: &[u8]) {
+        self.sync_device();
+        self.key_screen(key, probe, labels, wram);
+        self.sync_device();
+    }
+
+    /// A key of the HD: see [`Driver::key`].
+    fn key_screen(&mut self, key: Key, probe: &MenuProbe<'_>, labels: &Labels, wram: &[u8]) {
         if self.curtain != Curtain::Up || self.running.is_some() {
             return;
         }
@@ -347,7 +482,7 @@ impl State {
         let action = match screen {
             Screen::Items => {
                 let rows = self.rows(labels);
-                self.nav.key_bag(key, &rows, party)
+                self.nav.key_bag(key, &rows)
             }
             _ => self.nav.key(key, flying, town, probe.item_count()),
         };
@@ -356,6 +491,8 @@ impl State {
             Action::Notice(text) => self.notice = Some(text),
             // The Cheats screen is the HD's own: nothing is sent to the original, which keeps its Menu list.
             Action::Choose(Entry::Cheats) => self.nav.enter(Screen::Cheats),
+            // The Options screen is the HD's own too: the original keeps its Menu list.
+            Action::Choose(Entry::Options) => self.nav.enter(Screen::Options),
             Action::Choose(entry) => {
                 if let Some((steps, arrival)) = choice(screen, entry, flying, town) {
                     self.start(steps, arrival);
@@ -365,11 +502,30 @@ impl State {
                 row.step(&mut self.cheats, by);
                 self.cheats_changed(wram);
             }
+            Action::OptionChange { category, row, by } => {
+                let speed = probe.text_speed();
+                let before = (category == Category::Video).then(|| self.options.pc.clone());
+                let effect = match category.rows().get(row) {
+                    Some(def) => {
+                        let State { options, cheats, .. } = self;
+                        def.step(options.values_mut(category), cheats, speed, by)
+                    }
+                    None => Effect::None,
+                };
+                self.option_effect(category, effect, wram);
+                if let Some(before) = before {
+                    self.video_changed(&before);
+                }
+            }
+            Action::OptionsResetPage(category) => self.reset_options(&[category], probe, wram),
+            Action::OptionsResetAll => self.reset_options(&Category::ALL, probe, wram),
+            Action::OptionsOpen(Opens::Cheats) => self.nav.enter_cheats_from_options(),
+            Action::OptionsVideo { keep } => self.video_answer(keep),
             Action::ResetAll => {
                 self.cheats = Cheats::neutral();
                 self.cheats_changed(wram);
             }
-            Action::Use { stack, member, units } => {
+            Action::Use { stack } => {
                 let object = self.keeper.bag().and_then(|bag| bag.stack(stack)).map(|s| s.object);
                 let card = object.is_some_and(|object| {
                     labels.objects.get(usize::from(object)).is_some_and(|label| label.card)
@@ -379,11 +535,13 @@ impl State {
                     Some(DRAGON_RADAR) => UseKind::Radar,
                     _ => UseKind::Plain,
                 };
-                let steps = use_steps(stack, member, units, kind, party, flying, town);
-                self.start(steps, if card { Arrival::Lifted } else { Arrival::Closed });
+                let steps = use_steps(stack, kind, party);
+                // A card's choice and the Dragon Radar's screen are the original's: they stay up for the player.
+                let stays = matches!(kind, UseKind::Card | UseKind::Radar);
+                self.start(steps, if stays { Arrival::Lifted } else { Arrival::Closed });
             }
-            Action::Drop { stack, units } => {
-                let steps = drop_steps(stack, units, flying, town);
+            Action::Drop { stack } => {
+                let steps = drop_steps(stack);
                 self.start(steps, Arrival::Show(Screen::Items));
             }
             Action::Back => match screen {
@@ -396,8 +554,91 @@ impl State {
                     Arrival::Show(Screen::Command),
                 ),
                 // Back to the Menu list, which the original never left: its cursor stays on Cheats.
-                Screen::Cheats => self.nav.resume(Screen::Menu),
+                Screen::Cheats => self.nav.resume(self.nav.cheats_back()),
+                Screen::Options => self.nav.resume(Screen::Menu),
             },
+        }
+    }
+
+    /// What a change of a row of `category` asks for: the cheat block written, the text speed written to the game,
+    /// or the file of the category marked to be written.
+    fn option_effect(&mut self, category: Category, effect: Effect, wram: &[u8]) {
+        match effect {
+            Effect::None | Effect::Open(_) => {}
+            Effect::Stored => {
+                if !category.per_game() {
+                    self.settings_changed = true;
+                }
+            }
+            Effect::Cheats => self.cheats_changed(wram),
+            Effect::TextSpeed(speed) => {
+                self.cheat_events
+                    .push(HostEvent::Wram { address: d::TEXT_SPEED, bytes: vec![speed] });
+            }
+        }
+    }
+
+    /// Reset this page (one category) or Reset all (every category): the stored values are forgotten, and the
+    /// views (the cheats' encounter rate, the text speed) go back to their defaults, each through its own effect.
+    fn reset_options(&mut self, categories: &[Category], probe: &MenuProbe<'_>, wram: &[u8]) {
+        let (speed, cheats) = (probe.text_speed(), self.cheats);
+        let before = categories.contains(&Category::Video).then(|| self.options.pc.clone());
+        for &category in categories {
+            self.options.values_mut(category).reset_category(category);
+            if !category.per_game() {
+                self.settings_changed = true;
+            }
+            for def in category.rows() {
+                let State { options, cheats, .. } = self;
+                match def.reset(options.values_mut(category), cheats) {
+                    Effect::TextSpeed(now) if now == speed => {}
+                    Effect::Cheats => {}
+                    effect => self.option_effect(category, effect, wram),
+                }
+            }
+        }
+        if self.cheats != cheats {
+            self.cheats_changed(wram);
+        }
+        if let Some(before) = before {
+            self.video_changed(&before);
+        }
+    }
+
+    /// The Video page changed from `before`: the host applies it now, and a change of display, scale or aspect
+    /// is asked about. The change is kept in the file only when it is kept.
+    fn video_changed(&mut self, before: &Values) {
+        if self.options.pc == *before {
+            return;
+        }
+        self.video_apply = true;
+        if self.video_backup.is_none() && video::mode(before) != video::mode(&self.options.pc) {
+            self.video_backup = Some(before.clone());
+            self.video_frames = video::CONFIRM_SECONDS * VIDEO_FPS;
+            self.nav.open_video_confirm();
+        }
+    }
+
+    /// "Apply video changes?" was answered (or timed out): Keep writes the options, Revert puts the video back.
+    fn video_answer(&mut self, keep: bool) {
+        self.nav.close_video_confirm();
+        if let Some(before) = self.video_backup.take() {
+            if !keep {
+                video::restore(&mut self.options.pc, &before);
+                self.video_apply = true;
+            }
+            self.settings_changed = true;
+        }
+    }
+
+    /// One frame of the question's countdown; it reverts at the end, and when the Options screen is gone.
+    fn video_tick(&mut self) {
+        if self.video_backup.is_none() {
+            return;
+        }
+        self.video_frames = self.video_frames.saturating_sub(1);
+        if self.video_frames == 0 || self.nav.screen() != Screen::Options {
+            self.video_answer(false);
         }
     }
 
@@ -425,6 +666,13 @@ impl State {
             .cheat_save
             .and_then(|(slot, checksum)| self.cheat_sidecar.entry_for(slot, checksum))
             .map_or_else(Cheats::neutral, |saved| saved.cheats);
+        self.options.game = self
+            .cheat_save
+            .and_then(|(slot, checksum)| self.option_slots.entry_for(slot, checksum))
+            .cloned()
+            .unwrap_or_default();
+        // The money multiplier is kept with the game's options, not in the cheats' sidecar.
+        difficulty::restore(&self.options.game, &mut self.cheats);
         let mut events = block_events(&self.cheats);
         events.extend(hand_events(&self.cheats, wram));
         events.push(self.cheats_app_event());
@@ -470,7 +718,15 @@ impl State {
             self.sidecar.store(slot, checksum, &bag);
             SavedBag { slot, checksum, bag }
         });
-        Frame { pad, events, saved, saved_cheats }
+        let saved_options = saved_cheats.is_some();
+        self.video_tick();
+        self.nav.tick();
+        self.sync_device();
+        // A change waiting to be kept is not written: a crash in those ten seconds leaves the file as it was.
+        let settings = (self.video_backup.is_none() && std::mem::take(&mut self.settings_changed))
+            .then(|| self.options.pc.clone());
+        let video = std::mem::take(&mut self.video_apply).then(|| self.options.pc.clone());
+        Frame { pad, events, saved, saved_cheats, saved_options, settings, video }
     }
 
     /// The Save of the original, followed on work RAM at every frame. While the Save's list shows, its cursor (the
@@ -499,6 +755,8 @@ impl State {
     fn store_cheats(&mut self, written: Option<(u8, u16)>) -> Option<SavedCheats> {
         let (slot, checksum) = written?;
         self.cheat_sidecar.store(slot, checksum, self.cheats);
+        difficulty::store(&self.cheats, &mut self.options.game);
+        self.option_slots.store(slot, checksum, self.options.game.clone());
         if self.keeper.bound_save() == Some((slot, checksum)) {
             self.cheat_save = Some((slot, checksum));
         }
@@ -526,6 +784,8 @@ impl State {
                     Next::Stage(id) => {
                         events.extend(self.keeper.stage(wram, labels, id));
                     }
+                    // The original's own screen comes up from here on: the player sees what it shows.
+                    Next::Lift => self.curtain = Curtain::Lifted,
                     Next::Done(outcome) => {
                         self.running = None;
                         self.last = Some(outcome);
@@ -536,15 +796,32 @@ impl State {
             }
         }
         match self.curtain {
-            Curtain::Up => Joypad::default(),
-            Curtain::Down | Curtain::Lifted => live,
+            Curtain::Up => {
+                self.auto_run = AutoRun::default();
+                Joypad::default()
+            }
+            Curtain::Down | Curtain::Lifted => {
+                // A finished message that waits for A: the host presses it after the Gameplay page's wait.
+                let mut pad = live;
+                self.auto_run.apply(wram, &self.options.game, &mut pad);
+                pad
+            }
         }
     }
 
-    /// What the HD draws: see [`Driver::scene`].
+    /// What the HD draws: see [`Driver::scene`], in the style of this PC's Accessibility page.
     fn scene(&self, probe: &MenuProbe<'_>, labels: &Labels) -> Option<DrawList> {
+        let style = ssd_menus::options::accessibility::style(&self.options.pc);
+        self.scene_plain(probe, labels).map(|list| style.apply(list))
+    }
+
+    /// The screen in the design as drawn.
+    fn scene_plain(&self, probe: &MenuProbe<'_>, labels: &Labels) -> Option<DrawList> {
         if self.nav.screen() == Screen::Cheats {
             return Some(screens::cheats_screen(&self.cheats_view(labels)));
+        }
+        if self.nav.screen() == Screen::Options {
+            return Some(screens::options_screen(&self.options_view(probe)));
         }
         let Context { flying, town, .. } = context(probe);
         let mut view: MenuView = probe.view_as(
@@ -558,7 +835,42 @@ impl State {
             view.bag = self.bag_view(labels);
             view.selected = self.selected(labels);
         }
-        Some(screens::scene(&view))
+        let unbound = view.screen == Screen::Items && view.bag.is_none();
+        let mut list = screens::scene(&view);
+        // A bag not bound yet shows the original's list, which has no foot for a line: the notice goes on top.
+        if let Some(text) = self.notice.filter(|_| unbound) {
+            list.append(screens::notice(text));
+        }
+        Some(list)
+    }
+
+    /// The Options screen as it shows: the category and row under the cursor and the value of each row.
+    fn options_view(&self, probe: &MenuProbe<'_>) -> OptionsView {
+        let category = self.nav.options_category();
+        OptionsView {
+            category,
+            row: self.nav.options_row(),
+            values: self.options.indices(category, &self.cheats, probe.text_speed()),
+            confirm: self.nav.options_confirm(),
+            controls: (category == Category::Controls).then(|| {
+                let device = self.nav.controls_device();
+                ControlsView {
+                    listening: self.nav.options_listening(),
+                    refused: self.nav.options_refusal().map(|refusal| RefusedKey {
+                        position: refusal.position,
+                        message: controls::refusal(device, refusal.by),
+                        blink: refusal.flash > 0 && (refusal.flash / 8) % 2 == 0,
+                    }),
+                }
+            }),
+            video: self.nav.options_video_confirm().map(|choice| ssd_menus::view::VideoAsk {
+                choice,
+                tenths: (self.video_frames * 100)
+                    .div_ceil(video::CONFIRM_SECONDS * VIDEO_FPS)
+                    .min(100),
+                summary: video::summary(&self.options.pc),
+            }),
+        }
     }
 
     /// The Cheats screen as it shows: the run's choices, the row under the cursor and the characters' names.
@@ -585,10 +897,8 @@ impl State {
                 let label = label(labels, stack.object);
                 ItemRow {
                     id: stack.id,
-                    usable: usable_here(label),
+                    usable: usable_here(stack.object, label),
                     droppable: droppable(label, stack.class.key),
-                    member: label.is_some_and(|label| label.member),
-                    count: stack.count,
                 }
             })
             .collect()
@@ -609,7 +919,7 @@ impl State {
                     object: stack.object,
                     name: label.map_or_else(|| "?".to_owned(), |label| label.name.clone()),
                     count: stack.count,
-                    usable: usable_here(label),
+                    usable: usable_here(stack.object, label),
                     droppable: droppable(label, stack.class.key),
                     ally: ally(labels, stack.object),
                 }
@@ -623,11 +933,8 @@ impl State {
             full: bag.is_full(),
             usable_here: under.is_some_and(|stack| stack.usable),
             droppable_here: under.is_some_and(|stack| stack.droppable),
-            most: under.map_or(0, |stack| stack.count),
             sheet: self.nav.sheet(),
             choice: self.nav.choice(),
-            member: self.nav.member(),
-            units: self.nav.units(),
             notice: self.notice,
             stacks,
         })
@@ -723,10 +1030,16 @@ fn ally(labels: &Labels, object: u8) -> bool {
     label(labels, object).is_some_and(|label| label.ally)
 }
 
-/// Whether an object can be used on the map: EXT, and not a story helper.
-fn usable_here(label: Option<&ObjectLabel>) -> bool {
-    label.is_some_and(|label| label.field && !label.story)
+/// Whether an object can be used on the map: EXT, not a story helper, and not refused by the original (bit 0 of
+/// its attribute is its "can't use" answer: Saiba's object).
+fn usable_here(object: u8, label: Option<&ObjectLabel>) -> bool {
+    label.is_some_and(|label| label.field && !label.story && label.attribute & 0x01 == 0)
+        && !BATTLE_EFFECTS.contains(&object)
 }
+
+/// The story objects whose effects are for battles (`docs/re/data/menus.md`, the effect table): on the map the
+/// original takes no use of them, so the HD does not offer one (Gohan's object, 31, is the one with the map bit).
+const BATTLE_EFFECTS: [u8; 5] = [27, 28, 29, 30, 31];
 
 /// Whether an object can be dropped: not a key item (a Dragon Ball or a story object), and not fixed.
 fn droppable(label: Option<&ObjectLabel>, key: bool) -> bool {
@@ -761,18 +1074,13 @@ fn choice(screen: Screen, entry: Entry, flying: bool, town: bool) -> Option<(Vec
             };
             (row, ORIGINAL_MENU_ROWS, Until::Screen(until), Arrival::Lifted)
         }
-        Screen::Items | Screen::Cheats => return None,
+        Screen::Items | Screen::Cheats | Screen::Options => return None,
     };
     let steps = vec![
         Step::Row { row: u8::try_from(row).ok()?, rows: u8::try_from(rows).ok()? },
         Step::Press { button: Button::A, until },
     ];
     Some((steps, arrival))
-}
-
-/// The row of the Item command in the command window of the field, the town or the flying party.
-fn item_row(flying: bool, town: bool) -> u8 {
-    command_rows(flying, town).iter().position(|&e| e == Entry::Item).map_or(0, |row| row as u8)
 }
 
 /// Frames the original runs after a window is drawn or a menu closes, before it takes the next press
@@ -794,84 +1102,50 @@ enum UseKind {
     Radar,
 }
 
-/// The steps that open the original's Item list from the field (the menu is closed), then choose its
-/// first row: the stack is staged there, and the original's own Use or Drop follows.
-fn open_list(flying: bool, town: bool) -> Vec<Step> {
-    let rows = command_rows(flying, town).len() as u8;
+/// The steps of using one unit of the stack `stack`, from the Item list the HD shows: the original's own Use takes
+/// the unit, and the original asks for nothing (it takes no fighter on the map: its effect has its own target). The
+/// curtain lifts on its use window, so the player sees the original's message, effect and answer from there. The
+/// answer is the original's: a refused use (a fighter at full HP, say) leaves the object in the list and the
+/// original's menu on its screen for the player; a use that is taken closes the menu.
+fn use_steps(stack: u32, kind: UseKind, party: usize) -> Vec<Step> {
+    let mut steps = vec![
+        Step::Stage { id: stack },
+        Step::Press { button: Button::A, until: Until::ItemChoice },
+        Step::Lift,
+        Step::Pause { frames: SETTLE_WINDOW },
+        Step::Row { row: 0, rows: 2 },
+    ];
+    if kind == UseKind::Card {
+        // The card screen is the original's: the player chooses the card there.
+        steps.push(Step::Press { button: Button::A, until: Until::ItemReply });
+        return steps;
+    }
+    steps.push(Step::Press { button: Button::A, until: Until::UseTaken });
+    if kind == UseKind::Radar {
+        // The radar's own screen stays up: its A changes the view and its B leaves it, which is the player's.
+        return steps;
+    }
+    // A party list, if the original ever shows one for the object, takes the first fighter.
+    steps.push(Step::MemberIf { row: 0, rows: party as u8 });
+    steps.push(Step::Press { button: Button::A, until: Until::ItemEffect });
+    steps.push(Step::Answer);
+    steps
+}
+
+/// The steps of dropping one unit of the stack `stack`: the unit is staged on the list, its Drop is chosen and
+/// confirmed with Yes, and the list is back. The HD's own Yes or No asked already, so the original's window
+/// stays under the curtain.
+fn drop_steps(stack: u32) -> Vec<Step> {
     vec![
-        // The original settles for a moment after a menu closes before it takes the next open.
+        Step::Stage { id: stack },
+        Step::Row { row: 0, rows: 2 },
+        Step::Press { button: Button::A, until: Until::ItemChoice },
         Step::Pause { frames: SETTLE_WINDOW },
-        Step::Press { button: Button::A, until: Until::Open },
-        Step::Wait { until: Until::Ready },
-        Step::Pause { frames: SETTLE_WINDOW },
-        Step::Row { row: item_row(flying, town), rows },
+        Step::Row { row: 1, rows: 2 },
+        Step::Press { button: Button::A, until: Until::DropAsk },
+        Step::Row { row: 0, rows: 2 },
         Step::Press { button: Button::A, until: Until::ItemList },
     ]
-}
-
-/// The steps of using `units` units of the stack `stack`: one round per unit, each from the field
-/// (the original closes the menu after an effect). The first round starts on the Item list the HD
-/// shows. The original's own effect takes each unit; the bag follows the list.
-fn use_steps(
-    stack: u32,
-    member: Option<u8>,
-    units: u16,
-    kind: UseKind,
-    party: usize,
-    flying: bool,
-    town: bool,
-) -> Vec<Step> {
-    let mut steps = Vec::new();
-    for unit in 0..units {
-        if unit > 0 {
-            steps.extend(open_list(flying, town));
-        }
-        steps.push(Step::Stage { id: stack });
-        steps.push(Step::Press { button: Button::A, until: Until::ItemChoice });
-        steps.push(Step::Pause { frames: SETTLE_WINDOW });
-        steps.push(Step::Row { row: 0, rows: 2 });
-        if kind == UseKind::Card {
-            // The card screen is the original's: the curtain lifts there.
-            steps.push(Step::Press { button: Button::A, until: Until::ItemReply });
-            return steps;
-        }
-        steps.push(Step::Press { button: Button::A, until: Until::UseTaken });
-        if kind == UseKind::Radar {
-            // The effect runs at once, no message and no party list. Its screen reads A as a change
-            // of view, so it is left with B once it is drawn; the object stays in the bag.
-            steps.push(Step::Pause { frames: SETTLE_WINDOW });
-            steps.push(Step::Press { button: Button::B, until: Until::Closed });
-            continue;
-        }
-        // The original asks for the party member when it needs one (the party list); the member
-        // chosen here is the one the HD's use-on list had, and the first one otherwise.
-        let row = member.unwrap_or(0);
-        steps.push(Step::MemberIf { row, rows: party as u8 });
-        // The message after the use waits for A; the effect runs; its result waits for A too. Then the
-        // menu closes by itself, or it is left on its command window, which B closes.
-        steps.push(Step::Press { button: Button::A, until: Until::ItemEffect });
-        steps.push(Step::Press { button: Button::A, until: Until::Closed });
-        steps.push(Step::Press { button: Button::B, until: Until::Closed });
-    }
-    steps
-}
-
-/// The steps of dropping `units` units of the stack `stack`: each unit is staged on the list, its
-/// Drop is chosen and confirmed with Yes, and the list is back for the next one.
-fn drop_steps(stack: u32, units: u16, flying: bool, town: bool) -> Vec<Step> {
-    let _ = (flying, town);
-    let mut steps = Vec::new();
-    for _ in 0..units {
-        steps.push(Step::Stage { id: stack });
-        steps.push(Step::Row { row: 0, rows: 2 });
-        steps.push(Step::Press { button: Button::A, until: Until::ItemChoice });
-        steps.push(Step::Pause { frames: SETTLE_WINDOW });
-        steps.push(Step::Row { row: 1, rows: 2 });
-        steps.push(Step::Press { button: Button::A, until: Until::DropAsk });
-        steps.push(Step::Row { row: 0, rows: 2 });
-        steps.push(Step::Press { button: Button::A, until: Until::ItemList });
-    }
-    steps
 }
 
 #[cfg(test)]
@@ -988,7 +1262,7 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_list_opens_the_cheats_and_its_greyed_options_do_nothing() {
+    fn the_menu_list_opens_the_cheats_and_the_options_without_a_press_to_the_original() {
         let mut driver = Driver::new(Labels::default());
         let mut menu = FakeMenu::default();
         open_by_player(&mut driver, &mut menu);
@@ -1012,8 +1286,8 @@ mod tests {
         assert_eq!(menu.screen, 4);
         driver.key(Key::Down, &menu.wram());
         choose(&mut driver, &mut menu, Key::Confirm);
-        assert_eq!((driver.curtain(), driver.nav().screen()), (Curtain::Up, Screen::Menu));
-        assert_eq!(menu.screen, 4, "nor for Options");
+        assert_eq!((driver.curtain(), driver.nav().screen()), (Curtain::Up, Screen::Options));
+        assert_eq!(menu.screen, 4, "nor for Options: the original's Menu list stays under");
         assert!(!driver.busy(), "no plan for Options");
     }
 
@@ -1102,25 +1376,52 @@ mod tests {
     }
 
     #[test]
-    fn the_use_plan_stages_the_stack_and_closes_after_each_unit() {
-        let steps = use_steps(7, Some(1), 2, UseKind::Plain, 2, false, false);
+    fn the_use_plan_stages_one_unit_and_lifts_the_curtain_on_the_original_use_window() {
+        let steps = use_steps(7, UseKind::Plain, 2);
         let stages = steps.iter().filter(|s| matches!(s, Step::Stage { id: 7 })).count();
-        assert_eq!(stages, 2, "each unit is staged");
-        let reopens =
-            steps.iter().filter(|s| matches!(s, Step::Wait { until: Until::Ready })).count();
-        assert_eq!(reopens, 1, "the second unit reopens the menu from the field");
+        assert_eq!(stages, 1, "one unit is staged: the use takes one unit, no quantity");
+        let choice =
+            steps.iter().position(|s| matches!(s, Step::Press { until: Until::ItemChoice, .. }));
+        let lift = steps.iter().position(|s| matches!(s, Step::Lift));
+        assert!(
+            choice.is_some() && lift.is_some() && choice < lift,
+            "the curtain lifts on the Use or Drop window"
+        );
         let closes =
             steps.iter().filter(|s| matches!(s, Step::Press { until: Until::Closed, .. })).count();
-        // Each unit ends on a close: A on the result's message, then B on the command window if it stays.
-        assert_eq!(closes, 4);
+        // The answer is the original's: no close is pressed by the plan, the menu closes or stays where it is.
+        assert_eq!(closes, 0);
+        assert!(steps.iter().any(|s| matches!(s, Step::Answer)));
     }
 
     #[test]
-    fn the_drop_plan_confirms_each_unit_and_keeps_the_list_open() {
-        let steps = drop_steps(3, 2, false, false);
+    fn the_radar_and_the_card_screens_are_left_to_the_player_after_their_use() {
+        let radar = use_steps(9, UseKind::Radar, 2);
+        assert!(
+            !radar.iter().any(|s| matches!(s, Step::Press { button: Button::B, .. })),
+            "B is the player's"
+        );
+        assert!(
+            !radar.iter().any(|s| matches!(s, Step::MemberIf { .. })),
+            "the radar asks for no member"
+        );
+        let card = use_steps(10, UseKind::Card, 2);
+        assert!(
+            matches!(card.last(), Some(Step::Press { until: Until::ItemReply, .. })),
+            "the card screen is the original's"
+        );
+    }
+
+    #[test]
+    fn the_drop_plan_drops_one_unit_and_keeps_the_list_open() {
+        let steps = drop_steps(3);
         let stages = steps.iter().filter(|s| matches!(s, Step::Stage { id: 3 })).count();
-        assert_eq!(stages, 2, "each unit is staged");
+        assert_eq!(stages, 1, "one unit is staged");
         assert!(!steps.iter().any(|s| matches!(s, Step::Press { until: Until::Closed, .. })));
+        assert!(
+            !steps.iter().any(|s| matches!(s, Step::Lift)),
+            "the HD's own Yes or No asked already"
+        );
     }
 
     /// A battery save whose `slots` are good saves of the list the fake menu shows (three entries of object 0,
@@ -1241,5 +1542,410 @@ mod tests {
         played.replay_event(CHEATS_TAG, &payload, &menu.wram()).expect("a cheats file");
         assert_eq!(played.cheats(), driver.cheats(), "the replay's run has the recorded cheats");
         assert!(played.replay_event(CHEATS_TAG, &[0xFF; 3], &menu.wram()).is_err());
+    }
+
+    /// A driver on the Options screen of an open menu, bound to `sram`'s first frame.
+    fn driver_on_options(sram: &[u8]) -> (Driver, FakeMenu) {
+        let mut driver = Driver::new(Labels::default()).with_cheats(CheatSidecar::empty());
+        let mut menu = FakeMenu::default();
+        menu.field = 1;
+        menu.screen = 4;
+        driver.state.curtain = Curtain::Up;
+        driver.state.nav.enter(Screen::Options);
+        driver.frame(&menu.wram(), Some(sram), Joypad::default());
+        (driver, menu)
+    }
+
+    #[test]
+    fn the_options_text_speed_row_writes_the_games_text_speed() {
+        let (mut driver, menu) = driver_on_options(&saved_slots(&[0]));
+        assert_eq!(driver.nav().options_category(), Category::Difficulty);
+        driver.key(Key::Tab, &menu.wram());
+        assert_eq!(driver.nav().options_category(), Category::Gameplay, "R changes the page");
+        driver.key(Key::TabBack, &menu.wram());
+        assert_eq!(driver.nav().options_category(), Category::Difficulty, "L goes back");
+        driver.key(Key::Tab, &menu.wram());
+        driver.key(Key::Left, &menu.wram());
+        let frame = driver.frame(&menu.wram(), None, Joypad::default());
+        assert!(
+            frame.events.contains(&HostEvent::Wram { address: d::TEXT_SPEED, bytes: vec![1] }),
+            "text speed byte 0 (the fastest) one step slower is 1: {:?}",
+            frame.events
+        );
+        assert!(
+            frame.settings.is_none() && !frame.saved_options,
+            "it is the game's value, nothing is stored"
+        );
+    }
+
+    #[test]
+    fn the_gameplay_page_rows_reach_the_driver_as_stored_values_and_drive_the_auto_run_and_the_animation()
+     {
+        let (mut driver, menu) = driver_on_options(&saved_slots(&[0]));
+        driver.key(Key::Tab, &menu.wram());
+        // The rows: text speed, auto-run, wait, animation speed, encounters.
+        driver.key(Key::Down, &menu.wram());
+        driver.key(Key::Right, &menu.wram()); // Auto-run: Off to On
+        driver.key(Key::Down, &menu.wram());
+        driver.key(Key::Left, &menu.wram()); // Wait: Normal to Short
+        driver.key(Key::Down, &menu.wram());
+        driver.key(Key::Right, &menu.wram()); // Animation: Normal to x2
+        let game = &driver.options().game;
+        assert_eq!(game.get("gameplay.auto_run"), Some(1));
+        assert_eq!(game.get("gameplay.auto_wait"), Some(0));
+        assert_eq!(game.get("gameplay.anim_speed"), Some(1));
+        // The curtain comes down: the player is back in the game, and a finished message waits for A.
+        driver.state.curtain = Curtain::Down;
+        let mut wram = menu.wram();
+        wram[(d::MESSAGE_STATE - 0x7E_0000) as usize] = 0x83;
+        let mut first = None;
+        for frame in 0..100 {
+            if driver.frame(&wram, None, Joypad::default()).pad.a {
+                first = Some(frame);
+                break;
+            }
+        }
+        assert_eq!(first, Some(44), "the Short wait: 45 frames, then A");
+        // The animation is sped up in the attack animation only.
+        assert_eq!(driver.animation_factor(&wram), 1);
+        wram[(d::MESSAGE_STATE - 0x7E_0000) as usize] = 0;
+        wram[(d::IN_BATTLE - 0x7E_0000) as usize] = 0xFF;
+        wram[(d::GAME_MODE - 0x7E_0000) as usize] = 4;
+        wram[(d::BATTLE_PHASE - 0x7E_0000) as usize] = 4;
+        assert_eq!(driver.animation_factor(&wram), 2, "x2 in the attack animation");
+        // Reset this page puts the original back.
+        driver.state.curtain = Curtain::Up;
+        driver.key(Key::ResetPage, &wram);
+        assert_eq!(driver.animation_factor(&wram), 1);
+        assert_eq!(driver.options().game.get("gameplay.auto_run"), None);
+    }
+
+    #[test]
+    fn the_encounter_row_is_the_cheats_row_and_the_same_cheat_block_is_written() {
+        let (mut driver, menu) = driver_on_options(&saved_slots(&[0]));
+        driver.key(Key::Tab, &menu.wram());
+        driver.key(Key::Up, &menu.wram()); // wraps to the last row of the page: the encounters
+        driver.key(Key::Left, &menu.wram());
+        assert_eq!(driver.cheats().index(ssd_menus::cheats::Setting::Encounters), 1, "x1 to x1/2");
+        let frame = driver.frame(&menu.wram(), None, Joypad::default());
+        assert!(frame.events.iter().any(|event| matches!(
+            event,
+            HostEvent::Wram { address, .. } if *address == crate::cheats::BLOCK
+        )));
+        driver.key(Key::ResetPage, &menu.wram());
+        assert!(driver.cheats().is_neutral(), "Reset this page puts the encounter rate back to x1");
+    }
+
+    #[test]
+    fn a_pc_option_is_handed_to_the_host_once_and_reset_all_asks_with_the_cursor_on_no() {
+        let (mut driver, menu) = driver_on_options(&saved_slots(&[0]));
+        for _ in 0..2 {
+            driver.key(Key::Tab, &menu.wram());
+        }
+        assert_eq!(driver.nav().options_category(), Category::Video);
+        // Display, Scale, V-Sync: V-Sync is applied and saved at once (it asks nothing).
+        driver.key(Key::Down, &menu.wram());
+        driver.key(Key::Down, &menu.wram());
+        driver.key(Key::Right, &menu.wram());
+        let frame = driver.frame(&menu.wram(), None, Joypad::default());
+        assert_eq!(frame.settings.as_ref().and_then(|v| v.get("video.vsync")), Some(1));
+        assert_eq!(frame.video, frame.settings, "and handed to the window");
+        assert_eq!(driver.nav().options_video_confirm(), None);
+        assert!(driver.frame(&menu.wram(), None, Joypad::default()).settings.is_none(), "once");
+        driver.key(Key::ResetAll, &menu.wram());
+        assert_eq!(driver.nav().options_confirm(), Some(1), "the cursor is on No");
+        driver.key(Key::Confirm, &menu.wram());
+        assert_eq!(driver.options().pc.get("video.vsync"), Some(1), "No keeps the options");
+        driver.key(Key::ResetAll, &menu.wram());
+        driver.key(Key::Left, &menu.wram());
+        driver.key(Key::Confirm, &menu.wram());
+        assert_eq!(driver.options().pc.get("video.vsync"), None, "Yes resets every option");
+        let frame = driver.frame(&menu.wram(), None, Joypad::default());
+        assert_eq!(frame.settings, Some(Values::new()));
+    }
+
+    #[test]
+    fn the_controls_page_takes_a_free_key_refuses_a_used_one_and_clears_a_shortcut() {
+        use ssd_menus::options::controls::{Capture, Device};
+        let (mut driver, menu) = driver_on_options(&saved_slots(&[0]));
+        let wram = menu.wram();
+        for _ in 0..4 {
+            driver.key(Key::Tab, &wram);
+        }
+        assert_eq!(driver.nav().options_category(), Category::Controls);
+        assert_eq!(driver.listening(), None);
+        // Down to Up, Right to A (confirm), A to wait.
+        driver.key(Key::Down, &wram);
+        driver.key(Key::Right, &wram);
+        driver.key(Key::Confirm, &wram);
+        assert_eq!(driver.listening(), Some(Device::Keyboard));
+        // Z is B's key: refused, nothing stored, the row flashes and the strip says why.
+        driver.capture(Capture::Code(29));
+        assert_eq!(driver.listening(), None);
+        assert_eq!(driver.options().pc.get("controls.kb.a"), None);
+        let scene = driver.scene(&wram).unwrap();
+        let texts: Vec<&str> = scene.texts().map(|(_, _, text)| text).collect();
+        assert!(texts.contains(&"Key in use"), "{texts:?}");
+        assert!(texts.contains(&"Key already used by B (back). Choose another key."), "{texts:?}");
+        assert!(driver.frame(&wram, None, Joypad::default()).settings.is_none());
+        // Esc cancels without a change; a free key (F) is taken and handed to the host once.
+        driver.key(Key::Confirm, &wram);
+        driver.capture(Capture::Cancel);
+        assert_eq!(driver.listening(), None);
+        assert_eq!(driver.options().pc.get("controls.kb.a"), None);
+        driver.key(Key::Confirm, &wram);
+        driver.capture(Capture::Code(9));
+        assert_eq!(driver.options().pc.get("controls.kb.a"), Some(9));
+        let frame = driver.frame(&wram, None, Joypad::default());
+        assert_eq!(frame.settings.as_ref().and_then(|v| v.get("controls.kb.a")), Some(9));
+        assert!(driver.frame(&wram, None, Joypad::default()).settings.is_none(), "once");
+        let scene = driver.scene(&wram).unwrap();
+        assert!(scene.texts().any(|(_, _, text)| text == "F"));
+        // Backspace on a SNES button does nothing (it keeps waiting); on a shortcut it clears.
+        driver.key(Key::Confirm, &wram);
+        driver.capture(Capture::Clear);
+        assert_eq!(driver.listening(), Some(Device::Keyboard));
+        driver.capture(Capture::Cancel);
+        for _ in 0..6 {
+            driver.key(Key::Down, &wram);
+        }
+        driver.key(Key::Left, &wram);
+        assert_eq!(driver.nav().controls_action(), Some(12), "Speed");
+        driver.key(Key::Right, &wram);
+        driver.key(Key::Confirm, &wram);
+        driver.capture(Capture::Clear);
+        assert_eq!(driver.options().pc.get("controls.kb.pause"), Some(0));
+        assert_eq!(driver.listening(), None);
+    }
+
+    #[test]
+    fn the_controls_device_follows_the_stored_value_and_reset_page_gives_back_todays_keys() {
+        use ssd_menus::options::controls::{Capture, Device};
+        let (mut driver, menu) = driver_on_options(&saved_slots(&[0]));
+        let wram = menu.wram();
+        for _ in 0..4 {
+            driver.key(Key::Tab, &wram);
+        }
+        // Left and Right on the device row switch to the gamepad: its buttons show and wait for a button.
+        driver.key(Key::Right, &wram);
+        assert_eq!(driver.options().pc.get("controls.device"), Some(1));
+        driver.key(Key::Down, &wram);
+        assert_eq!(driver.nav().options_row(), 17, "the gamepad's first row");
+        driver.key(Key::Confirm, &wram);
+        assert_eq!(driver.listening(), Some(Device::Gamepad));
+        driver.capture(Capture::Code(17)); // Left paddle 1: free
+        assert_eq!(driver.options().pc.get("controls.pad.up"), Some(17));
+        assert_eq!(driver.options().pc.get("controls.kb.up"), None, "the keyboard map is its own");
+        driver.key(Key::ResetPage, &wram);
+        assert!(driver.options().pc.get("controls.pad.up").is_none());
+        assert!(driver.options().pc.get("controls.device").is_none());
+        let frame = driver.frame(&wram, None, Joypad::default());
+        assert_eq!(frame.settings, Some(Values::new()), "the file holds nothing but the defaults");
+        let scene = driver.scene(&wram).unwrap();
+        assert!(scene.texts().any(|(_, _, text)| text == "Up"), "the keyboard page is back");
+    }
+
+    /// A driver on the Video page with the cursor on the Aspect row.
+    fn driver_on_video() -> (Driver, FakeMenu) {
+        let (mut driver, menu) = driver_on_options(&saved_slots(&[0]));
+        for key in [Key::Tab, Key::Tab, Key::Down, Key::Down, Key::Down, Key::Down] {
+            driver.key(key, &menu.wram());
+        }
+        assert_eq!(driver.nav().options_category(), Category::Video);
+        assert_eq!(driver.nav().options_row(), 4, "Aspect");
+        (driver, menu)
+    }
+
+    #[test]
+    fn a_change_of_aspect_is_applied_at_once_asked_about_and_written_only_when_kept() {
+        let (mut driver, menu) = driver_on_video();
+        driver.key(Key::Right, &menu.wram());
+        assert_eq!(driver.nav().options_video_confirm(), Some(1), "the question, on Revert");
+        let frame = driver.frame(&menu.wram(), None, Joypad::default());
+        assert_eq!(
+            frame.video.as_ref().and_then(|v| v.get("video.aspect")),
+            Some(1),
+            "applied now"
+        );
+        assert!(frame.settings.is_none(), "not written while the question is open");
+        // Left and Right only move the question's cursor, to Keep.
+        driver.key(Key::Left, &menu.wram());
+        assert_eq!(driver.options().pc.get("video.aspect"), Some(1));
+        driver.key(Key::Confirm, &menu.wram());
+        assert_eq!(driver.nav().options_video_confirm(), None);
+        let frame = driver.frame(&menu.wram(), None, Joypad::default());
+        assert_eq!(
+            frame.settings.as_ref().and_then(|v| v.get("video.aspect")),
+            Some(1),
+            "Keep writes"
+        );
+        assert!(frame.video.is_none(), "nothing more to apply");
+    }
+
+    #[test]
+    fn b_reverts_and_the_ten_seconds_run_out_on_revert_too() {
+        let (mut driver, menu) = driver_on_video();
+        driver.key(Key::Right, &menu.wram());
+        driver.frame(&menu.wram(), None, Joypad::default());
+        driver.key(Key::Cancel, &menu.wram());
+        assert_eq!(driver.options().pc.get("video.aspect"), None, "B puts the aspect back");
+        let frame = driver.frame(&menu.wram(), None, Joypad::default());
+        assert_eq!(
+            frame.video.as_ref().and_then(|v| v.get("video.aspect")),
+            None,
+            "and applies it"
+        );
+        // The countdown: 600 frames, the bar and the seconds follow it, and it reverts at the end.
+        driver.key(Key::Right, &menu.wram());
+        let ask =
+            driver.state.options_view(&MenuProbe::new(&menu.wram(), &driver.labels)).video.unwrap();
+        assert_eq!((ask.choice, ask.tenths), (1, 100));
+        for _ in 0..300 {
+            driver.frame(&menu.wram(), None, Joypad::default());
+        }
+        let ask =
+            driver.state.options_view(&MenuProbe::new(&menu.wram(), &driver.labels)).video.unwrap();
+        assert!((49..=51).contains(&ask.tenths), "{}", ask.tenths);
+        for _ in 0..299 {
+            driver.frame(&menu.wram(), None, Joypad::default());
+        }
+        assert_eq!(driver.options().pc.get("video.aspect"), Some(1), "one frame left");
+        let frame = driver.frame(&menu.wram(), None, Joypad::default());
+        assert_eq!(driver.options().pc.get("video.aspect"), None, "reverted at the timeout");
+        assert_eq!(driver.nav().options_video_confirm(), None);
+        assert_eq!(frame.video.as_ref().and_then(|v| v.get("video.aspect")), None);
+    }
+
+    #[test]
+    fn scale_and_display_ask_too_but_look_scanlines_and_vsync_do_not() {
+        let (mut driver, menu) = driver_on_video();
+        for key in [Key::Down, Key::Right] {
+            driver.key(key, &menu.wram());
+        }
+        assert_eq!(driver.nav().options_row(), 6, "Scanlines");
+        assert_eq!(
+            driver.nav().options_video_confirm(),
+            None,
+            "scanlines apply without a question"
+        );
+        let frame = driver.frame(&menu.wram(), None, Joypad::default());
+        assert!(frame.video.is_some() && frame.settings.is_some());
+        driver.key(Key::ResetPage, &menu.wram());
+        assert_eq!(driver.nav().options_video_confirm(), None, "the mode did not change");
+        // Reset this page asks when it changes the scale.
+        driver.state.options.pc.set("video.scale", 5);
+        driver.key(Key::ResetPage, &menu.wram());
+        assert_eq!(driver.nav().options_video_confirm(), Some(1));
+        driver.key(Key::Cancel, &menu.wram());
+        assert_eq!(driver.options().pc.get("video.scale"), Some(5), "reverted to the old scale");
+    }
+
+    #[test]
+    fn the_accessibility_rows_are_written_at_once_and_restyle_the_screen_the_same_frame() {
+        let (mut driver, menu) = driver_on_options(&saved_slots(&[0]));
+        for key in [Key::Tab, Key::Tab, Key::Tab, Key::Tab, Key::Tab] {
+            driver.key(key, &menu.wram());
+        }
+        assert_eq!(driver.nav().options_category(), Category::Accessibility);
+        let ops = |driver: &Driver| {
+            driver.scene(&menu.wram()).expect("the options screen").ops().to_vec()
+        };
+        assert!(
+            ops(&driver).iter().any(|op| matches!(op, ssd_menus::Op::Window { .. })),
+            "the design as drawn"
+        );
+        // Contrast (row 1), then the cursor (row 2), then the text size (row 0).
+        driver.key(Key::Down, &menu.wram());
+        driver.key(Key::Right, &menu.wram());
+        assert_eq!(driver.options().pc.get("access.contrast"), Some(1));
+        let shown = ops(&driver);
+        assert!(shown.iter().any(|op| matches!(op, ssd_menus::Op::WindowHc { .. })));
+        assert!(!shown.iter().any(|op| matches!(op, ssd_menus::Op::Window { .. })));
+        let frame = driver.frame(&menu.wram(), None, Joypad::default());
+        assert_eq!(frame.settings.as_ref().and_then(|v| v.get("access.contrast")), Some(1));
+        assert!(frame.video.is_none(), "nothing to ask about");
+        driver.key(Key::Down, &menu.wram());
+        driver.key(Key::Right, &menu.wram());
+        assert_eq!(driver.options().pc.get("access.cursor"), Some(1));
+        assert!(ops(&driver).iter().any(|op| matches!(op, ssd_menus::Op::Pointer { .. })));
+        driver.key(Key::ResetPage, &menu.wram());
+        assert_eq!(driver.options().pc.get("access.contrast"), None, "Reset this page");
+        assert!(ops(&driver).iter().any(|op| matches!(op, ssd_menus::Op::Window { .. })));
+    }
+
+    #[test]
+    fn a_question_open_when_the_driver_resets_is_reverted() {
+        let (mut driver, menu) = driver_on_video();
+        driver.key(Key::Right, &menu.wram());
+        driver.reset();
+        assert_eq!(driver.options().pc.get("video.aspect"), None);
+        assert_eq!(driver.nav().options_video_confirm(), None);
+        let frame = driver.frame(&menu.wram(), None, Joypad::default());
+        assert!(frame.video.is_some(), "the window is told");
+    }
+
+    #[test]
+    fn the_games_options_follow_the_save_slot_they_were_saved_in() {
+        let sram = saved_slots(&[0, 1]);
+        let (mut driver, mut menu) = driver_on_options(&sram);
+        driver.state.options.game.set("gameplay.future", 7);
+        let saved = save_into(&mut driver, &mut menu, &sram, 0);
+        assert!(saved.saved_options, "a Save writes the slot file");
+        let checksum = checksum_of_slot(&sram, 0);
+        assert_eq!(
+            driver.option_slots().entry_for(0, checksum).and_then(|v| v.get("gameplay.future")),
+            Some(7)
+        );
+        assert_eq!(driver.option_slots().entry_for(1, checksum_of_slot(&sram, 1)), None);
+        // A new run binds to the slot's values from the slot file.
+        let slots = driver.option_slots().clone();
+        let mut fresh = Driver::new(Labels::default())
+            .with_cheats(CheatSidecar::empty())
+            .with_options(slots, Values::new());
+        fresh.state.curtain = Curtain::Up;
+        fresh.frame(&menu.wram(), Some(&sram), Joypad::default());
+        assert_eq!(fresh.options().game.get("gameplay.future"), Some(7));
+    }
+    #[test]
+    fn a_difficulty_preset_writes_the_cheats_and_the_money_marks_the_save_and_follows_its_slot() {
+        use ssd_menus::cheats::{MONEY, Multiplier, Setting};
+        let sram = saved_slots(&[0]);
+        let checksum = checksum_of_slot(&sram, 0);
+        let (mut driver, mut menu) = driver_on_options(&sram);
+        // Hard: enemy power x2, EXP x1, money x1/2, and the block carries the money pair.
+        driver.key(Key::Right, &menu.wram());
+        assert_eq!(driver.cheats().multiplier(Setting::Power), Multiplier::new(2, 1));
+        assert_eq!(driver.cheats().money(), Multiplier::new(1, 2));
+        let frame = driver.frame(&menu.wram(), None, Joypad::default());
+        let block = frame.events.iter().find_map(|event| match event {
+            HostEvent::Wram { address, bytes } if *address == crate::cheats::BLOCK => Some(bytes),
+            _ => None,
+        });
+        assert_eq!(block.map(|bytes| &bytes[MONEY..MONEY + 2]), Some(&[1_u8, 2][..]));
+        let saved = save_into(&mut driver, &mut menu, &sram, 0);
+        assert!(saved.saved_cheats.is_some_and(|saved| saved.marked), "Hard marks the save");
+        let kept = driver.option_slots().entry_for(0, checksum).unwrap();
+        assert_eq!(
+            (kept.get("difficulty.money"), kept.get("difficulty.preset")),
+            (Some(0), Some(2))
+        );
+        // Continue: the slot's cheats come from the cheats file, the money from the options file.
+        let mut fresh = Driver::new(Labels::default())
+            .with_cheats(driver.cheat_sidecar().clone())
+            .with_options(driver.option_slots().clone(), Values::new());
+        fresh.state.curtain = Curtain::Up;
+        let again = fresh.frame(&menu.wram(), Some(&sram), Joypad::default());
+        assert_eq!(fresh.cheats().money(), Multiplier::new(1, 2));
+        assert!(again.events.iter().any(|event| matches!(
+            event,
+            HostEvent::Wram { address, bytes } if *address == crate::cheats::BLOCK && bytes[MONEY..MONEY + 2] == [1, 2]
+        )));
+        // Normal: clean, and the file keeps nothing of the difficulty.
+        driver.key(Key::Left, &menu.wram());
+        assert!(driver.cheats().is_neutral());
+        let clean = save_into(&mut driver, &mut menu, &sram, 0);
+        assert!(clean.saved_cheats.is_some_and(|saved| !saved.marked), "Normal is clean");
+        let kept = driver.option_slots().entry_for(0, checksum).unwrap();
+        assert_eq!((kept.get("difficulty.money"), kept.get("difficulty.preset")), (None, None));
     }
 }

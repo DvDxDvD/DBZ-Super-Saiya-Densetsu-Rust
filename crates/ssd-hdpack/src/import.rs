@@ -248,7 +248,17 @@ fn import_cards(cards: &Path, pack_dir: &Path, report: &mut Report) -> anyhow::R
     let mut entries = Vec::new();
     for entry in index["tiles"].as_array().context("cards: a `tiles` list")? {
         let code = entry["code"].as_u64().context("a tile code")?;
-        anyhow::ensure!(code < 384, "tile {code}: the UI set has 384 tiles");
+        let set = entry.get("set").and_then(serde_json::Value::as_str);
+        anyhow::ensure!(
+            matches!(set, None | Some("title")),
+            "tile {code}: the set is `title` or none"
+        );
+        let (set_name, tiles_in_set) = if set.is_some() { ("title", 256) } else { ("UI", 384) };
+        anyhow::ensure!(
+            code < tiles_in_set,
+            "tile {code}: the {set_name} set has {tiles_in_set} tiles"
+        );
+        let carve = entry.get("carve").and_then(serde_json::Value::as_bool).unwrap_or(false);
         let mut layer = |key: &str| -> anyhow::Result<Option<String>> {
             let Some(name) = entry.get(key).and_then(serde_json::Value::as_str) else {
                 return Ok(None);
@@ -263,7 +273,13 @@ fn import_cards(cards: &Path, pack_dir: &Path, report: &mut Report) -> anyhow::R
         };
         let (base, roles) = (layer("base")?, layer("roles")?);
         if base.is_some() || roles.is_some() {
-            entries.push(ssd_hd::cards::Entry { code: code as u16, base, roles });
+            entries.push(ssd_hd::cards::Entry {
+                code: code as u16,
+                set: set.map(str::to_owned),
+                carve,
+                base,
+                roles,
+            });
         }
     }
     let mut tip = Vec::new();
@@ -879,15 +895,39 @@ mod tests {
         std::fs::write(
             art.join("index.json"),
             r#"{"tiles": [{"code": 146, "base": "a.png", "roles": "a-roles.png"},
-                          {"code": 147, "roles": "missing.png"}],
+                          {"code": 147, "roles": "missing.png"},
+                          {"code": 203, "set": "title", "carve": true, "roles": "a-roles.png"}],
                 "tips": [{"code": 248, "image": "tip.png"}]}"#,
         )
         .unwrap();
         let mut report = Report::default();
-        assert_eq!(import_cards(&art, &pack, &mut report).unwrap(), 1);
+        assert_eq!(import_cards(&art, &pack, &mut report).unwrap(), 2);
         assert_eq!(report.skipped.len(), 1, "the tile with no art file is skipped: {report:?}");
         let loaded = ssd_hd::CardArt::load(&pack).unwrap().expect("the pack has card art");
-        assert!(format!("{loaded:?}").contains("tiles: 1"));
+        assert!(format!("{loaded:?}").contains("tiles: 2"));
+        // The title set's tile keeps its set and its carving in the pack's index
+        let listed = std::fs::read_to_string(pack.join(ssd_hd::cards::INDEX)).unwrap();
+        assert!(listed.contains("set = \"title\"") && listed.contains("carve = true"), "{listed}");
+        // A title tile past the set's 256, and a set that is neither, are refused
+        std::fs::write(
+            art.join("index.json"),
+            r#"{"tiles": [{"code": 256, "set": "title", "roles": "a-roles.png"}]}"#,
+        )
+        .unwrap();
+        assert!(import_cards(&art, &pack, &mut report).is_err());
+        std::fs::write(
+            art.join("index.json"),
+            r#"{"tiles": [{"code": 1, "set": "other", "roles": "a-roles.png"}]}"#,
+        )
+        .unwrap();
+        assert!(import_cards(&art, &pack, &mut report).is_err());
+        std::fs::write(
+            art.join("index.json"),
+            r#"{"tiles": [{"code": 146, "base": "a.png", "roles": "a-roles.png"}],
+                "tips": [{"code": 248, "image": "tip.png"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(import_cards(&art, &pack, &mut report).unwrap(), 1);
         assert!(pack.join("art/cards/tip.png").is_file());
         // No folder, no cards
         let none = import_cards(&dir.path().join("nothing"), &pack, &mut report).unwrap();

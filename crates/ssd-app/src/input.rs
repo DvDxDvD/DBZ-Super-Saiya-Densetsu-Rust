@@ -1,6 +1,8 @@
-//! Keyboard and gamepad to SNES joypad mapping. Keyboard and gamepad are tracked separately so a
+//! Keyboard and gamepad to SNES joypad mapping (the map itself is `options::controls::Bindings`, the Controls
+//! page's data). Keyboard and gamepad are tracked separately so a
 //! button stays pressed while either device holds it.
 
+use crate::options::controls::Bindings;
 use sdl3::gamepad::Button;
 use sdl3::keyboard::Scancode;
 use ssd_oracle::Joypad;
@@ -36,43 +38,6 @@ const ALL: [PadButton; 12] = [
     PadButton::Select,
 ];
 
-pub(crate) fn key_to_button(sc: Scancode) -> Option<PadButton> {
-    Some(match sc {
-        Scancode::Up => PadButton::Up,
-        Scancode::Down => PadButton::Down,
-        Scancode::Left => PadButton::Left,
-        Scancode::Right => PadButton::Right,
-        Scancode::X => PadButton::A,
-        Scancode::Z => PadButton::B,
-        Scancode::S => PadButton::X,
-        Scancode::A => PadButton::Y,
-        Scancode::Q => PadButton::L,
-        Scancode::W => PadButton::R,
-        Scancode::Return => PadButton::Start,
-        Scancode::RShift => PadButton::Select,
-        _ => return None,
-    })
-}
-
-/// SNES layout on a standard gamepad: positions match (East = A, South = B, North = X, West = Y).
-pub(crate) fn gamepad_to_button(b: Button) -> Option<PadButton> {
-    Some(match b {
-        Button::DPadUp => PadButton::Up,
-        Button::DPadDown => PadButton::Down,
-        Button::DPadLeft => PadButton::Left,
-        Button::DPadRight => PadButton::Right,
-        Button::East => PadButton::A,
-        Button::South => PadButton::B,
-        Button::North => PadButton::X,
-        Button::West => PadButton::Y,
-        Button::LeftShoulder => PadButton::L,
-        Button::RightShoulder => PadButton::R,
-        Button::Start => PadButton::Start,
-        Button::Back => PadButton::Select,
-        _ => return None,
-    })
-}
-
 #[derive(Default)]
 pub struct InputState {
     keys: [bool; 12],
@@ -84,14 +49,14 @@ fn idx(b: PadButton) -> usize {
 }
 
 impl InputState {
-    pub fn key(&mut self, sc: Scancode, pressed: bool) {
-        if let Some(b) = key_to_button(sc) {
+    pub fn key(&mut self, bindings: &Bindings, sc: Scancode, pressed: bool) {
+        if let Some(b) = bindings.key_button(sc) {
             self.keys[idx(b)] = pressed;
         }
     }
 
-    pub fn gamepad_button(&mut self, b: Button, pressed: bool) {
-        if let Some(b) = gamepad_to_button(b) {
+    pub fn gamepad_button(&mut self, bindings: &Bindings, b: Button, pressed: bool) {
+        if let Some(b) = bindings.pad_button(b) {
             self.pad[idx(b)] = pressed;
         }
     }
@@ -124,27 +89,35 @@ impl InputState {
 mod tests {
     use super::*;
     use sdl3::keyboard::Scancode;
-
-    #[test]
-    fn keyboard_layout_matches_readme() {
-        assert_eq!(key_to_button(Scancode::X), Some(PadButton::A));
-        assert_eq!(key_to_button(Scancode::Z), Some(PadButton::B));
-        assert_eq!(key_to_button(Scancode::S), Some(PadButton::X));
-        assert_eq!(key_to_button(Scancode::A), Some(PadButton::Y));
-        assert_eq!(key_to_button(Scancode::Return), Some(PadButton::Start));
-        assert_eq!(key_to_button(Scancode::RShift), Some(PadButton::Select));
-        assert_eq!(key_to_button(Scancode::F5), None);
-    }
+    use ssd_menus::options::{
+        Values,
+        controls::{self, Device},
+    };
 
     #[test]
     fn keyboard_and_gamepad_combine_and_release_independently() {
+        let map = Bindings::default();
         let mut s = InputState::default();
-        s.key(Scancode::X, true);
-        s.gamepad_button(sdl3::gamepad::Button::East, true);
+        s.key(&map, Scancode::X, true);
+        s.gamepad_button(&map, sdl3::gamepad::Button::East, true);
         assert!(s.joypad().a);
-        s.key(Scancode::X, false);
+        s.key(&map, Scancode::X, false);
         assert!(s.joypad().a, "gamepad still holds A");
-        s.gamepad_button(sdl3::gamepad::Button::East, false);
+        s.gamepad_button(&map, sdl3::gamepad::Button::East, false);
         assert!(!s.joypad().a);
+    }
+
+    #[test]
+    fn a_remapped_key_drives_the_joypad_and_the_old_one_does_not() {
+        let mut values = Values::new();
+        controls::assign(&mut values, Device::Keyboard, 1, 9).unwrap();
+        let map = Bindings::from_values(&values);
+        let mut s = InputState::default();
+        s.key(&map, Scancode::F, true);
+        assert!(s.joypad().a);
+        s.key(&map, Scancode::F, false);
+        s.key(&map, Scancode::X, true);
+        assert!(!s.joypad().a, "X is free now");
+        assert_eq!(s.joypad(), ssd_oracle::Joypad::default());
     }
 }

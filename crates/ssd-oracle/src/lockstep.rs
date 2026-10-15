@@ -54,7 +54,8 @@
 //! the window are compared, never the memories: a dispatch that renders a frame returns after its
 //! call, so B can stop past the frame boundary where A stops on it. Such a window counts in
 //! `unsynced_windows`; the replay's tail after the last event (shorter than the budget) is
-//! compared the same way without counting.
+//! compared the same way without counting (there B may stand a few frames past the replay's end, inside a
+//! Rust routine that began before it: only the NMIs are compared then).
 //!
 //! A run without any event compared nothing: it is [`Verdict::Unverified`], never green.
 //!
@@ -466,7 +467,13 @@ impl LockstepRun {
 
     /// The window ended without an event on either machine: compares frames and NMIs.
     fn compare_window(&mut self, window: Window) -> Result<LockstepStep, LockstepDivergence> {
-        let (frame_a, frame_b) = (self.a.frame_count(), self.b.frame_count());
+        let (frame_a, mut frame_b) = (self.a.frame_count(), self.b.frame_count());
+        // The replay's last window: a Rust routine that began before the end is atomic, so B can
+        // finish it a few frames past the recorded end where A, stopped on the last frame, is
+        // still inside the original's run of it (the NMIs are still compared).
+        if window.end == self.replay.frames() && frame_b > frame_a {
+            frame_b = frame_a;
+        }
         let nmis = self.a.nmi_count() - self.nmis_a;
         self.lag_drift(frame_a, frame_b, self.a.nmi_count(), self.b.nmi_count())?;
         if window.full {
