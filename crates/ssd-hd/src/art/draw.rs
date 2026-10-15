@@ -100,6 +100,23 @@ pub(crate) fn draw_pictures(
         .sum()
 }
 
+/// The colour the game's pixel `pix` had where the art was made: the source picture's, or (a pack
+/// with none) the colour of the same CGRAM entry in the palette the art was made in.
+fn reference_of(image: &crate::bgart::BgImage, pix: crate::bgart::BgPix) -> Option<[u8; 3]> {
+    match (&image.source, &image.base) {
+        (Some(source), _) => {
+            let at = (usize::from(pix.y) * source.width + usize::from(pix.x)) * 4;
+            let s = source.rgba.get(at..at + 4)?;
+            (s[3] != 0).then_some([s[0], s[1], s[2]])
+        }
+        (None, Some(base)) if pix.index != crate::bgart::NO_INDEX => {
+            let known = base[usize::from(pix.index & 255)];
+            (known != crate::bgart::UNKNOWN_COLOUR).then(|| expand(known))
+        }
+        _ => None,
+    }
+}
+
 /// Draws the art of the background layers: each 1x pixel the original showed a layer (or the
 /// backdrop, or an object that is `hidden`) of is replaced by the block of the art it covers, in
 /// the colours the game's layer has now, with the colour math and the brightness of the pixel.
@@ -114,7 +131,33 @@ pub(crate) fn draw_backgrounds(
     fills: &[bool],
     hidden: u128,
 ) -> u64 {
-    use crate::bgart::{Kind, NO_COLOUR, adapt};
+    use crate::bgart::{Kind, NO_COLOUR};
+    let drawable_of = |pixel: &ArtPixel| match pixel.bg.kind {
+        Kind::Hidden | Kind::Under => false,
+        Kind::Layer => true,
+        Kind::Object => hidden >> (pixel.oam & 127) & 1 != 0,
+    };
+    // What each slot's art colours become in the colours the frame shows: one smooth transfer of
+    // the art's colour per layer, from the pairs (the colour the layer's pixel had where the art
+    // was made, the colour it has now) of the pixels drawn
+    let transfers: Vec<Option<crate::transfer::Transfer>> = images
+        .iter()
+        .enumerate()
+        .map(|(j, image)| {
+            let image = image.as_ref()?;
+            let mut pairs = crate::transfer::Pairs::default();
+            for pixel in pixels.iter().filter(|pixel| drawable_of(pixel)) {
+                let pix = pixel.bg.pix[j];
+                if !pix.is_set() || pix.colour == NO_COLOUR {
+                    continue;
+                }
+                if let Some(reference) = reference_of(image, pix) {
+                    pairs.add(reference, expand(pix.colour));
+                }
+            }
+            Some(pairs.transfer())
+        })
+        .collect();
     let row_bytes = frame_width * scale * 4;
     rgba.par_chunks_mut(row_bytes * scale)
         .enumerate()
@@ -122,12 +165,7 @@ pub(crate) fn draw_backgrounds(
             let mut drawn = 0_u64;
             for x in 0..frame_width {
                 let pixel = pixels[line * frame_width + x];
-                let drawable = match pixel.bg.kind {
-                    Kind::Hidden | Kind::Under => false,
-                    Kind::Layer => true,
-                    Kind::Object => hidden >> (pixel.oam & 127) & 1 != 0,
-                };
-                if !drawable {
+                if !drawable_of(&pixel) {
                     continue;
                 }
                 let mut any = false;
@@ -137,23 +175,6 @@ pub(crate) fn draw_backgrounds(
                         continue;
                     }
                     let (gx, gy) = (usize::from(pix.x), usize::from(pix.y));
-                    // The colour the game's pixel had where the art was made: the source picture's, or
-                    // (a pack with none) the colour of the same CGRAM entry in the palette the art
-                    // was made in
-                    let reference = match (&image.source, &image.base) {
-                        (Some(source), _) => {
-                            let at = (gy * source.width + gx) * 4;
-                            let s = &source.rgba[at..at + 4];
-                            (s[3] != 0).then_some([s[0], s[1], s[2]])
-                        }
-                        (None, Some(base)) if pix.index != crate::bgart::NO_INDEX => {
-                            let known = base[usize::from(pix.index & 255)];
-                            (known != crate::bgart::UNKNOWN_COLOUR).then(|| expand(known))
-                        }
-                        _ => None,
-                    };
-                    let current =
-                        (pix.colour != NO_COLOUR).then(|| expand(pix.colour)).or(reference);
                     // The art picture that holds the pixel (a field map's is in tiles)
                     let Some((art, ox, oy)) = image.block(gx, gy, scale) else { continue };
                     for sy in 0..scale {
@@ -168,8 +189,8 @@ pub(crate) fn draw_backgrounds(
                                 continue;
                             }
                             let mut color = [source[0], source[1], source[2]];
-                            if let (Some(reference), Some(current)) = (reference, current) {
-                                color = adapt(color, reference, current);
+                            if let Some(transfer) = &transfers[j] {
+                                color = transfer.apply(color);
                             }
                             let color = shade(pix.plan, pixel.brightness, color);
                             let target = (sy * frame_width * scale + x * scale + sx) * 4;
@@ -559,18 +580,22 @@ impl Ellipse {
 }
 
 /// The light a shadow of the colour `shadow` leaves of a picture of the colour `around` (what the
-/// original showed next to it), per channel, never below [`SHADOW_FLOOR`].
-fn shadow_light(shadow: [u8; 3], around: [f32; 3]) -> [f32; 3] {
-    [0, 1, 2].map(|c| (f32::from(shadow[c]) / around[c].max(24.0)).clamp(SHADOW_FLOOR, 1.0))
+/// original showed next to it): the ratio of their luminances, never below [`SHADOW_FLOOR`]. One
+/// number for the three channels, so a shadow darkens the picture without tinting it (the
+/// original's shadow colour is a dark colour of its own palette, which is not a hue the HD picture
+/// should take: a purple shadow on grass).
+fn shadow_light(shadow: [u8; 3], around: [f32; 3]) -> f32 {
+    let luma = |c: [f32; 3]| c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114;
+    (luma(shadow.map(f32::from)) / luma(around).max(24.0)).clamp(SHADOW_FLOOR, 1.0)
 }
 
 /// `base` darkened towards the light `light` by `alpha`: a multiplication, so what is under the
 /// shadow still shows.
-fn darken(base: &mut [u8], light: [f32; 3], alpha: u8) {
+fn darken(base: &mut [u8], light: f32, alpha: u8) {
     let alpha = f32::from(alpha) / 255.0;
-    for channel in 0..3 {
-        let factor = 1.0 - alpha * (1.0 - light[channel]);
-        base[channel] = (f32::from(base[channel]) * factor + 0.5) as u8;
+    let factor = 1.0 - alpha * (1.0 - light);
+    for value in &mut base[..3] {
+        *value = (f32::from(*value) * factor + 0.5) as u8;
     }
 }
 
@@ -692,12 +717,28 @@ pub(crate) fn paint(
         Some(ellipse) => ellipse.alpha(w as usize, h as usize, scale),
         None => soft_alpha(solid, w as usize, h as usize, scale),
     };
-    let light = smooth.as_ref().and_then(|ellipse| {
+    // The picture the original showed around the shadow: beside an ellipse's outline, or (a
+    // silhouette of another shape) outside the silhouette and the pixel ring next to it
+    let ring = |x: i32, y: i32| -> bool {
+        match smooth {
+            Some(ellipse) => ellipse.outline(x as f32 + 0.5, y as f32 + 0.5) >= 0.6,
+            None => {
+                let near = |dx: i32, dy: i32| {
+                    let (nx, ny) = (x + dx, y + dy);
+                    (0..w).contains(&nx)
+                        && (0..h).contains(&ny)
+                        && solid[(ny * w + nx) as usize] > 0.0
+                };
+                !(-1..=1).any(|dy| (-1..=1).any(|dx| near(dx, dy)))
+            }
+        }
+    };
+    let light = {
         let mut sum = [0_u32; 3];
         let mut count = 0_u32;
         for y in -SHADOW_SURROUND..h + SHADOW_SURROUND {
             for x in -SHADOW_SURROUND..w + SHADOW_SURROUND {
-                if ellipse.outline(x as f32 + 0.5, y as f32 + 0.5) < 0.6 {
+                if !ring(x, y) {
                     continue;
                 }
                 let Some((around, index)) = at_frame(frame, pixels, clip, x0 + x, y0 + y) else {
@@ -712,10 +753,8 @@ pub(crate) fn paint(
             }
         }
         (count >= SHADOW_SAMPLES).then(|| sum.map(|total| total as f32 / count as f32))
-    });
-    let light = light
-        .map(|around| shadow_light(*colour, around))
-        .filter(|light| light.iter().sum::<f32>() < 2.94);
+    };
+    let light = light.map(|around| shadow_light(*colour, around)).filter(|light| *light < 0.98);
     let (hw, hh) = (w as usize * scale, h as usize * scale);
     for j in 0..hh {
         let target_y = y0 * scale as i32 + j as i32;
@@ -876,29 +915,41 @@ mod tests {
     fn a_shadow_leaves_the_light_it_left_of_the_original_and_never_less_than_the_floor() {
         let around = [100.0, 200.0, 250.0];
         let light = shadow_light([50, 50, 50], around);
-        assert!((light[0] - 0.5).abs() < 1e-3 && (light[1] - 0.25).abs() < 1e-3);
+        assert!((light - 50.0 / 176.3).abs() < 1e-2, "{light}");
         assert!(
-            shadow_light([0; 3], around).iter().all(|&v| (v - SHADOW_FLOOR).abs() < 1e-6),
+            (shadow_light([0; 3], around) - SHADOW_FLOOR).abs() < 1e-6,
             "a black shadow still shows"
         );
         assert!(
-            shadow_light([255; 3], around).iter().all(|&v| (v - 1.0).abs() < 1e-6),
+            (shadow_light([255; 3], around) - 1.0).abs() < 1e-6,
             "a lighter one darkens nothing"
         );
     }
 
     #[test]
+    fn a_shadow_of_a_hue_darkens_without_tinting() {
+        // The original's shadow is a dark purple; the picture around it is green grass
+        let light = shadow_light([60, 20, 90], [60.0, 160.0, 30.0]);
+        let mut grass = [60, 160, 30, 255];
+        darken(&mut grass, light, 255);
+        let before = [60.0_f32, 160.0, 30.0];
+        let ratios: Vec<f32> = (0..3).map(|c| f32::from(grass[c]) / before[c]).collect();
+        assert!(ratios.iter().all(|r| (r - ratios[0]).abs() < 0.03), "{grass:?}");
+        assert!(grass[1] > grass[0] && grass[1] > grass[2], "still green: {grass:?}");
+    }
+
+    #[test]
     fn darkening_multiplies_what_is_under_the_shadow() {
-        let light = [0.5, 0.25, 1.0];
+        let light = 0.5;
         let mut water = [200, 100, 80, 255];
         darken(&mut water, light, 255);
-        assert_eq!(water, [100, 25, 80, 255]);
+        assert_eq!(water, [100, 50, 40, 255]);
         let mut grass = [40, 200, 20, 255];
         darken(&mut grass, light, 255);
-        assert_eq!(grass, [20, 50, 20, 255], "the texture under it stays");
+        assert_eq!(grass, [20, 100, 10, 255], "the texture under it stays");
         let mut half = [200, 100, 80, 255];
         darken(&mut half, light, 128);
-        assert!(half[0] > 100 && half[0] < 200 && half[1] > 25 && half[1] < 100, "{half:?}");
+        assert!(half[0] > 100 && half[0] < 200 && half[1] > 50 && half[1] < 100, "{half:?}");
         let mut clear = [200, 100, 80, 255];
         darken(&mut clear, light, 0);
         assert_eq!(clear, [200, 100, 80, 255]);

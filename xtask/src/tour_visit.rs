@@ -34,7 +34,12 @@ const PARTIES: [&str; 6] = [
 
 /// The edits of the base save that put the party of map `id` on that map.
 pub(crate) fn map_sets(id: u8) -> Vec<(String, String)> {
-    let party = PARTIES[usize::from(id) % PARTIES.len()];
+    map_sets_with(id, None)
+}
+
+/// [`map_sets`] with the party `party` (`goku,piccolo`) instead of the map's own.
+pub(crate) fn map_sets_with(id: u8, party: Option<&str>) -> Vec<(String, String)> {
+    let party = party.unwrap_or(PARTIES[usize::from(id) % PARTIES.len()]);
     let mut sets = vec![set("party", party)];
     for who in party.split(',') {
         if who != "dende" {
@@ -130,7 +135,19 @@ pub(crate) fn boot_free(
     id: u8,
     camera: Option<Place>,
 ) -> anyhow::Result<Option<Session>> {
-    let mut sets = map_sets(id);
+    boot_free_with(rom, game, base_save, id, camera, None)
+}
+
+/// [`boot_free`] with the party `party` instead of the map's own.
+pub(crate) fn boot_free_with(
+    rom: &[u8],
+    game: &crate::save::Game,
+    base_save: &[u8],
+    id: u8,
+    camera: Option<Place>,
+    party: Option<&str>,
+) -> anyhow::Result<Option<Session>> {
+    let mut sets = map_sets_with(id, party);
     if let Some((x, y)) = camera {
         // The party on the map where the camera of a window at `(x, y)` centres it
         sets.retain(|(field, _)| field != "leader" && field != "follower");

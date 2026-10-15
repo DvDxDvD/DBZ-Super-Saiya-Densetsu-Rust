@@ -675,7 +675,7 @@ fn play_battle(
     let mut machine = Machine::new(env.rom.to_vec(), Box::new(saves))?;
     machine.set_breakpoint(0x01_F692);
     machine.set_line_log(true);
-    let mut session = Session { machine, group: None, force_encounters: false };
+    let mut session = Session { machine, group: None, force_encounters: false, zone: 1 };
     let mut recorder = Recorder::new(env, name);
     let mut frame = 0_u64;
     // The group the battle code set up (`encounter_group_index`), at its first frame

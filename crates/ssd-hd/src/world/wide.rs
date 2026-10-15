@@ -1997,6 +1997,7 @@ mod tests {
                     metatiles: "03:8000".to_owned(),
                     source: "source.png".to_owned(),
                     palette: String::new(),
+                    palette_variant: false,
                     tiles: "t{x}_{y}.png".to_owned(),
                 }],
             },

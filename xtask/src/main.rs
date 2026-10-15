@@ -511,10 +511,19 @@ fn hd_art(args: &[&str]) -> anyhow::Result<ExitCode> {
                 &mut std::io::stdout(),
             )?
         }
-        hd_art_run::Args::BgScan { paths } => {
+        hd_art_run::Args::BgScan { paths, out } => {
             let files = shared::replay_files(&paths, &replays)?;
-            hd_bg::run(&rom, &files, &mut std::io::stdout())?
+            hd_bg::run(&rom, &files, out.as_deref(), &mut std::io::stdout())?
         }
+        hd_art_run::Args::BgMaps { frames, jobs, out, maps } => hd_bg::run_maps(
+            &rom,
+            &repo_root()?,
+            frames,
+            jobs,
+            &maps,
+            out.as_deref(),
+            &mut std::io::stdout(),
+        )?,
         hd_art_run::Args::Diff { paths, packs, every } => {
             let files = shared::replay_files(&paths, &replays)?;
             hd_art_run::run_diff(
@@ -563,6 +572,19 @@ fn hd_art(args: &[&str]) -> anyhow::Result<ExitCode> {
         hd_art_run::Args::Margins(args) => {
             let dir = args.pack.clone().unwrap_or(dir);
             hd_margins::run(&rom, &repo_root()?, &dir, &args, &mut std::io::stdout())?
+        }
+        hd_art_run::Args::MapShots { out, scale, shots, pack, font } => {
+            let dir = pack.unwrap_or(dir);
+            let out = out.unwrap_or_else(|| replays.join("..").join("m6-art"));
+            hd_art_run::run_map_shots(
+                &rom,
+                &repo_root()?,
+                (&dir, &out),
+                scale,
+                &shots,
+                font,
+                &mut std::io::stdout(),
+            )?
         }
         hd_art_run::Args::Shots { out, scale, shots, pack, font } => {
             let dir = pack.unwrap_or(dir);
@@ -1034,6 +1056,7 @@ fn usage() -> ExitCode {
         "       cargo run --release -p xtask -- hd-art report [--scale N] [--frames N] [--jobs N] [--pack DIR] [--no-art] [replay|dir...]"
     );
     eprintln!("       cargo run --release -p xtask -- hd-art bgscan [replay|dir...]");
+    eprintln!("       cargo run --release -p xtask -- hd-art bgmaps [--frames N] [--jobs N]");
     eprintln!("       cargo run --release -p xtask -- hd-art picscan <out dir> [replay|dir...]");
     eprintln!(
         "       cargo run --release -p xtask -- hd-art bgdump <replay> <frame>[,<frame>...] <out dir>"

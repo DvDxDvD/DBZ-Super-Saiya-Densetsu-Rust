@@ -42,6 +42,8 @@ pub struct Session {
     /// The group the next group set-up gets (cleared by the first one).
     pub group: Option<u8>,
     pub force_encounters: bool,
+    /// The encounter zone the host holds while it forces a battle (1 by default).
+    pub zone: u8,
 }
 
 impl Session {
@@ -56,7 +58,7 @@ impl Session {
         let mut machine = Machine::new(rom.to_vec(), Box::new(saves))?;
         machine.set_breakpoint(GROUP_SETUP);
         machine.set_line_log(true);
-        let mut session = Self { machine, group: None, force_encounters: false };
+        let mut session = Self { machine, group: None, force_encounters: false, zone: 1 };
         let pads = scripts::parse_timeline(&crate::save::continue_prefix(0))
             .map_err(|e| anyhow::anyhow!("continue prefix: {e}"))?;
         for pad in pads {
@@ -73,7 +75,7 @@ impl Session {
     /// The core fails.
     pub fn step(&mut self, pad: Joypad) -> anyhow::Result<()> {
         if self.force_encounters && self.mode() == 0 {
-            self.poke(W_ZONE, &[1])?;
+            self.poke(W_ZONE, &[self.zone])?;
             self.poke(W_LEVEL, &[16])?;
         }
         let stops = Stops { frame_end: true, breakpoint: true, ..Stops::default() };

@@ -35,8 +35,8 @@ def banner(folder):
     half = width // 2
     out = Image.new("RGB", (width, height))
     cuts = (
-        ("cmp-01-title-remastered.png", (0, 0, 1024, 640)),
-        ("cmp-09-attack-remastered.png", (100, 0, 924, 515)),
+        ("cmp-01-title-remastered.png", (0, 50, 1024, 690)),
+        ("cmp-09-attack-remastered.png", (112, 40, 912, 540)),
     )
     for at, (name, box) in enumerate(cuts):
         panel = Image.open(os.path.join(folder, name)).convert("RGB").crop((232, 60, 1256, 896))

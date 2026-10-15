@@ -359,7 +359,7 @@ The greyed Options entry of the Menu list becomes a real screen, saved with the 
 - **Video**: window or fullscreen, scale (2 to 8), look (crisp or smooth), 16:9 or the original 4:3, scanline and
   CRT filters, V-sync.
 - **Audio**: music and effects volume, mono or stereo.
-- **Controls**: remapping of keyboard and gamepad (shared with M12).
+- **Controls**: remapping of keyboard and gamepad (shared with M13).
 - **Accessibility**: larger HD text, high-contrast menus, a colour-blind-safe cursor.
 
 ### M8: HD polish
@@ -373,7 +373,16 @@ The greyed Options entry of the Menu list becomes a real screen, saved with the 
 - Frieza's first form with cheats (group `$53`).
 - A tool to find any picture the game shows that has no HD art yet, so the last gaps can be closed.
 
-### M9: Mod support and data packs
+### M9: Android port of the HD Remastered edition
+
+The finished Remastered game, on a phone or tablet:
+
+- **Touch controls** (an on-screen pad and buttons, with a layout you can move) and **gamepad** support.
+- **Performance on mobile GPUs**: the HD renderer, the art streaming and the memory use tuned for phones.
+- **Installing the HD pack on the device**: one file, picked from the device's storage, installed on first launch.
+- **Bring your own ROM on Android**: pick your ROM file once; it is checked and cached like on the PC, and nothing is bundled.
+
+### M10: Mod support and data packs
 
 - **Virtual ROM banks**: a pack adds or replaces data (maps, text, enemies, items, art) without touching the ROM.
 - A **scene-script language** for events, dialogue and cutscenes, with the original's scripts expressible in it.
@@ -383,7 +392,7 @@ The greyed Options entry of the Menu list becomes a real screen, saved with the 
 - A **mod loader screen** in the game: list, enable, disable and order packs; Classic stays untouched.
 - Documentation and an example pack.
 
-### M10: The Androids and Cell arc
+### M11: The Androids and Cell arc
 
 A new story chapter after the Frieza saga, faithful to the anime, English only:
 
@@ -392,14 +401,14 @@ A new story chapter after the Frieza saga, faithful to the anime, English only:
 - **Shops, civilians and regeneration rooms** in the new places, in the spirit of the original's towns.
 - Fusion, new transformations and new Z cards for the new fighters.
 
-### M11: The Majin Buu arc
+### M12: The Majin Buu arc
 
 - The Buu saga: the World Tournament, **inside Buu**, the Fusion Dance, and the final battles.
 - **Fusions** as playable characters, with their own cards and attacks.
 - **Battle power beyond 24 bits**, so the numbers of the later sagas fit.
 - More new maps, shops, civilians and regeneration rooms.
 
-### M12: Platforms and controls
+### M13: Platforms and controls
 
 - **Controller remapping** and profiles (with M7).
 - **Linux and macOS** builds, and the **Steam Deck** (controller layout, handheld resolution).
@@ -430,7 +439,7 @@ cheats are kept in small files beside them (`ssd.bag`, `ssd.cheats`), and a save
 the bag from the game's list.
 
 **Will there be a Linux, macOS or Steam Deck version?** The dependencies (SDL3, wgpu) are portable but only Windows
-is built and tested.
+is built and tested; the Android port is [on the roadmap](#roadmap).
 
 **Why GPL-3.0?** The emulator core it is built on is GPL-3.0, so the whole program is.
 

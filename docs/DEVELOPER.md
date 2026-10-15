@@ -62,8 +62,19 @@ found by its content (its tile map and the tiles the map uses, `ssd_hd::bgart::l
 one picture of the whole layer, and each pixel of the screen takes the picture's pixel that its line's scroll registers
 (so an HDMA parallax or two layers at different speeds work as the tiles do) point at. The picture replaces what the tiles
 drew where the winner of the pixel is the layer, the backdrop or an object that an HD pose hides; windows, priority and
-colour math are the pixel's own. A palette that is not the one the art was made for (a fade, a flash, a cycle) changes the
-art's colour by the same ratio as the game's pixel changed. A layer with mosaic (a fade-in's blocks) is drawn as the
+colour math are the pixel's own. The game shows some layers in several palettes (the same cave in ochre, blue, green, red,
+purple and grey, a speed-line backdrop in four colours): a layer of the index that is a palette variant (`palette_key` of its
+entry: `ssd_hd::bgart::palette_key`, a hash of the palette rows its tile map reads and of the backdrop) is the art of the
+content made for that palette, and it is bound first when the frame shows the layer in exactly those colours; the art of the
+content with no `palette_key` is the fallback. A palette that is not the one the art was made for (a fade, a flash, a cycle, a
+variant with no art of its own) is drawn through one smooth colour transfer of the art's colour per layer and frame
+(`ssd_hd::transfer`), built from the pairs (the colour the game's pixel had where the art was made, the colour it has now) of
+the pixels drawn: the same palette draws the art as it is; a fade (every colour scaled towards black, or lightened towards
+white, by one factor) is a plain blend of the art; any other palette is a table of the art's colours (Shepard's inverse
+distance blend of the pairs' offsets, each scaled by the art's brightness against its reference's, read with trilinear
+interpolation), so the result is a function of the art's colour alone and a smooth painted gradient stays one in any palette
+(the colour of the pixel under each art pixel never reaches the picture, so the original's dither and blocks do not).
+A layer with mosaic (a fade-in's blocks) is drawn as the
 game draws it: each block of the mosaic is flat, one point of the art at its top left pixel's place. A frame that loads VRAM
 while it is displayed is drawn from the tiles. HD text and cards are not drawn over a pixel of a background the art covers.
 
@@ -538,7 +549,10 @@ branch that predates one never drops it from the pack). `bg\index.json` lists th
 (`ssd_hd::bgart::layer_key`), the registers that show the layer (`bg`, `mode`, `map_base`, `char_base`, `size`), the tile
 `rows` its art covers, `fill` (the art includes the backdrop, so it covers every pixel; otherwise only where its alpha says),
 `file` (RGBA, 4x: a game pixel is 4 art pixels) and `source` (RGBA, 1x: the colours of the layer's pixels the art was made
-from, which the recolouring needs), copied to `art\bg` of the pack and listed in `art\bg\bg.toml`.
+from, which the recolouring needs), copied to `art\bg` of the pack and listed in `art\bg\bg.toml`. Several entries may share a
+`key`: an entry that is the art of one palette of the content has `palette_key` (16 hexadecimal digits,
+`ssd_hd::bgart::palette_key`) and its own `palette` (the CGRAM it was made in); the entry with no `palette_key` is the art for the
+other palettes.
 
     cargo run --release -p xtask -- hd-pack-public <art store> <out.zip> [--masks <dir>]... [--sources <dir>] [--maps-quality N]
         [--revision TEXT] [--jobs N] [--without-masks] [--no-verify]
@@ -595,7 +609,9 @@ the sources is fixed in the sources, not in the export.
     cargo run --release -p xtask -- hd-art scan [--every N] [--pack DIR] <replay>
     cargo run --release -p xtask -- hd-art colours [--scale N] [--frames N] [--jobs N] [--pack DIR] [replay|dir...]
     cargo run --release -p xtask -- hd-art shots [--scale N] [--out DIR] [--pack DIR] [--no-font] label=replay:frame...
-    cargo run --release -p xtask -- hd-art bgscan [replay|dir...]
+    cargo run --release -p xtask -- hd-art bgscan [--out DIR] [replay|dir...]
+    cargo run --release -p xtask -- hd-art bgmaps [--frames N] [--jobs N] [--maps N,..] [--out DIR]
+    cargo run --release -p xtask -- hd-art mapshots [--scale N] [--out DIR] [--pack DIR] label=MAP:ZONE[:PARTY]:T...
     cargo run --release -p xtask -- hd-art bgdump <replay> <frame>[,<frame>...] <out dir>
     cargo run --release -p xtask -- hd-art m7scan [replay|dir...]
     cargo run --release -p xtask -- hd-art m7dump <replay> <frame> <out dir>
@@ -619,7 +635,14 @@ and from luma art (a luma file is the original's colour with the art's shading, 
 the ranges of the matrix, with a frame to take the plane from; `m7dump` writes the plane of a frame as it is at 1x (`plane-src.png`, 1024 x 1024, the colour
 index 0 as the backdrop; `plane-idx.png`, the indexes; `palette.txt`; `key.txt`; `frame.png`) and prints the matrix of the lines: the research behind `mode7\`.
 `bgscan` plays the replays and lists, for each class of battle background layer, its distinct contents with their key, frames,
-palettes, scroll ranges and a frame to take the layer from (the research behind `bg\`); `bgdump` writes the frames named and
+palettes, scroll ranges and a frame to take the layer from (the research behind `bg\`), and the palettes of the layer's own
+colours that were shown for at least 30 frames in a row (the persistent ones, not a fade or a flash: each is a palette variant);
+with `--out` it writes the whole image of the layer in each persistent palette (`<class>-<key>-<palette key>-src.png`, `-fill.png`
+and `-palette.txt`, the CGRAM the layer reads, for the `palette` field). `bgmaps` does the same for the backgrounds that no
+replay reaches: from a crafted save on each map (or the maps of `--maps`) it forces a battle in each of the encounter zones 1 to 3
+and plays `--frames` frames of it (900 by default). `mapshots` draws frame `T` of such a battle with the art and without (the
+files of `shots`), with the party `PARTY` (`goku,piccolo`) instead of the map's own; zone 0 is the map's field, no battle.
+`bgdump` writes the frames named and
 the whole image of each of their BG layers (`-bgN-src.png`, transparent where the layer is, and `-bgN-fill.png` over the
 backdrop) into the folder, with the layers' scroll tables and the objects on screen. `picscan` writes, per replay, one JSON
 line per frame (`<out dir>/<replay>.jsonl`): the game mode and, for each BG layer shown, its registers, content key over

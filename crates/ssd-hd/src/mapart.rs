@@ -60,6 +60,11 @@ pub struct Entry {
     /// The CGRAM the art was made in (see `bgart::Entry::palette`), or empty.
     #[serde(default)]
     pub palette: String,
+    /// The art of the maps in `maps` only, for a layout that other maps share and show in another
+    /// palette: the maps of the layout that are not listed by a variant are drawn from the entry
+    /// that is not one.
+    #[serde(default)]
+    pub palette_variant: bool,
     /// The art tiles (RGB, `TILE * SCALE` pixels square), relative to the index's folder, with
     /// `{x}` and `{y}` the tile's column and row.
     pub tiles: String,
@@ -114,11 +119,23 @@ impl Index {
         toml::from_str(&text).map_err(|e| MapArtError::Read(e.to_string()))
     }
 
-    /// The layer of the map whose data is `blocks`, `grid` and `metatiles`, if the index has art for
-    /// it.
+    /// The layer of map `map` whose data is `blocks`, `grid` and `metatiles`, if the index has art
+    /// for it: the art made for that map's palette (a variant that lists the map) first, else the
+    /// layer of the layout.
     #[must_use]
-    pub fn find(&self, blocks: (u8, u8), grid: (u8, u16), metatiles: (u8, u16)) -> Option<usize> {
-        self.layer.iter().position(|entry| entry.is_layer_of(blocks, grid, metatiles))
+    pub fn find(
+        &self,
+        blocks: (u8, u8),
+        grid: (u8, u16),
+        metatiles: (u8, u16),
+        map: u8,
+    ) -> Option<usize> {
+        let same = |entry: &Entry| entry.is_layer_of(blocks, grid, metatiles);
+        self.layer
+            .iter()
+            .position(|entry| entry.palette_variant && entry.maps.contains(&map) && same(entry))
+            .or_else(|| self.layer.iter().position(|entry| !entry.palette_variant && same(entry)))
+            .or_else(|| self.layer.iter().position(same))
     }
 }
 
@@ -135,6 +152,7 @@ mod tests {
             metatiles: "09:EFB0".to_owned(),
             source: "map-00/source.png".to_owned(),
             palette: String::new(),
+            palette_variant: false,
             tiles: "map-00/t{x}_{y}.png".to_owned(),
         }
     }
@@ -142,10 +160,23 @@ mod tests {
     #[test]
     fn a_layer_is_found_by_its_size_and_the_pointers_of_its_data() {
         let index = Index { layer: vec![entry()] };
-        assert_eq!(index.find((9, 11), (0x06, 0xF360), (0x09, 0xEFB0)), Some(0));
-        assert_eq!(index.find((9, 10), (0x06, 0xF360), (0x09, 0xEFB0)), None);
-        assert_eq!(index.find((9, 11), (0x06, 0xF361), (0x09, 0xEFB0)), None);
-        assert_eq!(index.find((9, 11), (0x06, 0xF360), (0x08, 0xEFB0)), None);
+        assert_eq!(index.find((9, 11), (0x06, 0xF360), (0x09, 0xEFB0), 0), Some(0));
+        assert_eq!(index.find((9, 10), (0x06, 0xF360), (0x09, 0xEFB0), 0), None);
+        assert_eq!(index.find((9, 11), (0x06, 0xF361), (0x09, 0xEFB0), 0), None);
+        assert_eq!(index.find((9, 11), (0x06, 0xF360), (0x08, 0xEFB0), 0), None);
+    }
+
+    #[test]
+    fn the_art_made_for_the_palette_of_a_map_is_found_before_the_art_of_the_layout() {
+        let base = Entry { maps: vec![0, 3], ..entry() };
+        let variant =
+            Entry { id: "map-03".to_owned(), maps: vec![3], palette_variant: true, ..entry() };
+        // (the variant listed first: the order of the index does not decide)
+        let index = Index { layer: vec![variant, base] };
+        let find = |map| index.find((9, 11), (0x06, 0xF360), (0x09, 0xEFB0), map);
+        assert_eq!(find(3), Some(0), "the map the variant is made for");
+        assert_eq!(find(0), Some(1), "another map of the layout");
+        assert_eq!(find(9), Some(1), "a map no entry lists: the layout's art");
     }
 
     #[test]

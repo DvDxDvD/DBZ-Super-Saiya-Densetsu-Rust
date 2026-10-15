@@ -80,28 +80,92 @@ struct Seen {
     replays: BTreeMap<String, u64>,
     /// The palettes (a hash of the CGRAM) with their frames and the first frame of each.
     palettes: BTreeMap<u64, (u64, String)>,
+    /// The palettes of the layer's own colours that lasted at least `PERSIST` frames in a row (not a
+    /// fade or a flash): frames in such runs and the first frame of the first run.
+    persistent: BTreeMap<u64, (u64, String)>,
     h: (u16, u16),
     v: (u16, u16),
     /// Distinct scroll pairs seen in one frame, at most.
     max_runs: usize,
 }
 
+/// Frames in a row a palette must be shown to be a variant of its own and not a fade or a flash.
+const PERSIST: u64 = 30;
+
+/// A hash of the colours the layer's own tile map reads (the palette rows of its keyed rows, and the
+/// backdrop for a layer that fills).
+fn layer_palette_hash(
+    log: &ssd_oracle::FrameLog,
+    class: &Class,
+    planes: usize,
+    large: bool,
+) -> u64 {
+    let (w, _) = ssd_hd::bgart::layer_size(class.size, large);
+    let columns = w / if large { 16 } else { 8 };
+    let mut rows = std::collections::BTreeSet::new();
+    for ty in usize::from(class.rows[0])..usize::from(class.rows[1]) {
+        for tx in 0..columns {
+            let mut screen = 0;
+            if tx >= 32 {
+                screen += 1;
+            }
+            if ty >= 32 {
+                screen += if class.size == 2 { 1 } else { 2 };
+            }
+            let at = usize::from(class.map_base) + screen * 1024 + (ty % 32) * 32 + tx % 32;
+            rows.insert(usize::from((log.vram[at & 0x7FFF] >> 10) & 7));
+        }
+    }
+    let mut bytes = Vec::new();
+    for row in rows {
+        let (first, n) = if class.mode == 0 {
+            (class.bg * 32 + row * 4, 4)
+        } else if planes == 4 {
+            (row * 16, 16)
+        } else {
+            (row * 4, 4)
+        };
+        for i in 0..n {
+            bytes.extend_from_slice(&log.cgram_start[(first + i) & 255].to_le_bytes());
+        }
+    }
+    if class.fill {
+        bytes.extend_from_slice(&log.cgram_start[0].to_le_bytes());
+    }
+    ssd_hd::pack::tile_key(&bytes)
+}
+
 type Table = BTreeMap<(usize, u64), Seen>;
 
-fn scan_replay(rom: &[u8], path: &std::path::Path) -> anyhow::Result<Table> {
-    let name = path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
-    let mut seen: Table = BTreeMap::new();
-    let replay = read_replay(path, rom)?;
-    let mut machine = replay.power_on(rom.to_vec())?;
-    machine.set_line_log(true);
-    while machine.frame_count() < replay.frames() {
-        machine.run_frame_with(&mut |f| replay.input(f), &mut NullAudio)?;
-        let number = machine.frame_count() - 1;
-        let mode = machine.wram()[GAME_MODE] & 0x7F;
-        if !matches!(mode, 0x02 | 0x04 | 0x0C) {
-            continue;
+/// What a scan keeps while it plays: the contents seen, and the run of each class's palette.
+struct Scanner {
+    name: String,
+    seen: Table,
+    /// Per class: the layer palette now shown, the frames of its run, the content key and the first
+    /// frame of the run.
+    runs: Vec<Option<(u64, u64, u64, u64)>>,
+    last_number: u64,
+    /// Where the whole image of a layer is written the first time a palette of it persists.
+    dump: Option<std::path::PathBuf>,
+}
+
+impl Scanner {
+    fn new(name: &str, dump: Option<&std::path::Path>) -> Self {
+        Self {
+            dump: dump.map(std::path::Path::to_path_buf),
+            name: name.to_owned(),
+            seen: BTreeMap::new(),
+            runs: vec![None; CLASSES.len()],
+            last_number: u64::MAX,
         }
-        let Some(log) = machine.frame_log() else { continue };
+    }
+
+    /// One frame of a battle scene (`number` counts the frames played).
+    fn feed(&mut self, log: &ssd_oracle::FrameLog, number: u64) {
+        let name = &self.name;
+        let contiguous = self.last_number != u64::MAX && number == self.last_number + 1;
+        self.last_number = number;
+        let mut shown = [false; CLASSES.len()];
         for (at, class) in CLASSES.iter().enumerate() {
             let lines: Vec<_> = log
                 .entries
@@ -127,7 +191,7 @@ fn scan_replay(rom: &[u8], path: &std::path::Path) -> anyhow::Result<Table> {
                 planes,
                 class.rows,
             );
-            let entry = seen.entry((at, key)).or_default();
+            let entry = self.seen.entry((at, key)).or_default();
             entry.frames += 1;
             entry.mosaic += u64::from(first.regs.mosaic_bg[class.bg] && first.regs.mosaic_size > 0);
             *entry.replays.entry(name.clone()).or_default() += 1;
@@ -135,6 +199,33 @@ fn scan_replay(rom: &[u8], path: &std::path::Path) -> anyhow::Result<Table> {
             let hash = ssd_hd::pack::tile_key(&cg);
             let slot = entry.palettes.entry(hash).or_insert((0, format!("{name}:{number}")));
             slot.0 += 1;
+            let phash = layer_palette_hash(log, class, planes, first.regs.bg_large_tiles[class.bg]);
+            shown[at] = true;
+            let continues =
+                contiguous && self.runs[at].is_some_and(|(p, _, k, _)| p == phash && k == key);
+            if continues {
+                if let Some(run) = self.runs[at].as_mut() {
+                    run.1 += 1;
+                    if run.1 == PERSIST {
+                        let slot = entry
+                            .persistent
+                            .entry(phash)
+                            .or_insert((0, format!("{name}:{}", run.3)));
+                        slot.0 += PERSIST;
+                        if let Some(dir) = &self.dump {
+                            let stem = format!("{}-{key:016x}-{phash:016x}", class.name);
+                            // (a failed write only loses a dump)
+                            let _ = write_layer(log, &first.regs, class, dir, &stem);
+                        }
+                    } else if run.1 > PERSIST
+                        && let Some(slot) = entry.persistent.get_mut(&phash)
+                    {
+                        slot.0 += 1;
+                    }
+                }
+            } else {
+                self.runs[at] = Some((phash, 1, key, number));
+            }
             let hs = lines.iter().map(|e| e.regs.bg_h_scroll[class.bg]);
             let vs = lines.iter().map(|e| e.regs.bg_v_scroll[class.bg]);
             let (hmin, hmax) = (hs.clone().min().unwrap_or(0), hs.max().unwrap_or(0));
@@ -153,13 +244,161 @@ fn scan_replay(rom: &[u8], path: &std::path::Path) -> anyhow::Result<Table> {
             pairs.dedup();
             entry.max_runs = entry.max_runs.max(pairs.len());
         }
+        for (at, was) in shown.iter().enumerate() {
+            if !was {
+                self.runs[at] = None;
+            }
+        }
     }
-    Ok(seen)
+}
+
+/// Writes the whole image of BG `bg` as `<stem>-src.png` (transparent where the layer is) and
+/// `<stem>-fill.png` (over the backdrop) into `dir`, unless they are there.
+fn write_layer(
+    log: &ssd_oracle::FrameLog,
+    regs: &ssd_oracle::LineRegs,
+    class: &Class,
+    dir: &std::path::Path,
+    stem: &str,
+) -> anyhow::Result<()> {
+    let bg = class.bg;
+    std::fs::create_dir_all(dir)?;
+    let src = dir.join(format!("{stem}-src.png"));
+    if src.exists() {
+        return Ok(());
+    }
+    let (w, h, rgba) = layer_image(&log.vram, &log.cgram_start, regs, bg);
+    let backdrop = log.cgram_start[0];
+    let back = |shift: u16| (((u32::from(backdrop >> shift) & 31) * 255 + 15) / 31) as u8;
+    let mut filled = rgba.clone();
+    for px in filled.as_chunks_mut::<4>().0.iter_mut() {
+        if px[3] == 0 {
+            px.copy_from_slice(&[back(0), back(5), back(10), 255]);
+        }
+    }
+    std::fs::write(
+        dir.join(format!("{stem}-fill.png")),
+        crate::shots::encode_png(w as u32, h as u32, &filled),
+    )?;
+    std::fs::write(src, crate::shots::encode_png(w as u32, h as u32, &rgba))?;
+    // The CGRAM the layer's pixels read (`ssd_hd::bgart::palette_text`; the entries no pixel of the
+    // rows uses are unknown), for the pack's `palette`
+    let (_, _, indexes) = layer_indexes(&log.vram, regs, bg, class.rows);
+    let mut colours = [ssd_hd::bgart::UNKNOWN_COLOUR; 256];
+    for index in indexes.into_iter().flatten() {
+        colours[usize::from(index)] = log.cgram_start[usize::from(index)];
+    }
+    if class.fill {
+        colours[0] = log.cgram_start[0];
+    }
+    std::fs::write(dir.join(format!("{stem}-palette.txt")), ssd_hd::bgart::palette_text(&colours))?;
+    Ok(())
+}
+
+fn scan_replay(
+    rom: &[u8],
+    path: &std::path::Path,
+    dump: Option<&std::path::Path>,
+) -> anyhow::Result<Table> {
+    let name = path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+    let mut scanner = Scanner::new(&name, dump);
+    let replay = read_replay(path, rom)?;
+    let mut machine = replay.power_on(rom.to_vec())?;
+    machine.set_line_log(true);
+    while machine.frame_count() < replay.frames() {
+        machine.run_frame_with(&mut |f| replay.input(f), &mut NullAudio)?;
+        let number = machine.frame_count() - 1;
+        let mode = machine.wram()[GAME_MODE] & 0x7F;
+        if !matches!(mode, 0x02 | 0x04 | 0x0C) {
+            continue;
+        }
+        let Some(log) = machine.frame_log() else { continue };
+        scanner.feed(log, number);
+    }
+    Ok(scanner.seen)
+}
+
+/// `hd-art bgmaps`: the battle backgrounds each map and encounter zone shows (the backgrounds the
+/// replays never reach). From a crafted save on each map a battle is forced in each of the zones 1
+/// to 3 and played for `frames` frames; the table is `bgscan`'s, the scenes named
+/// `map-<id>-z<zone>`.
+pub fn run_maps(
+    rom: &[u8],
+    root: &std::path::Path,
+    frames: u64,
+    jobs: usize,
+    only: &[u8],
+    dump: Option<&std::path::Path>,
+    out: &mut dyn Write,
+) -> anyhow::Result<u8> {
+    use crate::tour_battle::Fuzz;
+    let base_path = crate::tour::find_base_save(root)?;
+    let base = std::fs::read(&base_path).context("the base save")?;
+    let game = crate::save::Game::from_rom(rom)?;
+    let work: Vec<(u8, u8)> = (0..48)
+        .filter(|id| only.is_empty() || only.contains(id))
+        .flat_map(|id| (1..=3).map(move |zone| (id, zone)))
+        .collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..jobs.max(1) {
+            scope.spawn(|| {
+                loop {
+                    let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(&(id, zone)) = work.get(at) else { break };
+                    let name = format!("map-{id}-z{zone}");
+                    let table = (|| -> anyhow::Result<Option<Table>> {
+                        let Some(mut session) =
+                            crate::tour_visit::boot_free(rom, &game, &base, id, None)?
+                        else {
+                            return Ok(None);
+                        };
+                        session.zone = zone;
+                        if session.walk_into_battle().is_err() {
+                            return Ok(None);
+                        }
+                        let mut scanner = Scanner::new(&name, dump);
+                        let mut fuzz = Fuzz::new(7 + u32::from(id));
+                        for t in 0..frames {
+                            let pad = fuzz.pad(
+                                t,
+                                session.mode(),
+                                session.wram(0x0D5F),
+                                session.wram(0x0D62),
+                            );
+                            session.step(pad)?;
+                            if matches!(session.mode(), 0x02 | 0x04 | 0x0C)
+                                && let Some(log) = session.machine.frame_log()
+                            {
+                                scanner.feed(log, t);
+                            }
+                        }
+                        Ok(Some(scanner.seen))
+                    })();
+                    match table {
+                        Ok(Some(table)) => {
+                            eprintln!("bgmaps: {name}");
+                            results.lock().expect("results").push(Ok(table));
+                        }
+                        Ok(None) => eprintln!("bgmaps: {name}: no battle"),
+                        Err(error) => eprintln!("bgmaps: {name}: {error:#}"),
+                    }
+                }
+            });
+        }
+    });
+    print_table(merge(results.into_inner().expect("results"))?, out)
 }
 
 /// Plays the replays and prints, for each class of background layer, the distinct contents with
 /// their frames, replays, palettes, scroll ranges and a frame to take the layer from.
-pub fn run(rom: &[u8], files: &[PathBuf], out: &mut dyn Write) -> anyhow::Result<u8> {
+pub fn run(
+    rom: &[u8],
+    files: &[PathBuf],
+    dump: Option<&std::path::Path>,
+    out: &mut dyn Write,
+) -> anyhow::Result<u8> {
     let next = std::sync::atomic::AtomicUsize::new(0);
     let results = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|scope| {
@@ -168,15 +407,20 @@ pub fn run(rom: &[u8], files: &[PathBuf], out: &mut dyn Write) -> anyhow::Result
                 loop {
                     let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(path) = files.get(at) else { break };
-                    let table = scan_replay(rom, path);
+                    let table = scan_replay(rom, path, dump);
                     eprintln!("bgscan: {}", path.display());
                     results.lock().expect("results").push(table);
                 }
             });
         }
     });
+    print_table(merge(results.into_inner().expect("results"))?, out)
+}
+
+/// The tables of the scans put together.
+fn merge(tables: Vec<anyhow::Result<Table>>) -> anyhow::Result<Table> {
     let mut all: Table = BTreeMap::new();
-    for table in results.into_inner().expect("results") {
+    for table in tables {
         for (key, seen) in table.context("a replay")? {
             let entry = all.entry(key).or_default();
             if entry.frames == 0 {
@@ -195,8 +439,17 @@ pub fn run(rom: &[u8], files: &[PathBuf], out: &mut dyn Write) -> anyhow::Result
                 let slot = entry.palettes.entry(k).or_insert((0, first));
                 slot.0 += n;
             }
+            for (k, (n, first)) in seen.persistent {
+                let slot = entry.persistent.entry(k).or_insert((0, first));
+                slot.0 += n;
+            }
         }
     }
+    Ok(all)
+}
+
+/// Prints the table of a scan.
+fn print_table(all: Table, out: &mut dyn Write) -> anyhow::Result<u8> {
     let mut json = Vec::new();
     for ((class, key), seen) in &all {
         let c = &CLASSES[*class];
@@ -216,6 +469,17 @@ pub fn run(rom: &[u8], files: &[PathBuf], out: &mut dyn Write) -> anyhow::Result
             seen.h,
             seen.v,
             seen.max_runs
+        )?;
+        let mut persistent: Vec<_> = seen.persistent.iter().collect();
+        persistent.sort_by_key(|(_, (n, _))| std::cmp::Reverse(*n));
+        writeln!(
+            out,
+            "     persistent palettes: {}",
+            persistent
+                .iter()
+                .map(|(h, (n, f))| format!("{h:016x} {n} frames from {f}"))
+                .collect::<Vec<_>>()
+                .join("; ")
         )?;
         json.push(serde_json::json!({
             "class": c.name, "fill": c.fill, "key": format!("{key:016x}"), "frames": seen.frames, "mosaic": seen.mosaic,
@@ -745,6 +1009,23 @@ pub fn refpal(
                                 layer.rows,
                             );
                             if key != layer.key_value() {
+                                continue;
+                            }
+                            // (art made for one palette of the content is read in a frame of that palette)
+                            if let Some(want) = layer.palette_value()
+                                && ssd_hd::bgart::palette_key(
+                                    &log.vram,
+                                    &log.cgram_start,
+                                    bg,
+                                    layer.mode,
+                                    layer.map_base,
+                                    layer.size,
+                                    first.regs.bg_large_tiles[bg],
+                                    planes,
+                                    layer.rows,
+                                    layer.fill,
+                                ) != want
+                            {
                                 continue;
                             }
                             let (w, h, indexes) =

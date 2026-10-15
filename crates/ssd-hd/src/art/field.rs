@@ -34,7 +34,10 @@ impl ArtState {
             return;
         }
         let (grid, metatiles) = field.map.layout();
-        let Some(entry) = self.pack.maps.find(field.map.blocks, grid, metatiles) else { return };
+        let Some(entry) = self.pack.maps.find(field.map.blocks, grid, metatiles, field.map_id)
+        else {
+            return;
+        };
         let (width, height) = self.pack.maps.layer[entry].size();
         self.lookup.bg_slots.push(Slot {
             entry: entry as u32,

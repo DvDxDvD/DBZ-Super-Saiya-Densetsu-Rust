@@ -441,7 +441,7 @@ pub(super) fn assemble(
     }
     let tail = [h as u8, w as u8];
     let key = if fighter { digest(&arr, tail) } else { digest(&rgba, tail) };
-    let shadow = !fighter && flat_dark(&rgba) && ellipse(&arr, w, h);
+    let shadow = !fighter && flat_dark(&rgba) && (ellipse(&arr, w, h) || blob(&arr, w, h));
     let mut sprites = 0_u128;
     for s in group {
         sprites |= 1 << s.idx;
@@ -551,6 +551,25 @@ pub(super) fn ellipse(arr: &[u8], w: usize, h: usize) -> bool {
         last_run = run;
     }
     first_run < widest && last_run < widest
+}
+
+/// Whether the opaque pixels of a `w` x `h` array are a ground shadow that is not one ellipse: the
+/// shadows of two fighters that touch, or one that a hit bends (a wide and low flat shape, at least
+/// 40 percent of its box, one run of pixels in every row). It is drawn as its own shape, darkening
+/// the picture under it, not matched to the art of an effect of the same silhouette.
+pub(super) fn blob(arr: &[u8], w: usize, h: usize) -> bool {
+    if 2 * w < 3 * h || h == 0 {
+        return false;
+    }
+    let opaque = arr.iter().filter(|&&c| c != 0).count();
+    if 100 * opaque < 40 * w * h {
+        return false;
+    }
+    arr.chunks(w).all(|row| {
+        let Some(first) = row.iter().position(|&c| c != 0) else { return false };
+        let last = row.iter().rposition(|&c| c != 0).unwrap_or(first);
+        !row[first..=last].contains(&0)
+    })
 }
 
 /// Poses of the sprites of the palettes 3 to 7 read as a fighter's (keyed over their palette indexes,
@@ -833,6 +852,31 @@ mod tests {
             }
         }
         pix
+    }
+
+    #[test]
+    fn the_shadows_of_two_touching_fighters_are_one_shadow() {
+        // The shadows of two fighters side by side, one lower than the other: rows that widen,
+        // narrow and widen again, each one run: a wavy flat shape that is not one ellipse
+        let (w, h) = (16, 6);
+        let mut arr = vec![0_u8; w * h];
+        for (row, (from, to)) in [(3_usize, 9_usize), (1, 11), (0, 13), (4, 12), (2, 14), (5, 11)]
+            .into_iter()
+            .enumerate()
+        {
+            arr[row * w + from..row * w + to].fill(2);
+        }
+        assert!(!ellipse(&arr, w, h));
+        assert!(blob(&arr, w, h));
+        // A tall shape, a shape with a gap in a row and a shape that fills little of its box are not
+        assert!(!blob(&[2_u8; 4 * 8], 4, 8));
+        let mut gap = vec![2_u8; 20];
+        gap[1] = 0;
+        assert!(!blob(&gap, 10, 2));
+        let mut thin = vec![0_u8; 40];
+        thin[..10].fill(2);
+        thin[30..].fill(2);
+        assert!(!blob(&thin, 10, 4));
     }
 
     #[test]

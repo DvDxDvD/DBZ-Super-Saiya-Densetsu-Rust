@@ -12,8 +12,11 @@
 //! whose art includes it) or an object that an HD pose replaces; the colour math and the
 //! brightness of the pixel apply to it as to a portrait's art ([`crate::art`]).
 //!
-//! A palette that is not the one the art was made for (a fade, a flash, the same layer in another
-//! hue) changes the colour of the game's pixel; the art takes the same change ([`adapt`]).
+//! A layer the game shows in several palettes has art for each palette that persists (the entries
+//! with a [`Entry::palette_key`], bound by [`palette_key`] of the frame first). A palette that is not
+//! the one the art was made for (a fade, a flash, a variant with no art of its own) changes the
+//! colour of the game's pixel; the art takes the same change through one smooth transfer of its
+//! colour ([`crate::transfer`]). [`adapt`] is the Mode 7 plane's per-colour rule.
 
 use crate::screen::{Layer, Plan, Rendered};
 use rustc_hash::FxHashMap;
@@ -69,6 +72,12 @@ pub struct Entry {
     pub art: String,
     #[serde(default)]
     pub source: String,
+    /// [`palette_key`] of the palette this art was made for, 16 hexadecimal digits, when the art is
+    /// a variant of a layer's content that the game also shows in other palettes: the art of the
+    /// same content whose palette is the one in use is bound first. Empty: the art of the content
+    /// in whatever palette (recoloured to the one in use).
+    #[serde(default)]
+    pub palette_key: String,
     /// The CGRAM the art's colours were made in (256 colours of 15 bits, four hexadecimal digits
     /// each, index 0 first), or empty: what a layer pixel's colour was at CGRAM index `i` when the
     /// art was made, for the recolouring ([`adapt`]) when the pack has no source picture.
@@ -81,6 +90,12 @@ impl Entry {
     #[must_use]
     pub fn key_value(&self) -> u64 {
         u64::from_str_radix(&self.key, 16).unwrap_or(0)
+    }
+
+    /// The palette key as a number, `None` for art that is not a variant.
+    #[must_use]
+    pub fn palette_value(&self) -> Option<u64> {
+        u64::from_str_radix(&self.palette_key, 16).ok()
     }
 
     /// The tile and pixel size of the layer's map (see [`layer_size`]) with large tiles off.
@@ -197,6 +212,52 @@ pub fn layer_key(
         }
     }
     hash
+}
+
+/// A hash of the colours a layer shows its rows in: the CGRAM entries of the palette rows its tile
+/// map (the keyed `rows`) names, and the backdrop colour for a layer that `fill`s. Two frames of
+/// one content that show it in the same colours have the same key, so the art made for a palette
+/// variant of the layer is told from the others'. `cgram` holds the 256 colours of the frame's
+/// start; `vram` and the registers are as for [`layer_key`], `bg` is 0 for BG1.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn palette_key(
+    vram: &[u16],
+    cgram: &[u16],
+    bg: usize,
+    mode: u8,
+    map_base: u16,
+    size: u8,
+    large: bool,
+    planes: usize,
+    rows: [u16; 2],
+    fill: bool,
+) -> u64 {
+    let (width, _) = layer_size(size, large);
+    let columns = width / if large { 16 } else { 8 };
+    let mut used = std::collections::BTreeSet::new();
+    for ty in usize::from(rows[0])..usize::from(rows[1]) {
+        for tx in 0..columns {
+            used.insert(usize::from(map_word(vram, map_base, size, tx, ty) >> 10 & 7));
+        }
+    }
+    let mut bytes = Vec::new();
+    for row in used {
+        let (first, n) = if mode == 0 {
+            (bg * 32 + row * 4, 4)
+        } else if planes == 4 {
+            (row * 16, 16)
+        } else {
+            (row * 4, 4)
+        };
+        for i in 0..n {
+            bytes.extend_from_slice(&cgram[(first + i) & 255].to_le_bytes());
+        }
+    }
+    if fill {
+        bytes.extend_from_slice(&cgram[0].to_le_bytes());
+    }
+    crate::pack::tile_key(&bytes)
 }
 
 /// The layers of the index found in a frame: for each, the slot it draws in.
@@ -330,21 +391,27 @@ impl Slot {
 /// The classes of an index, with the entries of each by key.
 #[derive(Debug, Default)]
 pub(crate) struct Classes {
-    by_class: Vec<(Class, FxHashMap<u64, u32>, bool)>,
+    by_class: Vec<(Class, FxHashMap<u64, Vec<Variant>>, bool)>,
+}
+
+/// The art of one content: for the palette it was made for (`None`: any), the entry.
+#[derive(Debug, Clone, Copy)]
+struct Variant {
+    palette: Option<u64>,
+    entry: u32,
 }
 
 impl Classes {
     pub(crate) fn new(index: &Index) -> Self {
-        let mut by_class: Vec<(Class, FxHashMap<u64, u32>, bool)> = Vec::new();
+        let mut by_class: Vec<(Class, FxHashMap<u64, Vec<Variant>>, bool)> = Vec::new();
         for (at, entry) in index.layer.iter().enumerate() {
             let class = entry.class();
+            let variant = Variant { palette: entry.palette_value(), entry: at as u32 };
             match by_class.iter_mut().find(|(c, _, _)| *c == class) {
-                Some((_, keys, _)) => {
-                    keys.insert(entry.key_value(), at as u32);
-                }
+                Some((_, keys, _)) => keys.entry(entry.key_value()).or_default().push(variant),
                 None => {
-                    let mut keys = FxHashMap::default();
-                    keys.insert(entry.key_value(), at as u32);
+                    let mut keys: FxHashMap<u64, Vec<Variant>> = FxHashMap::default();
+                    keys.entry(entry.key_value()).or_default().push(variant);
                     by_class.push((class, keys, entry.fill));
                 }
             }
@@ -387,7 +454,28 @@ impl Classes {
                 planes,
                 class.rows,
             );
-            if let Some(&entry) = keys.get(&key) {
+            // The art made for the palette in use first, else the art of the content in any palette
+            let chosen = keys.get(&key).and_then(|variants| {
+                let here = palette_key(
+                    &log.vram,
+                    &log.cgram_start,
+                    bg,
+                    class.mode,
+                    class.map_base,
+                    class.size,
+                    large,
+                    planes,
+                    class.rows,
+                    index.layer[variants[0].entry as usize].fill,
+                );
+                variants
+                    .iter()
+                    .find(|v| v.palette == Some(here))
+                    .or_else(|| variants.iter().find(|v| v.palette.is_none()))
+                    .or_else(|| variants.first())
+                    .map(|v| v.entry)
+            });
+            if let Some(entry) = chosen {
                 let tile = if large { 16 } else { 8 };
                 slots.push(Slot {
                     entry,
@@ -721,7 +809,7 @@ impl BgImage {
     }
 }
 
-/// What a pixel of the art becomes when the game's pixel is `current` where the art was made for
+/// What a pixel of the Mode 7 plane's art becomes when the game's pixel is `current` where the art was made for
 /// `reference`: the game's colour now plus the art's detail (its difference from the colour it
 /// was made on), the detail scaled by how much brighter or darker the game's colour is. A fade
 /// scales the art as the game's colour was scaled, and a palette of another hue (the same layer

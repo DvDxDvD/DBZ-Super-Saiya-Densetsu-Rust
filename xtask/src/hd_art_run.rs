@@ -46,6 +46,16 @@ pub enum Args {
     },
     BgScan {
         paths: Vec<PathBuf>,
+        /// Where to write the layers of the palettes that persist (`--out`).
+        out: Option<PathBuf>,
+    },
+    /// The battle backgrounds of each map and zone (`bgmaps`), `frames` of each battle.
+    BgMaps {
+        frames: u64,
+        jobs: usize,
+        out: Option<PathBuf>,
+        /// Only these maps (`--maps`), else all 48.
+        maps: Vec<u8>,
     },
     PicScan {
         out: PathBuf,
@@ -86,6 +96,16 @@ pub enum Args {
     Items {
         out: PathBuf,
         pack: Option<PathBuf>,
+    },
+    /// `mapshots label=MAP:ZONE[:PARTY]:T`: frame `T` of the battle forced in a zone of a map (zone 0:
+    /// the field, no battle), with the party `PARTY` (`goku,piccolo`) if given, drawn with and without
+    /// the art (the shots of the backgrounds no replay reaches).
+    MapShots {
+        out: Option<PathBuf>,
+        scale: u32,
+        shots: Vec<(String, PathBuf, u64)>,
+        pack: Option<PathBuf>,
+        font: bool,
     },
     Shots {
         out: Option<PathBuf>,
@@ -179,7 +199,7 @@ pub fn parse_args(args: &[&str]) -> Result<Args, String> {
             value if command == "margins" => {
                 margin_shots.push(crate::hd_margins::parse_shot(value)?);
             }
-            value if command == "shots" => {
+            value if command == "shots" || command == "mapshots" => {
                 let (label, rest) = value.split_once('=').ok_or("label=replay:frame")?;
                 let (replay, frame) = rest.rsplit_once(':').ok_or("label=replay:frame")?;
                 let frame = frame.parse().map_err(|_| "label=replay:frame")?;
@@ -191,7 +211,8 @@ pub fn parse_args(args: &[&str]) -> Result<Args, String> {
     match command {
         "report" => Ok(Args::Report { paths, scale, frames, jobs, pack, art }),
         "colours" => Ok(Args::Colours { paths, scale, frames, jobs, pack }),
-        "bgscan" => Ok(Args::BgScan { paths }),
+        "bgscan" => Ok(Args::BgScan { paths, out }),
+        "bgmaps" => Ok(Args::BgMaps { frames: frames.unwrap_or(900), jobs, out, maps }),
         "refpal" => Ok(Args::RefPal { paths, pack, maps_dump, out }),
         "diff" => match (pack, pack_b, pack_c) {
             (Some(a), Some(b), Some(c)) => Ok(Args::Diff {
@@ -238,6 +259,9 @@ pub fn parse_args(args: &[&str]) -> Result<Args, String> {
         },
         "shots" => {
             Ok(Args::Shots { out, scale: if scale == 1 { 4 } else { scale }, shots, pack, font })
+        }
+        "mapshots" => {
+            Ok(Args::MapShots { out, scale: if scale == 1 { 4 } else { scale }, shots, pack, font })
         }
         "margins" => Ok(Args::Margins(crate::hd_margins::Args {
             maps,
@@ -869,6 +893,105 @@ fn side_by_side(plain: &WideHd, art: &WideHd) -> Vec<u8> {
         rgba.extend_from_slice(&b.rgba[y * b.width as usize * 4..(y + 1) * b.width as usize * 4]);
     }
     crate::shots::encode_png(width, a.height, &rgba)
+}
+
+/// Writes the frames of `shots`, each `(label, "MAP:ZONE", T)`: the battle forced in the zone of the
+/// map (as `hd-art bgmaps` plays it), at its frame `T`, drawn with and without the art.
+///
+/// # Errors
+///
+/// A map cannot be booted, or a file cannot be written.
+pub fn run_map_shots(
+    rom: &[u8],
+    root: &Path,
+    (pack_dir, out_dir): (&Path, &Path),
+    scale: u32,
+    shots: &[(String, PathBuf, u64)],
+    font: bool,
+    out: &mut dyn Write,
+) -> anyhow::Result<u8> {
+    let pack = open_pack(pack_dir)?;
+    let plain_font = if font { Some(Arc::new(ssd_hd::Font::standard(rom)?)) } else { None };
+    let font = if font {
+        Some(Arc::new(ssd_hd::Font::standard_with_pack(rom, Some(&pack.dir))?))
+    } else {
+        None
+    };
+    std::fs::create_dir_all(out_dir)?;
+    let options = HdOptions { scale, look: Look::Crisp };
+    let base = std::fs::read(crate::tour::find_base_save(root)?).context("the base save")?;
+    let game = crate::save::Game::from_rom(rom)?;
+    let mut missing = 0;
+    let mut places: Vec<String> =
+        shots.iter().map(|(_, place, _)| place.to_string_lossy().into_owned()).collect();
+    places.sort();
+    places.dedup();
+    for place in places {
+        let wanted: Vec<&(String, PathBuf, u64)> =
+            shots.iter().filter(|(_, p, _)| p.to_string_lossy() == place).collect();
+        let mut parts = place.splitn(3, ':');
+        let (id, zone) = (parts.next().context("MAP:ZONE:T")?, parts.next().context("MAP:ZONE:T")?);
+        let party = parts.next();
+        let (id, zone): (u8, u8) = (id.parse()?, zone.parse()?);
+        let last = wanted.iter().map(|(_, _, t)| *t).max().unwrap_or(0);
+        let Some(mut session) =
+            crate::tour_visit::boot_free_with(rom, &game, &base, id, None, party)?
+        else {
+            writeln!(out, "map {id}: the party is never free")?;
+            missing += 1;
+            continue;
+        };
+        session.zone = zone;
+        // (zone 0: no battle, the field the party is free on)
+        if zone != 0 {
+            session.walk_into_battle()?;
+        }
+        let mut with = WideRun::new(rom);
+        with.set_art(Some(Arc::clone(&pack)));
+        with.set_font(font.clone());
+        let mut without = WideRun::new(rom);
+        without.set_font(plain_font.clone());
+        let mut fuzz = crate::tour_battle::Fuzz::new(7 + u32::from(id));
+        let mut written = vec![false; wanted.len()];
+        for t in 0..=last {
+            let pad = if zone == 0 {
+                ssd_oracle::Joypad::default()
+            } else {
+                fuzz.pad(t, session.mode(), session.wram(0x0D5F), session.wram(0x0D62))
+            };
+            session.step(pad)?;
+            let Some(at) = wanted.iter().position(|(_, _, frame)| *frame == t) else {
+                with.note(session.machine.wram(), session.machine.frame_log());
+                without.note(session.machine.wram(), session.machine.frame_log());
+                continue;
+            };
+            let label = &wanted[at].0;
+            let a = with.note_hd(session.machine.wram(), session.machine.frame_log(), options);
+            let b = without.note_hd(session.machine.wram(), session.machine.frame_log(), options);
+            if let (Some(a), Some(b)) = (a, b) {
+                std::fs::write(out_dir.join(format!("{label}-art.png")), png(&a.picture))?;
+                std::fs::write(out_dir.join(format!("{label}-plain.png")), png(&b.picture))?;
+                std::fs::write(out_dir.join(format!("{label}-both.png")), side_by_side(&b, &a))?;
+                let stats = with.art_stats();
+                writeln!(
+                    out,
+                    "{label}: map {id} zone {zone} frame {t}, {:?}, mode {:02X}; backgrounds {}/{} px art",
+                    a.scene,
+                    session.mode(),
+                    stats.bg_art,
+                    stats.bg_pixels
+                )?;
+                written[at] = true;
+            }
+        }
+        for (done, (label, _, frame)) in written.iter().zip(&wanted) {
+            if !done {
+                missing += 1;
+                writeln!(out, "{label}: frame {frame} of map {id} was not drawn")?;
+            }
+        }
+    }
+    Ok(u8::from(missing > 0))
 }
 
 /// Writes the frames of `shots`.

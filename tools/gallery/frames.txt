@@ -20,7 +20,7 @@
 06-cards          | battle                 | 4776    |            |
 07-cheats         | menus                  | 4350    | 3700       | cheats.txt
 08-battle-command | story-1                | 8400    |            |
-09-attack         | story-1                | 8900    |            |
+09-attack         | story-1                | 8700    |            |
 10-porunga        | secret-nail-porunga    | 8400    |            |
 11-story          | secret-ending-normal   | 6000    |            |
 12-ending         | secret-ending-normal   | 17500   |            |

@@ -444,6 +444,7 @@ fn plan(reference: &Path, with_masks: bool, maps_quality: f32) -> anyhow::Result
                 "size": layer.size,
                 "rows": layer.rows,
                 "fill": layer.fill,
+                "palette_key": layer.palette_key,
                 "file": format!("{}.webp", layer.id),
             }));
         }
@@ -477,6 +478,7 @@ fn plan(reference: &Path, with_masks: bool, maps_quality: f32) -> anyhow::Result
                 "blocks": layer.blocks,
                 "grid": layer.grid,
                 "metatiles": layer.metatiles,
+                "palette_variant": layer.palette_variant,
                 "tiles": with_webp(&layer.tiles),
             }));
         }

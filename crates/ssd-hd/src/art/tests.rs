@@ -1171,6 +1171,7 @@ fn background_pack(dir: &std::path::Path, vram: &[u16], fill: bool) -> Arc<Pack>
             fill,
             art: "art/bg/test.png".to_owned(),
             source: "art/bg/test-src.png".to_owned(),
+            palette_key: String::new(),
             palette: String::new(),
         }],
     };
@@ -1239,10 +1240,58 @@ fn a_faded_palette_dims_the_background_art_by_the_same_ratio() {
     // The game's red is half as bright (the art was made for full red): art colour (100, 0, 0)
     log.cgram_start[0x61] = 0x000F;
     let picture = renderer.render_hd(&log, options(4)).unwrap();
-    // game x 100, row 1: art (100, 1, 0); the source red 255 became 123
+    // game x 100, row 1: art (100, 1, 0); the source red 255 became 123: a fade, drawn as a plain
+    // blend of the art towards black
     let [r, g, _] = pixel(&picture, 100 * 4, 0);
-    assert!((40..=44).contains(&r), "red {r}");
-    assert_eq!(g, 1, "a channel the palette does not change keeps the art's");
+    assert!((46..=50).contains(&r), "red {r}");
+    assert!(g <= 1, "green {g}");
+}
+
+#[test]
+fn art_made_for_the_palette_in_use_is_bound_before_the_art_of_the_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut log = background_frame(0);
+    let mut pack = Arc::try_unwrap(background_pack(dir.path(), &log.vram, true)).unwrap();
+    // A variant of the same content made for the green palette: its art is blue
+    write_png(&dir.path().join("art/bg/green.png"), 1024, 128, |_, _| [0, 0, 200, 255]);
+    write_png(&dir.path().join("art/bg/green-src.png"), 256, 32, |_, _| [0, 255, 0, 255]);
+    let key = |log: &FrameLog| {
+        crate::bgart::palette_key(
+            &log.vram,
+            &log.cgram_start,
+            3,
+            0,
+            0x0400,
+            0,
+            false,
+            2,
+            [0, 4],
+            true,
+        )
+    };
+    let mut green_log = log.clone();
+    green_log.cgram_start[0x61] = 0x03E0;
+    let mut variant = pack.bg.layer[0].clone();
+    variant.id = "green".to_owned();
+    variant.art = "art/bg/green.png".to_owned();
+    variant.source = "art/bg/green-src.png".to_owned();
+    variant.palette_key = format!("{:016x}", key(&green_log));
+    // (the variant is listed first: the order of the index does not decide)
+    pack.bg.layer.insert(0, variant);
+    let mut renderer = Renderer::new();
+    renderer.set_art(Some(Arc::new(pack)));
+    // The green palette: the variant's art as it is
+    let picture = renderer.render_hd(&green_log, options(4)).unwrap();
+    assert_eq!(pixel(&picture, 100 * 4, 0), [0, 0, 200]);
+    // The palette of the base art: the base art
+    let picture = renderer.render_hd(&log, options(4)).unwrap();
+    assert_eq!(pixel(&picture, 100 * 4, 0), [100, 1, 0]);
+    // A palette nobody made art for: the base art, in the colours in use (not the variant's)
+    log.cgram_start[0x61] = 0x7C00;
+    let picture = renderer.render_hd(&log, options(4)).unwrap();
+    let [r, _, b] = pixel(&picture, 100 * 4, 0);
+    assert!(b > r, "blue palette, base art recoloured: {r} {b}");
+    assert!(b != 200);
 }
 
 #[test]

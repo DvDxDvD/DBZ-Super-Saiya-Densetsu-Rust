@@ -361,6 +361,10 @@ fn import_maps(
                 .unwrap_or("")
                 .to_owned(),
             palette: palettes.get(id).cloned().unwrap_or_default(),
+            palette_variant: layer
+                .get("palette_variant")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
             tiles: json_str(layer, "tiles")?.to_owned(),
         };
         anyhow::ensure!(
@@ -397,10 +401,13 @@ fn import_maps(
                 report.map_tiles += 1;
             }
         }
+        // (two layers have the same layout only when one is the art of other maps' palette)
         anyhow::ensure!(
-            !layers.iter().any(|other| other.blocks == entry.blocks
-                && other.grid == entry.grid
-                && other.metatiles == entry.metatiles),
+            entry.palette_variant
+                || !layers.iter().any(|other| !other.palette_variant
+                    && other.blocks == entry.blocks
+                    && other.grid == entry.grid
+                    && other.metatiles == entry.metatiles),
             "{id}: another layer has the same size and data pointers"
         );
         layers.push(entry);
@@ -460,7 +467,18 @@ fn import_bg(
             fill: entry.get("fill").and_then(serde_json::Value::as_bool).unwrap_or(false),
             art: format!("art/bg/{id}.png"),
             source: format!("art/bg/{id}-src.png"),
-            palette: palettes.get(id).cloned().unwrap_or_default(),
+            palette_key: entry
+                .get("palette_key")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
+            // (a layer that is a palette variant carries its own palette in the index)
+            palette: entry
+                .get("palette")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| palettes.get(id).cloned())
+                .unwrap_or_default(),
         };
         let (width, height) = layer.art_size(false);
         let art = bg.join(json_str(entry, "file")?);
@@ -899,15 +917,22 @@ mod tests {
         import_maps(&maps, &pack, &BTreeMap::new(), &mut report).unwrap();
         assert_eq!((report.map_layers, report.map_tiles), (1, 1));
         let loaded = ssd_hd::mapart::Index::open(&pack).unwrap();
-        assert_eq!(loaded.find((1, 1), (0x06, 0xF45E), (0x09, 0xEFB0)), Some(0));
+        assert_eq!(loaded.find((1, 1), (0x06, 0xF45E), (0x09, 0xEFB0), 1), Some(0));
         assert!(pack.join("art/maps/map-01/t0_0.png").is_file());
         // The same layer twice, a tile of the wrong size and a missing tile are refused
         let twice = index.replace("]}", ",")
             + r#"{"id": "map-02", "maps": [2], "blocks": [1, 1], "grid": "06:F45E",
                   "metatiles": "09:EFB0", "source": "map-01/source.png",
                   "tiles": "map-01/t{x}_{y}.png"}]}"#;
-        std::fs::write(maps.join("index.json"), twice).unwrap();
+        std::fs::write(maps.join("index.json"), &twice).unwrap();
         assert!(import_maps(&maps, &pack, &BTreeMap::new(), &mut Report::default()).is_err());
+        // ... unless it is the art of a palette variant for other maps
+        let variant = twice.replace("\"maps\": [2]", "\"maps\": [2], \"palette_variant\": true");
+        std::fs::write(maps.join("index.json"), variant).unwrap();
+        import_maps(&maps, &pack, &BTreeMap::new(), &mut Report::default()).unwrap();
+        let loaded = ssd_hd::mapart::Index::open(&pack).unwrap();
+        assert_eq!(loaded.find((1, 1), (0x06, 0xF45E), (0x09, 0xEFB0), 2), Some(1));
+        assert_eq!(loaded.find((1, 1), (0x06, 0xF45E), (0x09, 0xEFB0), 1), Some(0));
         std::fs::write(maps.join("index.json"), index).unwrap();
         png("map-01/t0_0.png", 512);
         assert!(import_maps(&maps, &pack, &BTreeMap::new(), &mut Report::default()).is_err());
@@ -974,11 +999,13 @@ mod tests {
         // Rows 0 to 2 of a one-screen layer: 256 x 16 game pixels, 4x
         png("a.png", 1024, 64);
         png("a-src.png", 256, 16);
+        let palette = "4321".repeat(256);
         let index = |file: &str| {
             format!(
                 r#"{{"layers": [{{"id": "a", "key": "00000000000000ff", "bg": 3, "mode": 0,
                    "map_base": 28672, "char_base": 20480, "size": 0, "rows": [0, 2], "fill": true,
-                   "file": "{file}", "source": "a-src.png"}},
+                   "file": "{file}", "source": "a-src.png",
+                   "palette_key": "00000000000000aa", "palette": "{palette}"}},
                   {{"id": "b", "key": "1", "bg": 3, "mode": 0, "map_base": 1, "char_base": 1,
                    "size": 0, "rows": [0, 2], "file": "none.png", "source": "none.png"}}]}}"#
             )
@@ -991,6 +1018,9 @@ mod tests {
         assert_eq!(loaded.layer.len(), 1);
         assert_eq!(loaded.layer[0].key_value(), 0xFF);
         assert!(loaded.layer[0].fill && loaded.layer[0].map_base == 0x7000);
+        // A palette variant says which palette it was made for and carries that palette
+        assert_eq!(loaded.layer[0].palette_value(), Some(0xAA));
+        assert_eq!(loaded.layer[0].palette, palette);
         assert!(pack.join("art/bg/a.png").is_file() && pack.join("art/bg/a-src.png").is_file());
         // No folder, no layers; art of the wrong size is refused
         assert_eq!(
