@@ -7,7 +7,7 @@
 use ssd_hd::Font;
 use ssd_hd::pack::Pack;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 /// What the command line said about the art.
 #[derive(Debug, Clone, Default)]
@@ -21,18 +21,26 @@ pub struct Config {
 }
 
 static CONFIG: Mutex<Config> = Mutex::new(Config { pack: None, off: false, font_off: false });
-static PACK: OnceLock<Option<Arc<Pack>>> = OnceLock::new();
-static FONT: OnceLock<Option<Arc<Font>>> = OnceLock::new();
+// Found on first use, and forgotten by [`configure`]: Android runs the game more than once in a process (the setup can
+// install a new pack between two runs).
+static PACK: Mutex<Option<Found<Pack>>> = Mutex::new(None);
+static FONT: Mutex<Option<Found<Font>>> = Mutex::new(None);
+
+/// What a search found: a value or nothing, kept either way.
+#[derive(Clone)]
+struct Found<T>(Option<Arc<T>>);
 
 /// Sets what the command line said (before the first [`pack`]).
 pub fn configure(config: Config) {
     *CONFIG.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = config;
+    *PACK.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    *FONT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
 /// The pack with the HD art for `rom`, found on first use; `None` when art is off, there is no
 /// pack for the ROM, or the pack holds no art.
 pub fn pack(rom: &[u8]) -> Option<Arc<Pack>> {
-    PACK.get_or_init(|| {
+    cached(&PACK, || {
         let config = CONFIG.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         if config.off {
             return None;
@@ -57,12 +65,11 @@ pub fn pack(rom: &[u8]) -> Option<Arc<Pack>> {
         );
         Some(Arc::new(pack))
     })
-    .clone()
 }
 
 /// The HD text font for `rom`, made on first use; `None` when it is off or the image has no UI font.
 pub fn font(rom: &[u8]) -> Option<Arc<Font>> {
-    FONT.get_or_init(|| {
+    cached(&FONT, || {
         if CONFIG.lock().unwrap_or_else(std::sync::PoisonError::into_inner).font_off {
             return None;
         }
@@ -76,5 +83,13 @@ pub fn font(rom: &[u8]) -> Option<Arc<Font>> {
             }
         }
     })
-    .clone()
+}
+
+/// The value in `slot`, made by `make` on first use.
+fn cached<T>(
+    slot: &Mutex<Option<Found<T>>>,
+    make: impl FnOnce() -> Option<Arc<T>>,
+) -> Option<Arc<T>> {
+    let mut guard = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    guard.get_or_insert_with(|| Found(make())).0.clone()
 }

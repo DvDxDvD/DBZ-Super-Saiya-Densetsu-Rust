@@ -7,7 +7,7 @@
 //! (alone), then Up and A, Down and B, Left and X, Right and Y, L and Start, R and Select (the d-pad and the
 //! shoulders on the left, the buttons on the right), then the shortcuts two to a line.
 
-use super::{Kind, RowDef, Source, Values};
+use super::{Kind, Opens, RowDef, Source, Values};
 
 /// The two devices of the page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,10 +54,10 @@ pub enum Capture {
 }
 
 /// The labels of the device row.
-pub const DEVICES: &[&str] = &["Keyboard", "Gamepad"];
+pub const DEVICES: &[&str] = &["Keyboard", "Gamepad", "Touch"];
 
-/// The number of actions a device has: the 12 SNES buttons and the 4 shortcuts.
-pub const ACTIONS: usize = 16;
+/// The number of actions a device has: the 12 SNES buttons and the 5 shortcuts.
+pub const ACTIONS: usize = 17;
 /// How many of them are SNES buttons (the rest are shortcuts).
 pub const BUTTONS: usize = 12;
 
@@ -90,6 +90,7 @@ pub const ACTION_DEFS: [ActionDef; ACTIONS] = [
     ActionDef { id: "pause", label: "Pause" },
     ActionDef { id: "save_state", label: "Save state" },
     ActionDef { id: "load_state", label: "Load state" },
+    ActionDef { id: "screenshot", label: "Screenshot" },
 ];
 
 /// The keyboard codes that stand for today's keys (the game's own defaults), by action.
@@ -110,6 +111,7 @@ pub const KEYBOARD_DEFAULTS: [u8; ACTIONS] = [
     19,  // P: pause
     62,  // F5: save state
     66,  // F9: load state
+    69,  // F12: screenshot
 ];
 
 /// The gamepad codes (SDL button number plus one) that stand for today's buttons, by action; the shortcuts have none.
@@ -126,7 +128,7 @@ pub const GAMEPAD_DEFAULTS: [u8; ACTIONS] = [
     7,  // Start
     11, // Right shoulder: R
     5,  // Back: Select
-    0, 0, 0, 0,
+    0, 0, 0, 0, 0,
 ];
 
 /// The keyboard keys the player cannot give to an action, with what they do: they belong to the window.
@@ -221,6 +223,14 @@ macro_rules! device_rows {
                 "Loads the state of the chosen slot. Esc cancels, Backspace clears.",
                 $defaults[15]
             ),
+            key_row!(
+                $dev,
+                "screenshot",
+                "Screenshot",
+                "Shortcuts",
+                "Saves the picture as a PNG in the Pictures folder. Esc cancels, Backspace clears.",
+                $defaults[16]
+            ),
         ]
     };
 }
@@ -228,10 +238,78 @@ macro_rules! device_rows {
 const KEYBOARD_ROWS: [RowDef; ACTIONS] = device_rows!("kb", KEYBOARD_DEFAULTS);
 const GAMEPAD_ROWS: [RowDef; ACTIONS] = device_rows!("pad", GAMEPAD_DEFAULTS);
 
-/// The number of rows of the table: the device row, then the keyboard's, then the gamepad's.
-const ROW_COUNT: usize = 1 + 2 * ACTIONS;
+/// The index of the Touch page in [`DEVICES`]: the Device row's third choice shows the touch controls' rows instead
+/// of key boxes (M9).
+pub const TOUCH_DEVICE: usize = 2;
+/// How many rows the Touch page has, after the device row.
+pub const TOUCH_ROWS: usize = 6;
+/// The index of the first touch row in [`ROWS`].
+pub const TOUCH_ROW0: usize = 1 + 2 * ACTIONS;
 
-/// The rows of the page: the device, the 16 keyboard actions, the 16 gamepad actions.
+const TOUCH_GROUP: &str = "Touch controls";
+const ON_OFF: &[&str] = &["Off", "On"];
+/// The labels of the opacity row: 20% to 100% in steps of five ([`TOUCH_OPACITY_STEPS`] of them).
+const OPACITIES: &[&str] = &[
+    "20%", "25%", "30%", "35%", "40%", "45%", "50%", "55%", "60%", "65%", "70%", "75%", "80%",
+    "85%", "90%", "95%", "100%",
+];
+
+/// The rows of the Touch page.
+const TOUCH_ROW_DEFS: [RowDef; TOUCH_ROWS] = [
+    RowDef {
+        key: TOUCH_STYLE,
+        label: "Touch layout",
+        group: TOUCH_GROUP,
+        help: "D-pad is the fixed cross at the left. Stick is a floating stick that appears under the thumb. Move and resize the buttons in the Edit layout of the touch MENU.",
+        kind: Kind::Choice(&["D-pad", "Stick"]),
+        source: Source::Stored { default: 0 },
+    },
+    RowDef {
+        key: TOUCH_OPACITY,
+        label: "Opacity",
+        group: TOUCH_GROUP,
+        help: "How see-through the touch buttons are, from 20% to 100%.",
+        kind: Kind::Cycle(OPACITIES),
+        source: Source::Stored { default: TOUCH_OPACITY_DEFAULT },
+    },
+    RowDef {
+        key: TOUCH_HAPTICS,
+        label: "Haptics",
+        group: TOUCH_GROUP,
+        help: "A light tick of the phone under the finger when a button is pressed.",
+        kind: Kind::Choice(ON_OFF),
+        source: Source::Stored { default: 1 },
+    },
+    RowDef {
+        key: TOUCH_AUTO_BATTLE,
+        label: "Switch automatically in battle",
+        group: TOUCH_GROUP,
+        help: "On: in a battle only the d-pad and big A and B show, and the full layout comes back after it. Off: the MIN and FULL buttons switch by hand.",
+        kind: Kind::Choice(ON_OFF),
+        source: Source::Stored { default: 0 },
+    },
+    RowDef {
+        key: TOUCH_HIDE_PAD,
+        label: "Hide with gamepad",
+        group: TOUCH_GROUP,
+        help: "On: the touch buttons hide while a gamepad is connected.",
+        kind: Kind::Choice(ON_OFF),
+        source: Source::Stored { default: 1 },
+    },
+    RowDef {
+        key: "controls.touch.reset",
+        label: "Reset touch layout",
+        group: TOUCH_GROUP,
+        help: "Puts every touch button back where the design has it, in both orientations. The other choices stay.",
+        kind: Kind::Button("Reset"),
+        source: Source::Opens(Opens::ResetTouchLayout),
+    },
+];
+
+/// The number of rows of the table: the device row, then the keyboard's, then the gamepad's.
+const ROW_COUNT: usize = 1 + 2 * ACTIONS + TOUCH_ROWS;
+
+/// The rows of the page: the device, the 17 keyboard actions, the 17 gamepad actions.
 pub const ROWS: &[RowDef] = &{
     let device = RowDef {
         key: DEVICE_KEY,
@@ -248,13 +326,47 @@ pub const ROWS: &[RowDef] = &{
         rows[1 + ACTIONS + at] = GAMEPAD_ROWS[at];
         at += 1;
     }
+    let mut touch = 0;
+    while touch < TOUCH_ROWS {
+        rows[TOUCH_ROW0 + touch] = TOUCH_ROW_DEFS[touch];
+        touch += 1;
+    }
     rows
 };
 
 /// A line under the rows, if the page has one.
 pub const NOTE: Option<&str> = None;
 
+/// The keys of the touch controls (M9) start with this: the five choices below, then the places and sizes of the
+/// groups of controls (`controls.touch.<group>.x|y|s`, and `controls.touch.p.<group>...` for the portrait layout),
+/// which only the touch layer's edit mode writes.
+pub const TOUCH_PREFIX: &str = "controls.touch.";
+/// 0 the fixed d-pad, 1 the floating stick.
+pub const TOUCH_STYLE: &str = "controls.touch.style";
+/// The opacity of the controls as a step of five percent above 20 (0 is 20%, 16 is 100%); the default step 11 is 75%.
+pub const TOUCH_OPACITY: &str = "controls.touch.opacity";
+/// The haptic tick under the finger: 0 off, 1 on (the default).
+pub const TOUCH_HAPTICS: &str = "controls.touch.haptics";
+/// Switch to the minimal layout in a battle by itself: 0 off (the default), 1 on.
+pub const TOUCH_AUTO_BATTLE: &str = "controls.touch.auto_battle";
+/// Hide the controls while a gamepad is connected: 0 off, 1 on (the default).
+pub const TOUCH_HIDE_PAD: &str = "controls.touch.hide_pad";
+/// The steps of the opacity row.
+pub const TOUCH_OPACITY_STEPS: u8 = 17;
+/// The step of 75%.
+pub const TOUCH_OPACITY_DEFAULT: u8 = 11;
+
+/// Puts the touch controls' places and sizes back to the design (the five choices stay).
+pub fn reset_touch_layout(values: &mut Values) {
+    values.retain(|key| {
+        !key.starts_with(TOUCH_PREFIX)
+            || [TOUCH_STYLE, TOUCH_OPACITY, TOUCH_HAPTICS, TOUCH_AUTO_BATTLE, TOUCH_HIDE_PAD]
+                .contains(&key)
+    });
+}
+
 /// The row of `action` (0 to 15) of `device` in [`ROWS`].
+/// The row of `action` (0 to 16) of `device` in [`ROWS`].
 #[must_use]
 pub const fn row_of(device: Device, action: usize) -> usize {
     1 + device.index() * ACTIONS + action
@@ -266,6 +378,16 @@ pub fn device(values: &Values) -> Device {
     Device::from_index(
         values.get(DEVICE_KEY).and_then(|value| usize::try_from(value).ok()).unwrap_or(0),
     )
+}
+
+/// The page of the Device row: 0 the keyboard's keys, 1 the gamepad's, 2 the touch controls' rows ([`TOUCH_DEVICE`]).
+#[must_use]
+pub fn page(values: &Values) -> usize {
+    values
+        .get(DEVICE_KEY)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|&page| page <= TOUCH_DEVICE)
+        .unwrap_or(0)
 }
 
 /// The code of `action` on `device`: the stored one, else today's default. 0 is "no key".
@@ -475,13 +597,16 @@ mod tests {
     }
 
     #[test]
-    fn the_table_has_the_device_then_sixteen_actions_per_device() {
-        assert_eq!(ROWS.len(), 33);
+    fn the_table_has_the_device_then_seventeen_actions_per_device() {
+        assert_eq!(ROWS.len(), 1 + 2 * ACTIONS + TOUCH_ROWS, "then the touch page's rows");
+        assert_eq!(ROWS[TOUCH_ROW0].key, TOUCH_STYLE);
         assert_eq!(ROWS[0].key, "controls.device");
         assert_eq!(ROWS[row_of(Device::Keyboard, 0)].key, "controls.kb.up");
         assert_eq!(ROWS[row_of(Device::Keyboard, 15)].key, "controls.kb.load_state");
         assert_eq!(ROWS[row_of(Device::Gamepad, 0)].key, "controls.pad.up");
         assert_eq!(ROWS[row_of(Device::Gamepad, 15)].key, "controls.pad.load_state");
+        assert_eq!(ROWS[row_of(Device::Keyboard, 16)].key, "controls.kb.screenshot");
+        assert_eq!(ROWS[row_of(Device::Gamepad, 16)].key, "controls.pad.screenshot");
         for device in [Device::Keyboard, Device::Gamepad] {
             for (action, def) in ACTION_DEFS.iter().enumerate() {
                 let row = &ROWS[row_of(device, action)];
@@ -489,7 +614,7 @@ mod tests {
                 assert!(row.key.ends_with(&format!(".{}", def.id)), "{}", row.key);
             }
         }
-        assert_eq!(all_rows().iter().filter(|row| row.kind == Kind::Key).count(), 32);
+        assert_eq!(all_rows().iter().filter(|row| row.kind == Kind::Key).count(), 34);
     }
 
     #[test]
@@ -502,7 +627,7 @@ mod tests {
             keys,
             [
                 "Up", "X", "Down", "Z", "Left", "S", "Right", "A", "Q", "Enter", "W", "R-Shift",
-                "Tab", "P", "F5", "F9"
+                "Tab", "P", "F5", "F9", "F12"
             ]
         );
         let pad: Vec<String> = (0..ACTIONS)
@@ -636,5 +761,63 @@ mod tests {
                 assert_eq!(owner(&values, device, action, own), None, "{action}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod touch_tests {
+    use super::*;
+    use crate::cheats::Cheats;
+
+    #[test]
+    fn the_touch_rows_default_to_the_design_and_keep_to_their_keys() {
+        let values = Values::new();
+        let shown = |at: usize| ROWS[TOUCH_ROW0 + at].index(&values, &Cheats::neutral(), 0);
+        assert_eq!(shown(0), 0, "the fixed d-pad");
+        assert_eq!(shown(1), usize::from(TOUCH_OPACITY_DEFAULT), "75%");
+        assert_eq!(shown(2), 1, "haptics on");
+        assert_eq!(shown(3), 0, "no automatic switch");
+        assert_eq!(shown(4), 1, "hidden with a gamepad");
+        for at in 0..TOUCH_ROWS {
+            assert!(ROWS[TOUCH_ROW0 + at].key.starts_with(TOUCH_PREFIX));
+        }
+    }
+
+    #[test]
+    fn the_opacity_row_has_a_label_per_step() {
+        let Kind::Cycle(labels) = ROWS[TOUCH_ROW0 + 1].kind else { panic!("a cycle") };
+        assert_eq!(labels.len(), usize::from(TOUCH_OPACITY_STEPS));
+        assert_eq!(labels[usize::from(TOUCH_OPACITY_DEFAULT)], "75%");
+    }
+
+    #[test]
+    fn the_page_is_the_stored_device_and_a_wild_one_is_the_keyboard() {
+        let mut values = Values::new();
+        assert_eq!(page(&values), 0);
+        values.set(DEVICE_KEY, 2);
+        assert_eq!(page(&values), TOUCH_DEVICE);
+        assert_eq!(
+            device(&values),
+            Device::Keyboard,
+            "the key boxes are not shown on the touch page"
+        );
+        values.set(DEVICE_KEY, 9);
+        assert_eq!(page(&values), 0);
+    }
+
+    #[test]
+    fn reset_touch_layout_keeps_the_five_choices_and_drops_the_places() {
+        let mut values = Values::new();
+        values.set(TOUCH_STYLE, 1);
+        values.set(TOUCH_OPACITY, 3);
+        values.set("controls.touch.face.x", 700);
+        values.set("controls.touch.p.dpad.s", 150);
+        values.set("controls.kb.a", 9);
+        reset_touch_layout(&mut values);
+        assert_eq!(values.get(TOUCH_STYLE), Some(1));
+        assert_eq!(values.get(TOUCH_OPACITY), Some(3));
+        assert_eq!(values.get("controls.touch.face.x"), None);
+        assert_eq!(values.get("controls.touch.p.dpad.s"), None);
+        assert_eq!(values.get("controls.kb.a"), Some(9));
     }
 }

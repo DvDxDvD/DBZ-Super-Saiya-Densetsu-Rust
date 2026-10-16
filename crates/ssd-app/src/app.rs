@@ -19,15 +19,18 @@ use crate::panel::{
 };
 use crate::replay_io::Session;
 use crate::replays::{self, Outcome, REPLAYS_DIR, Verification};
+use crate::screenshot;
 use crate::snapshot;
 use crate::tab_memory;
 use crate::tab_routines::{self, FrameHistory};
+use crate::touch::{self, Touch};
 use crate::ui::{self, Status, View};
 use crate::ui_script::{Command, Line, MenuCommand, MenuShow};
 use crate::{audio, paths, saves, video};
 use anyhow::Context;
 use sdl3::event::{Event, WindowEvent};
 use sdl3::gamepad::Gamepad;
+use sdl3::keyboard::Scancode;
 use ssd_game::Ruleset;
 use ssd_game::menu::driver::Curtain;
 use ssd_hd::world::WideFrame;
@@ -229,6 +232,10 @@ struct WindowState {
     bindings: Bindings,
     /// The Controls page changed the map: the keys held under the old one are let go.
     release_input: bool,
+    /// The touch controls (M9): off unless the run has them (Android, or `--touch-ui`).
+    touch: Touch,
+    /// A screenshot asked for, taken once the frame is drawn (windowed runs only).
+    shot: Option<screenshot::Kind>,
 }
 
 /// The time the frame loop spent in its first stages: the HD menu's driver, the machine's frames,
@@ -270,6 +277,12 @@ impl WindowState {
             kept_states: BTreeMap::new(),
             bindings: Bindings::default(),
             release_input: false,
+            touch: Touch::new(
+                false,
+                touch::settings::Settings::default(),
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(932.0, 430.0)),
+            ),
+            shot: None,
         }
     }
 
@@ -344,6 +357,7 @@ fn hd_frame(
         log::warn!("{error:#}");
     }
     if let Some(values) = settings.as_ref() {
+        state.touch.apply_settings(touch::settings::Settings::from_values(values));
         let map = Bindings::from_values(values);
         if map != state.bindings {
             state.bindings = map;
@@ -365,6 +379,28 @@ fn hd_frame(
         state.video_changed(values);
     }
     (pad, events)
+}
+
+/// A finger's place in SDL's normalised window coordinates, in egui points.
+fn touch_point(video: &video::Video, x: f32, y: f32) -> egui::Pos2 {
+    let screen = video.screen_points();
+    egui::pos2(screen.min.x + x * screen.width(), screen.min.y + y * screen.height())
+}
+
+/// Writes the touch controls' choices and layout into the PC settings file (`ssd.settings`), keeping the other keys
+/// and the copy the HD menus hold, so the Options screen does not write the old layout back.
+fn persist_touch(state: &mut WindowState) {
+    let mut values = match state.hd.as_mut() {
+        Some(hd) => hd.pc_options_mut().clone(),
+        None => crate::options::read_settings().unwrap_or_default(),
+    };
+    state.touch.settings.store(&mut values);
+    if let Some(hd) = state.hd.as_mut() {
+        *hd.pc_options_mut() = values.clone();
+    }
+    if let Err(error) = crate::options::write_settings(&values) {
+        log::warn!("the touch layout was not saved: {error:#}");
+    }
 }
 
 /// Which sidecar files a frame writes, as (the bags, the cheats): the files of the saves the frame wrote, and none
@@ -475,6 +511,15 @@ fn apply_controls(
         }
         None => {}
         Some(Effect::StepFrame) => state.step_once = true,
+        Some(Effect::Screenshot(kind)) => {
+            // A screenshot is not a save, but only a window has a picture to take: a headless, snapshot or
+            // replay run (which does not persist) writes nothing.
+            if paths::persists() {
+                state.shot = Some(kind);
+            } else {
+                log::info!("a run that does not persist takes no screenshot");
+            }
+        }
         Some(Effect::Save(slot)) => {
             if paths::persists() {
                 match save_state(machine, slot) {
@@ -1563,13 +1608,32 @@ fn windowed_loop(
     state.hd = layer;
     state.scaled = enhanced.as_ref().map(|enhanced| enhanced.options);
     (state.video, state.video_saved) = (start.shown, start.saved);
-    state.bindings = crate::options::read_settings()
-        .map(|values| Bindings::from_values(&values))
-        .unwrap_or_default();
+    let settings_file = crate::options::read_settings().unwrap_or_default();
+    state.bindings = Bindings::from_values(&settings_file);
+    // The touch controls (M9). SDL turns a touch into mouse events too; the controls take the fingers themselves, so the
+    // interface under them (the debug panel's pill) does not also click.
+    let touch_on = touch::wanted();
+    if touch_on {
+        sdl3::hint::set("SDL_TOUCH_MOUSE_EVENTS", "0");
+    }
+    // A launch after the system killed the app in the background continues from the state kept then.
+    #[cfg(target_os = "android")]
+    if paths::persists() && !session.is_active() && crate::android_lifecycle::take(machine) {
+        if let Some(hd) = state.hd.as_mut() {
+            hd.reset();
+        }
+    }
     refresh_controls(&mut state, session, machine, &env);
     refresh_replays(&mut state, &env);
     let mut shown = (state.controls.speed, state.controls.slot);
     let mut video = video::Video::new(&video_subsystem, &window_title(shown.0, shown.1))?;
+    state.touch = Touch::new(
+        touch_on,
+        touch::settings::Settings::from_values(&settings_file),
+        video.screen_points(),
+    );
+    // Set while the touch MENU, not the player, paused the game: only then does Resume unpause.
+    let mut touch_paused = false;
     video.set_fullscreen(state.video.fullscreen);
     video.set_vsync(state.video.vsync);
     let mut shape_buffer: Vec<u8> = Vec::new();
@@ -1592,11 +1656,63 @@ fn windowed_loop(
     let mut pacer = Pacer::new(Duration::from_secs_f64(1.0 / machine.target_fps()));
     let mut stats_start = pacer.next;
     let mut stats_frames = 0_u32;
+    // Android: set between the events that send the app to the background and bring it back. While it is set
+    // nothing runs, and the event pump blocks (SDL waits there until the app is in the foreground again).
+    #[cfg(target_os = "android")]
+    let mut backgrounded = false;
+    #[cfg(target_os = "android")]
+    let mut setup_hold: Option<Instant> = None;
     'main: loop {
         for event in events.poll_iter() {
             video.handle_event(&mut ui_input, &event);
             match event {
                 Event::Quit { .. } => break 'main,
+                // Android: the app lost the focus (home button, another app, the screen off; the system takes the
+                // window's surface a moment later) or is ending. SDL3 sends this window event first, and the
+                // `App...Background` events where the SDL build has them.
+                #[cfg(target_os = "android")]
+                Event::Window { win_event: WindowEvent::FocusLost, .. }
+                | Event::AppWillEnterBackground { .. }
+                | Event::AppDidEnterBackground { .. }
+                | Event::AppTerminating { .. } => {
+                    input.clear();
+                    if !backgrounded {
+                        backgrounded = true;
+                        video.suspend();
+                        // The battery save as on desktop, then the whole state for a kill in the background.
+                        save_sram(machine);
+                        if paths::persists() && !session.is_active() && env.verify.is_none() {
+                            match crate::android_lifecycle::save(machine) {
+                                Ok(()) => log::info!("in the background: SRAM and state saved"),
+                                Err(e) => log::warn!("saving the background state failed: {e:#}"),
+                            }
+                        }
+                    }
+                }
+                #[cfg(target_os = "android")]
+                Event::Window { win_event: WindowEvent::FocusGained, .. }
+                | Event::AppWillEnterForeground { .. }
+                | Event::AppDidEnterForeground { .. } => {
+                    if backgrounded {
+                        backgrounded = false;
+                        video.resume();
+                        // The state file is for a kill only: a later battery save must not lose to it.
+                        crate::android_lifecycle::discard();
+                        // The clock starts over: the time spent away is not owed to the game.
+                        pacer.next = Instant::now();
+                        stats_start = pacer.next;
+                        stats_frames = 0;
+                        log::info!("in the foreground again");
+                    }
+                }
+                #[cfg(target_os = "android")]
+                Event::AppLowMemory { .. } => log::warn!("the system is low on memory"),
+                // The Android back key opens the touch MENU (and backs out of it).
+                Event::KeyDown { scancode: Some(Scancode::AcBack), repeat: false, .. }
+                    if state.touch.enabled =>
+                {
+                    state.touch.back_key();
+                }
                 Event::KeyDown { scancode: Some(sc), repeat: false, .. } => {
                     if let Some(device) = state.hd.as_ref().and_then(Hd::listening) {
                         // A key box of the Controls page waits: it gets the press, the game and the
@@ -1617,6 +1733,18 @@ fn windowed_loop(
                     }
                 }
                 Event::KeyUp { scancode: Some(sc), .. } => input.key(&state.bindings, sc, false),
+                Event::FingerDown { finger_id, x, y, .. } if state.touch.enabled => {
+                    state.touch.finger_down(finger_id as i64, touch_point(&video, x, y));
+                }
+                Event::FingerMotion { finger_id, x, y, .. } if state.touch.enabled => {
+                    state.touch.finger_motion(finger_id as i64, touch_point(&video, x, y));
+                }
+                Event::FingerUp { finger_id, .. } if state.touch.enabled => {
+                    state.touch.finger_up(finger_id as i64, false);
+                }
+                Event::FingerCanceled { finger_id, .. } if state.touch.enabled => {
+                    state.touch.finger_up(finger_id as i64, true);
+                }
                 Event::GamepadButtonDown { button, .. } => {
                     if let Some(device) = state.hd.as_ref().and_then(Hd::listening) {
                         if let (Some(capture), Some(hd)) =
@@ -1663,6 +1791,52 @@ fn windowed_loop(
                 _ => {}
             }
         }
+        #[cfg(target_os = "android")]
+        if backgrounded {
+            // Not drawn and not run; the next poll blocks until the app is back.
+            std::thread::sleep(Duration::from_millis(20));
+            continue 'main;
+        }
+        if state.touch.enabled {
+            state.touch.set_screen(video.screen_points());
+            let label = match state.controls.speed.multiplier() {
+                2 => "x2",
+                4 => "x4",
+                8 => "x8",
+                _ => "x1",
+            };
+            let battle = ssd_game::gameplay::in_battle(machine.wram());
+            // A real pad has a stick and face buttons: the keyboard-like devices some phones and emulators list do not.
+            let pad_here = gamepads.iter().any(|pad| {
+                pad.has_axis(sdl3::gamepad::Axis::LeftX)
+                    && pad.has_button(sdl3::gamepad::Button::South)
+            });
+            state.touch.set_status(label, state.controls.slot, pad_here, battle);
+            for out in state.touch.take_out() {
+                match out {
+                    touch::Out::Speed => actions.push(PanelAction::CycleSpeed),
+                    touch::Out::Save => actions.push(PanelAction::SaveState),
+                    touch::Out::Load => actions.push(PanelAction::LoadState),
+                    touch::Out::Pause(true) => {
+                        if !state.controls.paused && !touch_paused {
+                            actions.push(PanelAction::TogglePause);
+                            touch_paused = true;
+                        }
+                    }
+                    touch::Out::Pause(false) => {
+                        if touch_paused {
+                            touch_paused = false;
+                            if state.controls.paused {
+                                actions.push(PanelAction::TogglePause);
+                            }
+                        }
+                    }
+                    touch::Out::Haptic => touch::haptic(),
+                    touch::Out::Persist => persist_touch(&mut state),
+                }
+            }
+            input.set_touch(state.touch.pressed());
+        }
         if std::mem::take(&mut state.release_input) {
             input.clear();
         }
@@ -1676,6 +1850,28 @@ fn windowed_loop(
             }
         }
         hd_previous = pad;
+        // Android: the Options' Game page asks for the setup (Enhanced); in Classic, Select + Start held for two seconds
+        // does (Classic has no Options). The game ends and the launch loop shows the page.
+        #[cfg(target_os = "android")]
+        {
+            use crate::android_setup::{Forced, request};
+            let asked = match state.hd.as_mut().and_then(Hd::take_setup_request) {
+                Some(ssd_menus::options::Opens::Mode) => Some(Forced::Mode),
+                Some(ssd_menus::options::Opens::Pack) => Some(Forced::Pack),
+                _ => None,
+            };
+            let held = state.hd.is_none() && pad.select && pad.start;
+            let long_hold = if held {
+                setup_hold.get_or_insert_with(Instant::now).elapsed() >= Duration::from_secs(2)
+            } else {
+                setup_hold = None;
+                false
+            };
+            if let Some(forced) = asked.or(long_hold.then_some(Forced::Mode)) {
+                request(forced);
+                break 'main;
+            }
+        }
         for action in std::mem::take(&mut actions) {
             apply_action(action, &mut state, machine, session, &mut env, pad, &mut audio);
         }
@@ -1748,6 +1944,7 @@ fn windowed_loop(
         let scene = state.hd.as_ref().and_then(|hd| hd.scene(machine.wram()));
         let overlay = state.hd.as_ref().and_then(|hd| hd.overlay(machine.wram(), machine.sram()));
         let history = &state.history;
+        let touch_view = state.touch.enabled.then_some(&state.touch);
         let panel = &mut state.panel;
         let mut hd_art = state.hd.as_mut().map(Hd::art);
         let symbols = env.symbols();
@@ -1762,10 +1959,28 @@ fn windowed_loop(
                 machine: shown,
                 symbols,
                 history,
+                touch: touch_view,
             };
             let layer = frame_layer(scene.as_ref(), overlay.as_ref(), hd_art.as_deref_mut());
             ui::draw(ui, &view, games, panel, &mut actions, layer);
         })?;
+
+        if let Some(kind) = state.shot.take() {
+            let result = take_screenshot(
+                kind,
+                &mut video,
+                &views,
+                (scene.as_ref(), overlay.as_ref()),
+                hd_art,
+                machine,
+            );
+            match &result {
+                Ok(path) => log::info!("screenshot saved to {}", path.display()),
+                Err(e) => log::warn!("screenshot failed: {e}"),
+            }
+            let now = video.now();
+            state.panel.push_notice(screenshot::notice(&result), now);
+        }
 
         let elapsed = stats_start.elapsed();
         if elapsed >= Duration::from_secs(5) {
@@ -1777,6 +1992,31 @@ fn windowed_loop(
         pacer.wait(multiplier, requested, env.verify.is_some());
     }
     Ok(())
+}
+
+/// Takes a screenshot into the screenshots folder: the picture of the window without the debug panel (`Window`:
+/// the game views and the HD layer, drawn as the window draws them, at the window's size in pixels), or the PPU's own
+/// frame (`Frame`).
+fn take_screenshot(
+    kind: screenshot::Kind,
+    video: &mut video::Video,
+    views: &[GameView<'_>],
+    (scene, overlay): (Option<&ssd_menus::DrawList>, Option<&ssd_menus::DrawList>),
+    mut art: Option<&mut hd::Art>,
+    machine: &Machine,
+) -> std::io::Result<PathBuf> {
+    let (width, height, rgba) = match kind {
+        screenshot::Kind::Window => video
+            .capture(views, |ui, games| {
+                ui::draw_game(ui, games, frame_layer(scene, overlay, art.as_deref_mut()));
+            })
+            .map_err(std::io::Error::other)?,
+        screenshot::Kind::Frame => {
+            let frame = machine.frame();
+            (frame.size.width, frame.size.height, screenshot::frame_rgba(&frame))
+        }
+    };
+    screenshot::save(&screenshot::folder(), screenshot::Stamp::now(), width, height, &rgba)
 }
 
 /// Windowed run: clock-paced at the core's target rate, audio queued to SDL, video via wgpu.
@@ -1848,6 +2088,11 @@ fn draw_snapshot(
         !session.is_active(),
     ));
     state.hd = hd_layer(rom, ruleset)?;
+    state.touch = Touch::new(
+        request.touch,
+        touch::settings::Settings::default(),
+        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width as f32, height as f32)),
+    );
     if let Some(hd) = state.hd.as_mut().filter(|_| session.is_playing()) {
         hd.set_replaying();
     }
@@ -1912,6 +2157,7 @@ fn draw_snapshot(
         machine,
         symbols: env.symbols(),
         history: &state.history,
+        touch: state.touch.enabled.then_some(&state.touch),
     };
     let pixels = offscreen.draw(&views, |ui, games| {
         let layer = frame_layer(scene.as_ref(), overlay.as_ref(), hd_art.as_deref_mut());
@@ -1972,6 +2218,10 @@ fn run_script_line(
         Command::Mode { routine, mode } => {
             let key = routine_key(routine, env.symbols())?;
             act(PanelAction::SetRoutineMode { key, mode: *mode }, state, machine, session, env);
+        }
+        Command::Touch(text) => {
+            anyhow::ensure!(state.touch.enabled, "touch lines need --touch-ui");
+            state.touch.script(text).map_err(anyhow::Error::msg)?;
         }
         Command::Menu(menu) => {
             anyhow::ensure!(state.hd.is_some(), "menu lines need --mode enhanced");
@@ -2435,6 +2685,43 @@ mod tests {
     }
 
     #[test]
+    fn a_screenshot_is_asked_for_by_a_window_and_ignored_by_a_run_that_does_not_persist() {
+        let _guard = paths::ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let shots = tempfile::tempdir().unwrap();
+        // SAFETY: serialised by ENV_LOCK.
+        unsafe { std::env::set_var(screenshot::DIR_ENV, shots.path().join("pictures")) };
+        let (mut machine, _store) = sram_counter_machine();
+        let mut state = window_state(HooksSwitch::Allowed);
+        let mut session = Session::default();
+        let mut env = Env { rom: &[], switch: None, verify: None };
+        let mut audio = NullAudio;
+        let mut press = |state: &mut WindowState, action| {
+            apply_action(
+                action,
+                state,
+                &mut machine,
+                &mut session,
+                &mut env,
+                Joypad::default(),
+                &mut audio,
+            );
+        };
+        paths::set_persistent(false);
+        press(&mut state, PanelAction::Screenshot);
+        press(&mut state, PanelAction::ScreenshotFrame);
+        assert_eq!(state.shot, None, "a headless, snapshot or replay run takes no screenshot");
+        assert!(!shots.path().join("pictures").exists());
+        paths::set_persistent(true);
+        press(&mut state, PanelAction::Screenshot);
+        assert_eq!(state.shot, Some(screenshot::Kind::Window));
+        press(&mut state, PanelAction::ScreenshotFrame);
+        assert_eq!(state.shot, Some(screenshot::Kind::Frame));
+        paths::set_persistent(false);
+        assert!(!shots.path().join("pictures").exists(), "asking writes nothing: the loop does");
+        unsafe { std::env::remove_var(screenshot::DIR_ENV) };
+    }
+
+    #[test]
     fn a_locked_hook_mode_stays_as_it_is() {
         let (mut machine, _store) = sram_counter_machine();
         let mut state = window_state(HooksSwitch::Locked("recording"));
@@ -2572,6 +2859,7 @@ mod tests {
             size: (1440, 900),
             script: &script,
             enhanced: None,
+            touch: false,
         };
         run_ui_snapshot(
             sram_counter_rom(),
@@ -2620,6 +2908,7 @@ mod tests {
             size: (320, 200),
             script: &script,
             enhanced: None,
+            touch: false,
         };
         let error = run_ui_snapshot(
             sram_counter_rom(),

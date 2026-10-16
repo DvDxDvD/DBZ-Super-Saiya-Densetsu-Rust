@@ -6,6 +6,7 @@ use crate::debugger::{DebugState, StepKind};
 use crate::hook_setup::HooksArg;
 use crate::hotkeys::{Hotkey, Speed};
 use crate::replays::ReplaysState;
+use crate::screenshot::Kind;
 use crate::tab_memory::MemoryState;
 use ssd_oracle::{HookMode, HookStats};
 
@@ -15,6 +16,8 @@ pub const PANEL_WIDTH: f32 = 440.0;
 pub const TOAST_SECONDS: f64 = 8.0;
 /// The save-state slots.
 pub const SLOTS: [u8; 4] = [1, 2, 3, 4];
+/// How long the notice of a screenshot stays, in seconds.
+pub const NOTICE_SECONDS: f64 = 2.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
@@ -56,6 +59,8 @@ pub struct PanelState {
     pub tab: Tab,
     pub memory: MemoryState,
     toast: Option<Toast>,
+    /// The line shown after a screenshot, and when it goes away (the clock of the UI).
+    notice: Option<(String, f64)>,
     pub debug: DebugState,
     pub replays: ReplaysState,
 }
@@ -83,6 +88,19 @@ impl PanelState {
         }
     }
 
+    /// Shows `text` for [`NOTICE_SECONDS`], panel open or not.
+    pub fn push_notice(&mut self, text: String, now: f64) {
+        self.notice = Some((text, now + NOTICE_SECONDS));
+    }
+
+    /// The notice to show at time `now`, if any. One that ran out is dropped.
+    pub fn notice(&mut self, now: f64) -> Option<&str> {
+        if self.notice.as_ref().is_some_and(|(_, until)| *until <= now) {
+            self.notice = None;
+        }
+        self.notice.as_ref().map(|(text, _)| text.as_str())
+    }
+
     /// The toast to show at time `now`, if any. One that ran out is dropped.
     pub fn toast(&mut self, now: f64) -> Option<&Toast> {
         if self.toast.as_ref().is_some_and(|toast| toast.until <= now) {
@@ -105,6 +123,10 @@ pub enum PanelAction {
     SelectSlot(u8),
     SaveState,
     LoadState,
+    /// Saves the picture of the window as a PNG (no debug panel in it).
+    Screenshot,
+    /// Saves the PPU's own frame, unscaled, as a PNG.
+    ScreenshotFrame,
     SetHooks(HooksArg),
     /// The mode of one routine, by its hook key (its address), applied live.
     SetRoutineMode {
@@ -162,6 +184,7 @@ impl PanelAction {
             Hotkey::Slot(n) => Self::SelectSlot(n),
             Hotkey::CycleSpeed => Self::CycleSpeed,
             Hotkey::Pause => Self::TogglePause,
+            Hotkey::Screenshot => Self::Screenshot,
             Hotkey::TogglePanel => Self::TogglePanel,
             Hotkey::Quit => return None,
         })
@@ -198,6 +221,8 @@ pub fn route_key(hotkey: Option<Hotkey>, text_focus: bool) -> KeyRoute {
 pub enum Effect {
     Save(u8),
     Load(u8),
+    /// A screenshot of this kind, taken after the next frame is drawn.
+    Screenshot(Kind),
     /// Run one frame now.
     StepFrame,
     SetHooks(HooksArg),
@@ -279,6 +304,8 @@ impl Controls {
             PanelAction::SelectSlot(slot) if SLOTS.contains(&slot) => self.slot = slot,
             PanelAction::SaveState => return Some(Effect::Save(self.slot)),
             PanelAction::LoadState if self.load_allowed => return Some(Effect::Load(self.slot)),
+            PanelAction::Screenshot => return Some(Effect::Screenshot(Kind::Window)),
+            PanelAction::ScreenshotFrame => return Some(Effect::Screenshot(Kind::Frame)),
             // Setting every routine to the mode they have is nothing, unless they differ.
             PanelAction::SetHooks(mode)
                 if self.hooks_switch == HooksSwitch::Allowed
@@ -532,6 +559,7 @@ mod tests {
         assert_eq!(A::from_hotkey(Hotkey::TogglePanel), Some(A::TogglePanel));
         assert_eq!(A::from_hotkey(Hotkey::Slot(2)), Some(A::SelectSlot(2)));
         assert_eq!(A::from_hotkey(Hotkey::Pause), Some(A::TogglePause));
+        assert_eq!(A::from_hotkey(Hotkey::Screenshot), Some(A::Screenshot));
         assert_eq!(A::from_hotkey(Hotkey::CycleSpeed), Some(A::CycleSpeed));
         assert_eq!(A::from_hotkey(Hotkey::SaveState), Some(A::SaveState));
         assert_eq!(A::from_hotkey(Hotkey::LoadState), Some(A::LoadState));
@@ -555,6 +583,31 @@ mod tests {
         assert_eq!(
             route(Some(Hotkey::TogglePanel), true),
             KeyRoute::Action(PanelAction::TogglePanel)
+        );
+    }
+
+    #[test]
+    fn a_notice_lasts_two_seconds_with_the_panel_open_or_closed() {
+        let mut p = PanelState::default();
+        p.push_notice("Screenshot saved: a.png".to_owned(), 10.0);
+        assert_eq!(p.notice(11.9), Some("Screenshot saved: a.png"));
+        assert_eq!(p.notice(12.0), None, "expired");
+        p.open = true;
+        p.push_notice("again".to_owned(), 20.0);
+        assert_eq!(p.notice(20.0), Some("again"), "the open panel shows it too");
+    }
+
+    #[test]
+    fn the_screenshot_actions_ask_the_app_for_a_picture() {
+        let mut panel = PanelState::default();
+        let mut controls = Controls::new(HooksArg::Original, HooksSwitch::Allowed, true, true);
+        assert_eq!(
+            controls.apply(PanelAction::Screenshot, &mut panel),
+            Some(Effect::Screenshot(Kind::Window))
+        );
+        assert_eq!(
+            controls.apply(PanelAction::ScreenshotFrame, &mut panel),
+            Some(Effect::Screenshot(Kind::Frame))
         );
     }
 

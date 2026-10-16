@@ -16,6 +16,7 @@ pub mod accessibility;
 pub mod audio;
 pub mod controls;
 pub mod difficulty;
+pub mod game;
 pub mod gameplay;
 pub mod video;
 
@@ -28,17 +29,49 @@ pub enum Category {
     Audio,
     Controls,
     Accessibility,
+    /// The game's own setup (Android only): the mode and the HD pack. Hidden unless [`show_game_page`] turned it on.
+    Game,
+}
+
+#[cfg(test)]
+pub(crate) static GAME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+static GAME_PAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static GAME_INFO: std::sync::Mutex<(String, String)> =
+    std::sync::Mutex::new((String::new(), String::new()));
+
+/// Shows (or hides) the Game page of the Options: the app turns it on where the platform has the setup to open
+/// (Android). Off by default, and the desktop never turns it on.
+pub fn show_game_page(on: bool) {
+    GAME_PAGE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The texts of the Game page's two read-only rows: the current mode, and the HD pack's state.
+pub fn set_game_info(mode: &str, pack: &str) {
+    *GAME_INFO.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+        (mode.to_owned(), pack.to_owned());
 }
 
 impl Category {
-    /// Every category, in the order of the list.
-    pub const ALL: [Category; 6] = [
+    /// The categories the Options shows: all of them where the Game page is on, else without it.
+    #[must_use]
+    pub fn shown() -> &'static [Category] {
+        if GAME_PAGE.load(std::sync::atomic::Ordering::Relaxed) {
+            &Self::ALL
+        } else {
+            &Self::ALL[..Self::ALL.len() - 1]
+        }
+    }
+
+    /// Every category, the Game page last.
+    pub const ALL: [Category; 7] = [
         Category::Difficulty,
         Category::Gameplay,
         Category::Video,
         Category::Audio,
         Category::Controls,
         Category::Accessibility,
+        Category::Game,
     ];
 
     /// The name in the list.
@@ -51,6 +84,7 @@ impl Category {
             Self::Audio => "Audio",
             Self::Controls => "Controls",
             Self::Accessibility => "Accessibility",
+            Self::Game => "Game",
         }
     }
 
@@ -63,7 +97,13 @@ impl Category {
     /// The small label under the name: where the category is kept.
     #[must_use]
     pub const fn scope_label(self) -> &'static str {
-        if self.per_game() { "Saved with the game" } else { "This PC" }
+        if self.per_game() {
+            "Saved with the game"
+        } else if matches!(self, Self::Game) {
+            "This device"
+        } else {
+            "This PC"
+        }
     }
 
     /// The rows of the category, in the order they show.
@@ -76,6 +116,7 @@ impl Category {
             Self::Audio => audio::ROWS,
             Self::Controls => controls::ROWS,
             Self::Accessibility => accessibility::ROWS,
+            Self::Game => game::ROWS,
         }
     }
 
@@ -89,6 +130,7 @@ impl Category {
             Self::Audio => audio::NOTE,
             Self::Controls => controls::NOTE,
             Self::Accessibility => accessibility::NOTE,
+            Self::Game => game::NOTE,
         }
     }
 
@@ -106,13 +148,19 @@ impl Category {
     /// The category after this one (wrapping).
     #[must_use]
     pub fn next(self) -> Self {
-        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+        {
+            let shown = Self::shown();
+            shown[(self.index() + 1) % shown.len()]
+        }
     }
 
     /// The category before this one (wrapping).
     #[must_use]
     pub fn previous(self) -> Self {
-        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
+        {
+            let shown = Self::shown();
+            shown[(self.index() + shown.len() - 1) % shown.len()]
+        }
     }
 
     /// The place in [`Category::ALL`].
@@ -146,6 +194,12 @@ pub enum Kind {
 pub enum Opens {
     /// The Cheats screen.
     Cheats,
+    /// The mode choice of the setup (Android): the game restarts into it.
+    Mode,
+    /// The HD pack install of the setup (Android): the game restarts into it.
+    Pack,
+    /// The touch controls' places and sizes go back to the design (M9).
+    ResetTouchLayout,
 }
 
 /// Where a row's value lives.
@@ -200,6 +254,7 @@ pub struct RowDef {
 pub fn info_text(category: Category, key: &str, shown: &[usize]) -> String {
     match (category, key) {
         (Category::Video, "video.size") => video::size_text(shown),
+        (Category::Game, key) => game::info_text(key),
         (Category::Difficulty, key) => difficulty::info_text(key, shown),
         _ => String::new(),
     }
@@ -396,6 +451,16 @@ impl Values {
     /// Forgets the value of `key` (the row is at its default again).
     pub fn remove(&mut self, key: &str) {
         self.0.remove(key);
+    }
+
+    /// Forgets every key that starts with `prefix`.
+    pub fn remove_prefix(&mut self, prefix: &str) {
+        self.retain(|key| !key.starts_with(prefix));
+    }
+
+    /// Keeps the keys `keep` says yes to.
+    pub fn retain(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        self.0.retain(|key, _| keep(key));
     }
 
     /// Whether nothing is stored.

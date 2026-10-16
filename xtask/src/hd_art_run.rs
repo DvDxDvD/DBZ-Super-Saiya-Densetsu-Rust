@@ -117,6 +117,18 @@ pub enum Args {
     },
     /// The field's sprites in the margins of the 16:9 view against the ones in the window.
     Margins(crate::hd_margins::Args),
+    /// Field figures drawn partly from art and partly from the original's pixels, in every frame.
+    Figures {
+        paths: Vec<PathBuf>,
+        jobs: usize,
+        pack: Option<PathBuf>,
+        /// `--walk MAP:PARTY`: a crafted map and party walked in four directions (`--frames` each).
+        walks: Vec<(u8, String)>,
+        frames: u32,
+        dump: bool,
+        /// `--out DIR` with `--walk`: the bare field poses seen, as `hd-art scenes` writes its gaps.
+        gaps: Option<PathBuf>,
+    },
 }
 
 /// Parses the arguments after `hd-art`.
@@ -140,6 +152,7 @@ pub fn parse_args(args: &[&str]) -> Result<Args, String> {
     let (mut paths, mut shots) = (Vec::new(), Vec::new());
     let (mut maps, mut base, mut list, mut margin_shots) = (Vec::new(), None, false, Vec::new());
     let (mut find, mut objects) = (None, false);
+    let (mut walks, mut dump) = (Vec::new(), false);
     while let Some(&arg) = iter.next() {
         match arg {
             "--scale" => {
@@ -181,6 +194,12 @@ pub fn parse_args(args: &[&str]) -> Result<Args, String> {
             "--objects" => objects = true,
             "--find" => {
                 find = Some((*iter.next().ok_or("--find takes an art id prefix")?).to_owned());
+            }
+            "--dump" => dump = true,
+            "--walk" => {
+                let form = "--walk takes MAP:PARTY (0:piccolo,goku)";
+                let (map, party) = iter.next().and_then(|v| v.split_once(':')).ok_or(form)?;
+                walks.push((map.parse().map_err(|_| form)?, party.to_owned()));
             }
             "--no-art" => art = false,
             "--no-font" => font = false,
@@ -253,6 +272,15 @@ pub fn parse_args(args: &[&str]) -> Result<Args, String> {
         "items" => {
             Ok(Args::Items { out: out.unwrap_or_else(|| PathBuf::from(".work/items/menu")), pack })
         }
+        "figures" => Ok(Args::Figures {
+            paths,
+            jobs,
+            pack,
+            walks,
+            frames: frames.map_or(120, |n| n as u32),
+            dump,
+            gaps: out,
+        }),
         "scan" => match paths.as_slice() {
             [replay] => Ok(Args::Scan { replay: replay.clone(), every, pack }),
             _ => Err("scan takes one replay".to_owned()),

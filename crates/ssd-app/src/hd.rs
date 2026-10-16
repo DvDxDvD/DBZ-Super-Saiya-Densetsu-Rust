@@ -231,6 +231,11 @@ impl Hd {
         &self.driver
     }
 
+    /// The options of this PC the menus hold, to change from outside (the touch controls' layout).
+    pub fn pc_options_mut(&mut self) -> &mut ssd_menus::options::Values {
+        self.driver.pc_options_mut()
+    }
+
     /// Whether a choice of the HD runs its presses now (see [`Driver::busy`]).
     #[must_use]
     pub fn busy(&self) -> bool {
@@ -251,6 +256,12 @@ impl Hd {
     /// A raw press for the key box that waits for one (see [`Driver::capture`]).
     pub fn capture(&mut self, capture: ssd_menus::options::controls::Capture) {
         self.driver.capture(capture);
+    }
+
+    /// The setup a button of the Options' Game page asked for, once (Android restarts the game into it).
+    #[cfg(target_os = "android")]
+    pub fn take_setup_request(&mut self) -> Option<ssd_menus::options::Opens> {
+        self.driver.take_setup_request()
     }
 
     /// The player's press on the field opens the menu (see [`Driver::open`]).
@@ -358,6 +369,21 @@ pub struct Art {
 }
 
 impl Art {
+    #[cfg(any(target_os = "android", test))]
+    /// An art with no ROM and no pack: it paints what needs no picture (the first-launch screens).
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            rom: Vec::new(),
+            pack: None,
+            cards: None,
+            card_textures: HashMap::new(),
+            textures: HashMap::new(),
+            field: None,
+            backdrop: None,
+        }
+    }
+
     /// Copies the frame as the backdrop (a new generation each time).
     fn note_field(&mut self, frame: &Frame<'_>) {
         let mut rgba = Vec::with_capacity(frame.pixels.len() * 4);
@@ -599,9 +625,14 @@ impl Fit {
     /// The fit of the logical space in `picture`.
     #[must_use]
     pub fn new(picture: egui::Rect) -> Self {
-        let scale =
-            (picture.width() / layout::WIDTH).min(picture.height() / layout::HEIGHT).max(0.0);
-        let size = egui::vec2(layout::WIDTH, layout::HEIGHT) * scale;
+        Self::sized(picture, layout::WIDTH, layout::HEIGHT)
+    }
+
+    /// The fit of a logical space of `width` x `height` in `picture` (the first-launch screens have their own).
+    #[must_use]
+    pub fn sized(picture: egui::Rect, width: f32, height: f32) -> Self {
+        let scale = (picture.width() / width).min(picture.height() / height).max(0.0);
+        let size = egui::vec2(width, height) * scale;
         Self { scale, origin: picture.center() - size / 2.0 }
     }
 
@@ -625,7 +656,12 @@ impl Fit {
 /// `art`. The backdrop covers the picture; the logical layout is fitted to it (see [`Fit`]). The
 /// painting is clipped to the picture as well, so nothing can be drawn over the letterbox.
 pub fn paint(ui: &egui::Ui, picture: egui::Rect, list: &DrawList, art: &mut Art) {
-    let fit = Fit::new(picture);
+    paint_fit(ui, picture, &Fit::new(picture), list, art);
+}
+
+/// [`paint`] with the fit of the list's own logical space.
+pub fn paint_fit(ui: &egui::Ui, picture: egui::Rect, fit: &Fit, list: &DrawList, art: &mut Art) {
+    let fit = *fit;
     let painter = ui.painter_at(picture);
     for op in list.ops() {
         match op {
@@ -710,9 +746,10 @@ pub fn paint(ui: &egui::Ui, picture: egui::Rect, list: &DrawList, art: &mut Art)
                             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
                         painter.image(id, drawn, uv, egui::Color32::WHITE);
                     }
-                    None => paint(
+                    None => paint_fit(
                         ui,
                         picture,
+                        &fit,
                         &ssd_menus::screens::pixel_card(*rect, *attack_z, *defence_z),
                         art,
                     ),

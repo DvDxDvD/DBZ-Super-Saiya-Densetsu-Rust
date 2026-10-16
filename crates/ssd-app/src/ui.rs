@@ -60,6 +60,8 @@ pub struct View<'a> {
     pub symbols: Option<&'a Symbols>,
     /// The frames of the Routines bar strip.
     pub history: &'a FrameHistory,
+    /// The touch controls (M9), drawn over the game when they are on.
+    pub touch: Option<&'a crate::touch::Touch>,
 }
 
 /// Width the controls bar needs in one row; narrower, it takes two.
@@ -88,18 +90,36 @@ pub fn draw(
     hd: Hd<'_>,
 ) {
     let on_screen = hd.as_ref().is_some_and(|layer| layer.menu);
+    // The touch controls (M9) shrink the picture's area to what the controls leave, and paint over everything.
+    let touch = view.touch.filter(|t| t.enabled && !panel.open);
+    let area = touch.and_then(crate::touch::Touch::picture_area);
     if panel.open {
         header(ui, view, actions);
         side_panel(ui, view, panel, actions);
-        controls_bar(ui, view.controls, actions);
-        game_area(ui, games, view.verify_labels.as_ref(), GROUND, hd);
+        let now = ui.ctx().input(|i| i.time);
+        controls_bar(ui, view.controls, panel.notice(now), actions);
+        game_area(ui, games, view.verify_labels.as_ref(), GROUND, hd, None);
     } else {
-        game_area(ui, games, view.verify_labels.as_ref(), Color32::BLACK, hd);
-        if !on_screen {
+        game_area(ui, games, view.verify_labels.as_ref(), Color32::BLACK, hd, area);
+        if !on_screen && touch.is_none() {
             pill(ui.ctx(), view.status.fps, actions);
         }
         toast(ui.ctx(), panel, actions);
+        let now = ui.ctx().input(|i| i.time);
+        if let Some(text) = panel.notice(now).map(str::to_owned) {
+            notice(ui.ctx(), &text);
+        }
     }
+    if let Some(t) = touch {
+        let layer = egui::LayerId::new(Order::Foreground, Id::new("touch-controls"));
+        crate::touch::draw::paint(&ui.ctx().layer_painter(layer), t);
+    }
+}
+
+/// The game alone, as the window shows it with the panel closed and nothing over it: the picture of a
+/// screenshot. An HD menu on screen takes the area as in [`draw`].
+pub fn draw_game(ui: &mut Ui, games: &[GameImage], hd: Hd<'_>) {
+    game_area(ui, games, None, Color32::BLACK, hd, None);
 }
 
 // --- the game ---------------------------------------------------------------------------------
@@ -114,9 +134,11 @@ fn game_area(
     labels: Option<&[String; 2]>,
     ground: Color32,
     hd: Hd<'_>,
+    inset: Option<Rect>,
 ) {
-    let rect = ui.available_rect_before_wrap();
-    ui.painter().rect_filled(rect, 0.0, ground);
+    let full = ui.available_rect_before_wrap();
+    ui.painter().rect_filled(full, 0.0, ground);
+    let rect = inset.unwrap_or(full);
     let overlay = match hd {
         Some(Layer { list, art, menu: true }) => {
             let picture = games.first().map_or(rect, |game| picture_of(ui, rect, game));
@@ -213,6 +235,25 @@ fn pill(ctx: &egui::Context, fps: f32, actions: &mut Vec<PanelAction>) {
                 actions.push(PanelAction::TogglePanel);
             }
         });
+}
+
+/// The line after a screenshot, bottom-centre, while the panel is closed.
+fn notice(ctx: &egui::Context, text: &str) {
+    egui::Area::new(Id::new("shot-notice"))
+        .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -16.0))
+        .order(Order::Foreground)
+        .show(ctx, |ui| {
+            Frame::new()
+                .fill(TOAST_FILL)
+                .stroke(Stroke::new(1.0, TOAST_LINE))
+                .corner_radius(CornerRadius::same(8))
+                .inner_margin(Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.label(RichText::new(text).color(TOAST_TEXT));
+                });
+        });
+    // Keep the countdown running even when nothing else changes.
+    ctx.request_repaint();
 }
 
 /// The message bottom-right while the panel is closed.
@@ -529,7 +570,12 @@ fn centered_row(ui: &mut Ui, id: &str, add_contents: impl FnOnce(&mut Ui)) {
     });
 }
 
-fn controls_bar(ui: &mut Ui, controls: &Controls, actions: &mut Vec<PanelAction>) {
+fn controls_bar(
+    ui: &mut Ui,
+    controls: &Controls,
+    notice: Option<&str>,
+    actions: &mut Vec<PanelAction>,
+) {
     Panel::bottom("controls")
         .resizable(false)
         .show_separator_line(false)
@@ -553,6 +599,7 @@ fn controls_bar(ui: &mut Ui, controls: &Controls, actions: &mut Vec<PanelAction>
                 });
                 centered_row(ui, "states", |ui| states(ui, controls, actions));
             }
+            centered_row(ui, "screenshots", |ui| screenshots(ui, notice, actions));
         });
 }
 
@@ -581,6 +628,22 @@ fn speed(ui: &mut Ui, controls: &Controls, actions: &mut Vec<PanelAction>) {
     let selected = Speed::ALL.iter().position(|s| *s == controls.speed).unwrap_or(0);
     if let Some(i) = segmented(ui, "speed", &labels, selected, vec2(38.0, 30.0)) {
         actions.push(PanelAction::SetSpeed(Speed::ALL[i]));
+    }
+}
+
+/// The screenshot buttons, and the line that tells where the last one went.
+fn screenshots(ui: &mut Ui, notice: Option<&str>, actions: &mut Vec<PanelAction>) {
+    let font = FontId::proportional(12.0);
+    ui.label(RichText::new("Screenshot").size(12.0).color(MUTED));
+    ui.spacing_mut().item_spacing.x = 8.0;
+    if button(ui, "Save screenshot", font.clone(), None, true, None) {
+        actions.push(PanelAction::Screenshot);
+    }
+    if button(ui, "Save 1x frame", font, None, true, None) {
+        actions.push(PanelAction::ScreenshotFrame);
+    }
+    if let Some(text) = notice {
+        ui.label(RichText::new(text).size(11.0).color(TOAST_TEXT));
     }
 }
 
@@ -655,6 +718,7 @@ mod tests {
             machine,
             symbols,
             history: &history,
+            touch: None,
         };
         let games = [GameImage {
             id: egui::TextureId::default(),
@@ -769,6 +833,7 @@ mod tests {
             machine: &machine,
             symbols: None,
             history: &history,
+            touch: None,
         };
         let raw = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1440.0, 900.0))),

@@ -99,3 +99,75 @@ note = "reviewed: the colour check's skin share of chibi art; the costumes are i
 reason = "map"
 item = "08:CB70"
 note = "a cutscene's picture drawn on BG2 with its own tile set: no layer art yet"
+
+# Character poses that are not drawn from art, named one by one (a mode never covers them).
+
+[[exception]]
+reason = "character"
+items = ["pose:6227e389c89fd76e", "pose:56aeef6f27b8e42a", "pose:b6c680e2dd13f824", "pose:42b6a968b8493e49", "pose:492e10bf8b6fbe92", "pose:75435fb69c99e28a", "pose:8e8c90f84001fcbc", "pose:2621e21c29e52139", "pose:4d1b5087f55c2d7c", "pose:e575053c85d2e426", "pose:8a2efa524283bef4", "pose:5bfc4e229a7dba5d", "pose:d77c8c119240198b", "pose:41f2777f8c42339e", "pose:b9528a5fe1ef005f", "pose:6f68cb64fe91796f", "pose:335ffa7fcb7d9524", "pose:c75cd6d34dcea68e", "pose:37eb3ffd56bbf801", "pose:2ce2cfa5532926b0", "pose:04f29f6c47d497a2", "pose:155084ba648a4cae", "pose:27d248d981fa33ea", "pose:4caec313a2e23773", "pose:549962ec07b6189a", "pose:6696c80a78e0b0e3", "pose:7153d6698d2ea723", "pose:77d91228db501a63", "pose:c80117382e2b673d", "pose:d164832bf5c7825e", "pose:e0f4f8f9ee511325", "pose:423f05da5599c402"]
+note = "the black summoning silhouette of the wish dragon (Porunga/Shenron): the game draws a flat black shape; its art is the Shenron fix's"
+
+[[exception]]
+reason = "character"
+items = ["pose:162c0513f174273c", "pose:37fa28d43277e856", "pose:47a0e3be6b7b7c6e", "pose:84dad9654fab6d57", "pose:a066629f48408e52", "pose:ad29d515da4060c6", "pose:aecf0d164810f826", "pose:0ae167afc823808d", "pose:35486d1479d14e1d", "pose:70efbb496676da68", "pose:f375ce82219b4a08"]
+note = "the Capsule Corporation's round capsule with its ground shadow (an object, not a character)"
+
+# Portraits drawn as sprites (their art is drawn in every frame but the ones where the game fades the
+# palette: the pose then has other colours than the art was made for).
+[[exception]]
+reason = "character"
+part = "secret-ginyu-goku-duel"
+item = "pose:695459fedb6cecfd"
+note = "a portrait sprite in one frame of a palette fade (art drawn in every other frame)"
+
+[[exception]]
+reason = "character"
+part = "secret-king-kai-planet"
+item = "pose:15a846028d72db5e"
+note = "a portrait sprite in one frame of a palette fade (art drawn in every other frame)"
+
+[[exception]]
+reason = "character"
+part = "secret-nail-porunga"
+item = "pose:e71c2080188997fb"
+note = "a portrait sprite during a palette fade (art drawn in every other frame)"
+
+[[exception]]
+reason = "character"
+part = "secret-fake-nail"
+item = "pose:e71c2080188997fb"
+note = "a portrait sprite in one frame of a palette fade (art drawn in every other frame)"
+
+[[exception]]
+reason = "character"
+part = "secret-saiyan-nappa"
+item = "pose:80784eab3badbdb3"
+note = "a portrait sprite in one frame of a palette fade (art drawn in every other frame)"
+
+# A flat black ellipse with a glint (a hole in the ground, no body, no face).
+[[exception]]
+reason = "sprite"
+item = "pose:effect:missing:651f1b96f58a0df4"
+modes = [6]
+note = "a flat black hole shape with a glint: an effect, nothing to redraw"
+
+# One frame of a story picture's tile set.
+[[exception]]
+reason = "picture"
+part = "secret-king-kai-planet"
+item = "09:AA7A"
+note = "a story picture's tile set in one frame (the picture is drawn from art in every other frame)"
+
+[[exception]]
+reason = "character"
+part = "secret-raditz"
+item = "pose:b3e79004535ed6af"
+note = "Piccolo's pose has art (battle-piccolo-002) and is drawn from it in most frames; in some frames of this attack animation the sprites are read in another grouping that the art lookup misses (to look at)"
+
+# One frame (5266) of the King Kai planet replay, just before the pillar of light: the registers show
+# the pillar's layer, but the picture is the green background without the beam, drawn from art.
+[[exception]]
+part = "secret-king-kai-planet"
+reason = "dropout"
+item = "gap-kk-pillar"
+note = "pillar art not drawn in the pre-summoning frame (5266): to fix"

@@ -21,7 +21,7 @@ egui-wgpu = { workspace = true }
 wgpu = { workspace = true }
 bytemuck = { workspace = true }
 snes-config = { workspace = true }
-sdl3 = { workspace = true }
+sdl3 = { workspace = true, features = ["build-from-source-static"] }
 pollster = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }

@@ -1771,3 +1771,94 @@ fn an_effect_piece_under_line_224_is_placed_beside_the_band_pieces_a_figure_took
     assert_eq!(pixel(&plain, 41 * 4 + 1, 236 * 4 + 1), [255, 255, 255]);
     assert_eq!(pixel(&drawn, 41 * 4 + 1, 236 * 4 + 1), [255, 0, 0], "the effect's own piece");
 }
+
+/// A pack of two portrait streams, each with one picture over its first 16 tiles (the keys of the
+/// tiles are told apart by `seed`), and the frame whose BG1 shows a 4 x 4 block of characters at
+/// map cell (2, 2): the tile of cell `n` is `tiles(n)`, a stream and a tile number.
+fn portrait_block(
+    dir: &std::path::Path,
+    tiles: impl Fn(usize) -> (usize, usize),
+) -> (Arc<Pack>, FrameLog) {
+    write_png(&dir.join("art/a.png"), 128, 128, |_, _| [10, 0, 0, 255]);
+    write_png(&dir.join("art/b.png"), 128, 128, |_, _| [0, 10, 0, 255]);
+    let character_of = |stream: usize, tile: usize| {
+        let mut chars = character();
+        chars[1] = (stream * 100 + tile + 1) as u16;
+        chars
+    };
+    let asset = |stream: usize, id: &str| Asset {
+        id: id.to_owned(),
+        bpp: 4,
+        mode: Mode::Indexed,
+        columns: 16,
+        keys: (0..16).map(|tile| word_key(&character_of(stream, tile))).collect(),
+        art: String::new(),
+    };
+    let assets = vec![asset(0, "portrait/16:8A9B/4bpp"), asset(1, "portrait/16:A780/4bpp")];
+    let picture = |name: &str, asset: &str, art: &str| Picture {
+        name: name.to_owned(),
+        asset: asset.to_owned(),
+        tiles: std::array::from_fn(|n| n as u16),
+        palette: Palette::default(),
+        art: art.to_owned(),
+    };
+    let art = ArtIndex::new(
+        vec![
+            picture("face-8A9B-1", "portrait/16:8A9B/4bpp", "art/a.png"),
+            picture("face-A780-1", "portrait/16:A780/4bpp", "art/b.png"),
+        ],
+        Vec::new(),
+    );
+    let mut log = log(regs());
+    for cell in 0..16_usize {
+        let (stream, tile) = tiles(cell);
+        // Character `cell + 1` of the base holds the tile
+        let at = 0x1000 + (cell + 1) * 16;
+        log.vram[at..at + 16].copy_from_slice(&character_of(stream, tile));
+        log.vram[0x0400 + (2 + cell / 4) * 32 + 2 + cell % 4] = (cell + 1) as u16;
+    }
+    (pack_of(dir, assets, art), log)
+}
+
+#[test]
+fn a_portrait_drawn_from_one_stream_is_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let (pack, log) = portrait_block(dir.path(), |cell| (0, cell));
+    let tally = tallied(pack, &log);
+    assert_eq!(tally.portraits.len(), 1, "{:?}", tally.portraits);
+    let portrait = &tally.portraits[0];
+    assert_eq!(portrait.cells, 0xFFFF);
+    assert_eq!(portrait.fault(), None);
+}
+
+#[test]
+fn a_portrait_whose_halves_are_two_streams_is_drawn_whole_from_one() {
+    let dir = tempfile::tempdir().unwrap();
+    // The top two rows of one character, the bottom two of another: the game's VRAM mixed two faces
+    let (pack, log) = portrait_block(dir.path(), |cell| (usize::from(cell >= 8), cell));
+    let tally = tallied(pack, &log);
+    assert_eq!(tally.portraits.len(), 1, "{:?}", tally.portraits);
+    let portrait = &tally.portraits[0];
+    assert_eq!(portrait.pictures.len(), 1, "one picture draws all of it: {portrait:?}");
+    assert_eq!(portrait.cells, 0xFFFF, "every cell");
+    assert_eq!(portrait.bound_assets.len(), 2, "the characters were of two streams");
+    assert_eq!(portrait.rows.len(), 1);
+    // (the audit still says what the game showed)
+    let fault = portrait.fault().unwrap();
+    assert!(fault.contains("characters are of") && fault.contains("16:A780"), "{fault}");
+}
+
+#[test]
+fn a_portrait_whose_halves_use_two_palette_rows_is_drawn_in_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (pack, mut log) = portrait_block(dir.path(), |cell| (usize::from(cell >= 8), cell));
+    // The top two rows are also in the palette of another row (BG palette 2)
+    for cell in 0..8_usize {
+        log.vram[0x0400 + (2 + cell / 4) * 32 + 2 + cell % 4] |= 2 << 10;
+    }
+    let tally = tallied(pack, &log);
+    assert_eq!(tally.portraits.len(), 1, "{:?}", tally.portraits);
+    let portrait = &tally.portraits[0];
+    assert_eq!(portrait.pictures.len(), 1, "{portrait:?}");
+    assert_eq!(portrait.rows.len(), 1, "one row: {portrait:?}");
+}

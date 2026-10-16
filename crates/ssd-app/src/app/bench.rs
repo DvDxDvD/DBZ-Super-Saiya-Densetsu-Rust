@@ -195,6 +195,7 @@ fn run_one(
                     machine: shown,
                     symbols,
                     history,
+                    touch: None,
                 };
                 let layer = frame_layer(scene.as_ref(), overlay.as_ref(), hd_art.as_deref_mut());
                 ui::draw(ui, &view, games, panel, &mut actions, layer);

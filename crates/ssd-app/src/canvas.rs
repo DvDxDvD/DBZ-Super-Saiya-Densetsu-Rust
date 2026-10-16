@@ -105,14 +105,66 @@ pub struct Canvas {
     queue: wgpu::Queue,
 }
 
-/// The wgpu instance: DX12 first on Windows, where wgpu prefers Vulkan, which shows wrong colours
-/// on some AMD drivers.
+/// The graphics backends to try, in order. Windows: DX12 (wgpu prefers Vulkan there, which shows wrong
+/// colours on some AMD drivers). Android: `WGPU_BACKEND` if set (for example `gl`), else OpenGL ES alone on an
+/// emulator (its Vulkan is a software driver that can take the process down), else Vulkan and then OpenGL ES
+/// for a device whose Vulkan driver fails. Elsewhere the primary ones.
 #[must_use]
-pub fn instance() -> wgpu::Instance {
+pub fn backends_to_try() -> Vec<wgpu::Backends> {
+    if cfg!(windows) {
+        vec![wgpu::Backends::DX12]
+    } else if cfg!(target_os = "android") {
+        if let Some(forced) = wgpu::Backends::from_env() {
+            vec![forced]
+        } else if on_emulator() {
+            vec![wgpu::Backends::GL]
+        } else {
+            vec![wgpu::Backends::VULKAN, wgpu::Backends::GL]
+        }
+    } else {
+        vec![wgpu::Backends::PRIMARY]
+    }
+}
+
+/// Whether the Android system is an emulator (the system properties of the emulator's hardware).
+#[cfg(target_os = "android")]
+#[allow(unsafe_code)]
+fn on_emulator() -> bool {
+    fn property(name: &str) -> String {
+        let Ok(name) = std::ffi::CString::new(name) else { return String::new() };
+        let mut value = [0 as std::ffi::c_char; 92]; // PROP_VALUE_MAX
+        // SAFETY: `name` is NUL-terminated and `value` has the room the call writes (PROP_VALUE_MAX bytes).
+        let length = unsafe { libc::__system_property_get(name.as_ptr(), value.as_mut_ptr()) };
+        let bytes: Vec<u8> = value.iter().take(length.max(0) as usize).map(|&c| c as u8).collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+    let emulated = property("ro.kernel.qemu") == "1"
+        || ["ro.hardware", "ro.boot.hardware", "ro.product.board"].iter().any(|name| {
+            let value = property(name);
+            value.contains("ranchu") || value.contains("goldfish")
+        });
+    log::info!("running on an emulator: {emulated}");
+    emulated
+}
+
+#[cfg(not(target_os = "android"))]
+fn on_emulator() -> bool {
+    false
+}
+
+/// A wgpu instance on `backends`.
+#[must_use]
+pub fn instance_on(backends: wgpu::Backends) -> wgpu::Instance {
     wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: if cfg!(windows) { wgpu::Backends::DX12 } else { wgpu::Backends::PRIMARY },
+        backends,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     })
+}
+
+/// The wgpu instance of the first backend to try.
+#[must_use]
+pub fn instance() -> wgpu::Instance {
+    instance_on(backends_to_try().first().copied().unwrap_or(wgpu::Backends::PRIMARY))
 }
 
 /// A device and its queue on `adapter`, with the default features and limits.
@@ -124,7 +176,7 @@ pub fn device(adapter: &wgpu::Adapter) -> anyhow::Result<(wgpu::Device, wgpu::Qu
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("ssd device"),
         required_features: wgpu::Features::empty(),
-        required_limits: wgpu::Limits::default(),
+        required_limits: required_limits(adapter),
         experimental_features: wgpu::ExperimentalFeatures::default(),
         memory_hints: wgpu::MemoryHints::default(),
         trace: wgpu::Trace::Off,
@@ -311,4 +363,10 @@ impl Canvas {
             self.renderer.free_texture(&id);
         }
     }
+}
+
+/// The limits the device asks for: the defaults, except on Android, where an OpenGL ES adapter has no compute
+/// stage and so the adapter's own limits are the ones it can give.
+fn required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    if cfg!(target_os = "android") { adapter.limits() } else { wgpu::Limits::default() }
 }

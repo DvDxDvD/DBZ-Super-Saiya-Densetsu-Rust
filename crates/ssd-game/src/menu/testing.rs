@@ -35,6 +35,8 @@ pub(crate) struct FakeMenu {
     pub stale: bool,
     /// A message waits for A (after Talk or Look).
     pub message: bool,
+    /// The Talk or Look message holds the field (`field_state` 5), as a message with a person of the map does.
+    pub hold: bool,
     /// Frames until the timed change of the state (opening, take-off, the Item list).
     timer: u32,
     /// The joypad of the last frame, for the presses.
@@ -99,7 +101,7 @@ impl FakeMenu {
                     self.timer = OPENING_FRAMES;
                 }
             }
-            1 => self.menu(down, a, b),
+            1 | 5 => self.menu(down, a, b),
             _ => {}
         }
     }
@@ -182,6 +184,9 @@ impl FakeMenu {
         if self.row_of("Talk") == Some(row) || self.row_of("Look") == Some(row) {
             self.message = true;
             self.busy = true;
+            if self.hold {
+                self.field = 5;
+            }
         } else if self.row_of("Fly") == Some(row) {
             self.screen = 1;
             self.busy = true;

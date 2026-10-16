@@ -19,12 +19,14 @@ mod bgshadow;
 mod draw;
 mod field;
 mod partial;
+mod portrait_check;
 pub(crate) mod poses;
 mod recolour;
 mod resample;
 #[cfg(test)]
 mod tests;
 
+pub use portrait_check::PortraitUse;
 pub use tally::{Fate, FrameTally, ItemKey, TallyCount, TallyItem, TallyLayer};
 mod tally;
 
@@ -205,6 +207,10 @@ pub struct PoseStat {
     pub fighter: bool,
     /// A sprite group of the field (neither a fighter nor an effect).
     pub field: bool,
+    /// A ground shadow (one dark flat ellipse), which the renderer draws from the game's own shape.
+    pub shadow: bool,
+    /// The OAM entries the pose draws or hides (bit n: entry n), the ones another pose took not counted.
+    pub sprites: u128,
     /// The art index has art for the pose, and it was drawn.
     pub matched: bool,
     /// The art was made for another palette than the pose's, and was drawn recoloured.
@@ -339,6 +345,10 @@ pub struct ArtStats {
     /// whether the frame draws it (`bound`: the frame is classed as the field and its layer slot was
     /// bound to that art).
     pub field_map: FieldMapArt,
+    /// The entries of the backgrounds' index whose content the frame shows and that it does not draw
+    /// (the layer's slot was lost: VRAM loaded while it is displayed, or the field's map took its
+    /// place).
+    pub bg_unbound: Vec<u32>,
 }
 
 /// See [`ArtStats::field_map`].
@@ -390,6 +400,9 @@ pub(crate) struct ArtState {
     pub(crate) binder: Option<Binder<'static>>,
     /// Whether [`ArtStats::drawn`] is filled.
     pub(crate) measure: bool,
+    /// Draw the backgrounds' art alone (no poses, portraits or shadows): what an audit compares the
+    /// layers' colours with the original's by.
+    pub(crate) backgrounds_only: bool,
     /// The last answer of [`Lookup::choose`] and what it was asked.
     memo: Memo,
     /// The record of each pixel of the frame being drawn.
@@ -453,6 +466,7 @@ impl ArtState {
             unit_sizes: std::sync::OnceLock::new(),
             shapes: FxHashMap::default(),
             measure: false,
+            backgrounds_only: false,
             memo: None,
             pixels: Vec::new(),
             pose_sprites: Vec::new(),
@@ -525,6 +539,9 @@ impl ArtState {
         } else {
             self.lookup.bg_classes.find(&self.pack.bg, log)
         };
+        if !self.lookup.bg_classes.is_empty() {
+            self.stats.bg_unbound = self.lookup.bg_classes.unbound(&self.pack.bg, log, &slots);
+        }
         self.plane = None;
         if let Some((at, plane)) = self.find_plane(log) {
             slots.insert(0, Slot::plane(at));
@@ -740,7 +757,7 @@ impl ArtState {
     pub(crate) fn find_poses_in(&mut self, log: &FrameLog, view: &poses::View) -> Vec<(Pose, u32)> {
         self.cgram.clear();
         self.cgram.extend_from_slice(&log.cgram_start);
-        if self.pack.art.objects().is_empty() {
+        if self.pack.art.objects().is_empty() || self.backgrounds_only {
             return Vec::new();
         }
         let sprites = poses::sprites_in(log, view);
@@ -826,6 +843,8 @@ impl ArtState {
             stats.push(PoseStat {
                 fighter: pose.fighter,
                 field: pose.field,
+                shadow: pose.shadow,
+                sprites: pose.sprites & !pose.excluded,
                 matched: false,
                 recoloured: false,
                 visible: seen(pose),
@@ -1049,8 +1068,12 @@ impl ArtState {
     ) {
         let scale = self.scale;
         let hidden = found.iter().fold(0_u128, |all, (pose, _)| all | pose.sprites);
+        self.repair_portraits();
         let ground_shadows = bgshadow::find(frame, &mut self.pixels);
         self.draw_backgrounds(hd, hidden, x_offset);
+        if self.backgrounds_only {
+            return;
+        }
         let mut images = FxHashMap::default();
         let mut recoloured = std::collections::BTreeSet::new();
         let wanted_rows: std::collections::BTreeSet<(u32, u8)> = self

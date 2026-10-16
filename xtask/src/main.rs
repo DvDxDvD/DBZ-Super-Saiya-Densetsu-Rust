@@ -17,6 +17,7 @@ mod gfx_log;
 mod hd_art_run;
 mod hd_bg;
 mod hd_coverage;
+mod hd_figures;
 mod hd_items;
 mod hd_maps;
 mod hd_margins;
@@ -35,6 +36,7 @@ mod repro;
 mod routines;
 mod save;
 mod scene_flicker;
+mod scene_mixed;
 mod scenes;
 mod shared;
 mod shots;
@@ -585,6 +587,30 @@ fn hd_art(args: &[&str]) -> anyhow::Result<ExitCode> {
         hd_art_run::Args::Scan { replay, every, pack } => {
             let dir = pack.unwrap_or(dir);
             hd_art_run::run_scan(&rom, &dir, &replay, every, &mut std::io::stdout())?
+        }
+        hd_art_run::Args::Figures { paths, jobs, pack, walks, frames, dump, gaps } => {
+            let dir = pack.unwrap_or(dir);
+            if walks.is_empty() {
+                let files = shared::replay_files(&paths, &replays)?;
+                hd_figures::run(&rom, &dir, &files, jobs, &mut std::io::stdout())?
+            } else {
+                let pack = std::sync::Arc::new(
+                    ssd_hd::pack::Pack::open(&dir).map_err(|e| anyhow::anyhow!("the pack: {e}"))?,
+                );
+                let mut total = 0;
+                for (map, party) in &walks {
+                    total += hd_figures::walk(
+                        &rom,
+                        &repo_root()?,
+                        &pack,
+                        (*map, party),
+                        (frames, dump),
+                        gaps.as_deref(),
+                        &mut std::io::stdout(),
+                    )?;
+                }
+                u8::from(total > 0)
+            }
         }
         hd_art_run::Args::Items { out, pack } => {
             let dir = pack.unwrap_or(dir);

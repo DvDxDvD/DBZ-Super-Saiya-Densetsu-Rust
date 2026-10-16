@@ -33,6 +33,8 @@ pub struct Request<'a> {
     pub script: &'a [Line],
     /// The Enhanced picture (`--hd-scale`), or the Classic one when none.
     pub enhanced: Option<ssd_hd::HdOptions>,
+    /// Draw the touch controls (`--touch-ui`); the script's `touch` lines set their state.
+    pub touch: bool,
 }
 
 /// Where the time of one presented frame went, in the order of the stages: the interface run and the
@@ -155,57 +157,77 @@ impl Offscreen {
     /// Copies the target into a buffer the CPU can map, and returns its rows without the padding
     /// wgpu adds to each.
     fn read_back(&self) -> anyhow::Result<Vec<u8>> {
-        let device = self.canvas.device();
-        let row = self.width * 4;
-        let alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded = row.div_ceil(alignment) * alignment;
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("ui snapshot readback"),
-            size: u64::from(padded) * u64::from(self.height),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut encoder = device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("ui snapshot") });
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.target,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded),
-                    rows_per_image: Some(self.height),
-                },
-            },
-            wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
-        );
-        self.canvas.queue().submit(std::iter::once(encoder.finish()));
-        let (sender, receiver) = std::sync::mpsc::channel();
-        buffer.map_async(wgpu::MapMode::Read, .., move |result| {
-            // The receiver waits below, so it is there; a failed send would mean it is gone.
-            let _ = sender.send(result);
-        });
-        device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| anyhow::anyhow!("waiting for the GPU: {e}"))?;
-        receiver
-            .recv()
-            .context("the snapshot was not read back")?
-            .map_err(|e| anyhow::anyhow!("mapping the snapshot: {e}"))?;
-        let mapped = buffer
-            .get_mapped_range(..)
-            .map_err(|e| anyhow::anyhow!("reading the snapshot: {e}"))?;
-        let mut pixels = Vec::with_capacity(row as usize * self.height as usize);
-        for line in mapped.chunks_exact(padded as usize) {
-            pixels.extend_from_slice(&line[..row as usize]);
-        }
-        drop(mapped);
-        buffer.unmap();
-        Ok(pixels)
+        read_texture(
+            self.canvas.device(),
+            self.canvas.queue(),
+            &self.target,
+            self.width,
+            self.height,
+        )
     }
+}
+
+/// Copies a 4-byte-per-pixel texture (`COPY_SRC`) into a buffer the CPU can map, and returns its rows
+/// without the padding wgpu adds to each: the readback of the snapshots and of the window's screenshots.
+///
+/// # Errors
+///
+/// The pixels cannot be read back from the GPU.
+pub fn read_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let row = width * 4;
+    let alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let padded = row.div_ceil(alignment) * alignment;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("ui snapshot readback"),
+        size: u64::from(padded) * u64::from(height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("ui snapshot") });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+    );
+    queue.submit(std::iter::once(encoder.finish()));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    buffer.map_async(wgpu::MapMode::Read, .., move |result| {
+        // The receiver waits below, so it is there; a failed send would mean it is gone.
+        let _ = sender.send(result);
+    });
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .map_err(|e| anyhow::anyhow!("waiting for the GPU: {e}"))?;
+    receiver
+        .recv()
+        .context("the snapshot was not read back")?
+        .map_err(|e| anyhow::anyhow!("mapping the snapshot: {e}"))?;
+    let mapped =
+        buffer.get_mapped_range(..).map_err(|e| anyhow::anyhow!("reading the snapshot: {e}"))?;
+    let mut pixels = Vec::with_capacity(row as usize * height as usize);
+    for line in mapped.chunks_exact(padded as usize) {
+        pixels.extend_from_slice(&line[..row as usize]);
+    }
+    drop(mapped);
+    buffer.unmap();
+    Ok(pixels)
 }

@@ -72,6 +72,13 @@ impl AutoRun {
     }
 }
 
+/// Whether a battle is on (the game mode is a battle and `in_battle` is set): the touch controls' automatic switch
+/// to the minimal layout reads it.
+#[must_use]
+pub fn in_battle(wram: &[u8]) -> bool {
+    byte(wram, d::IN_BATTLE) == IN_BATTLE && byte(wram, d::GAME_MODE) & 0x7F == BATTLE_MODE
+}
+
 /// Whether the battle is in its attack animation: nothing is asked of the player, no message is up, and the state
 /// machine only waits for the figures to finish. The player's buttons do nothing here (checked on the reference
 /// battles, `docs/re/data/gameplay.md`), so the frames can run faster without a press being missed.

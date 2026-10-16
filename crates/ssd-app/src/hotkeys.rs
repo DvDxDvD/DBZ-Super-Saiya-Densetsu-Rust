@@ -9,6 +9,8 @@ pub enum Hotkey {
     LoadState,
     Slot(u8),
     CycleSpeed,
+    /// Saves the picture of the window as a PNG.
+    Screenshot,
     Pause,
     /// Shows or hides the debug panel.
     TogglePanel,

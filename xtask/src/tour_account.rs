@@ -193,6 +193,10 @@ pub struct Context {
     pub battle: bool,
     /// An animation of the battle (an attack, a special attack, a last fight).
     pub animation: bool,
+    /// A story picture (game mode `$07`: the flights over the map and the pictures of the story),
+    /// where the characters are drawn as effect poses.
+    #[serde(default)]
+    pub story: bool,
 }
 
 /// `game_mode` in work RAM.
@@ -204,7 +208,11 @@ impl Context {
     #[must_use]
     pub fn of_wram(wram: &[u8]) -> Self {
         let mode = wram.get(GAME_MODE).map_or(0, |mode| mode & 0x7F);
-        Self { battle: matches!(mode, 0x02 | 0x04 | 0x0C), animation: matches!(mode, 0x04 | 0x0C) }
+        Self {
+            battle: matches!(mode, 0x02 | 0x04 | 0x0C),
+            animation: matches!(mode, 0x04 | 0x0C),
+            story: mode == 0x07,
+        }
     }
 }
 
@@ -603,9 +611,9 @@ mod tests {
         TallyCount { layer, bpp: 4, asset, tile, pose: None, art, font: false, pixels }
     }
 
-    const FIELD: Context = Context { battle: false, animation: false };
-    const COMMAND: Context = Context { battle: true, animation: false };
-    const ANIMATION: Context = Context { battle: true, animation: true };
+    const FIELD: Context = Context { battle: false, animation: false, story: false };
+    const COMMAND: Context = Context { battle: true, animation: false, story: false };
+    const ANIMATION: Context = Context { battle: true, animation: true, story: false };
 
     #[test]
     fn assets_are_told_apart_by_the_id_of_their_stream() {
@@ -669,6 +677,7 @@ mod tests {
             items: vec![],
             shapes: vec![],
             uses: vec![],
+            portraits: vec![],
         };
         totals.add_frame(&tally, FIELD, &table, &Where::default());
         assert_eq!(
@@ -727,7 +736,7 @@ mod tests {
     }
 
     fn tally(counts: Vec<TallyCount>, items: Vec<TallyItem>) -> FrameTally {
-        FrameTally { counts, items, shapes: vec![], uses: vec![] }
+        FrameTally { counts, items, shapes: vec![], uses: vec![], portraits: vec![] }
     }
 
     fn tile_item(tile: u32, pixels: u64) -> TallyItem {

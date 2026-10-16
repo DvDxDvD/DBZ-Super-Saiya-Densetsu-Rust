@@ -27,9 +27,9 @@ const BUTTON_OF: [PadButton; BUTTONS] = [
     PadButton::Select,
 ];
 
-/// The shortcut of each of the last four actions.
+/// The shortcut of each of the last five actions.
 const SHORTCUT_OF: [Hotkey; ACTIONS - BUTTONS] =
-    [Hotkey::CycleSpeed, Hotkey::Pause, Hotkey::SaveState, Hotkey::LoadState];
+    [Hotkey::CycleSpeed, Hotkey::Pause, Hotkey::SaveState, Hotkey::LoadState, Hotkey::Screenshot];
 
 /// The code the page keeps for a key (the USB usage number SDL calls the scancode); 0 for a key it cannot name.
 fn key_code(sc: Scancode) -> u8 {
@@ -168,6 +168,7 @@ mod tests {
         for (key, hotkey) in [
             (Scancode::F5, Hotkey::SaveState),
             (Scancode::F9, Hotkey::LoadState),
+            (Scancode::F12, Hotkey::Screenshot),
             (Scancode::F1, Hotkey::TogglePanel),
             (Scancode::_1, Hotkey::Slot(1)),
             (Scancode::_4, Hotkey::Slot(4)),
@@ -179,6 +180,9 @@ mod tests {
         }
         assert_eq!(map.key_hotkey(Scancode::X), None);
         assert_eq!(map.pad_hotkey(Button::Start), None, "no pad shortcut by default");
+        for button in [Button::South, Button::Back, Button::Guide, Button::Touchpad] {
+            assert_eq!(map.pad_hotkey(button), None, "{button:?}: the screenshot has no button");
+        }
     }
 
     #[test]
@@ -195,6 +199,7 @@ mod tests {
             (58, Scancode::F1),
             (62, Scancode::F5),
             (66, Scancode::F9),
+            (69, Scancode::F12),
             (79, Scancode::Right),
             (82, Scancode::Up),
             (229, Scancode::RShift),

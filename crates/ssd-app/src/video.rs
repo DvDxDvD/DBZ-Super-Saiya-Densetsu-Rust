@@ -109,7 +109,9 @@ pub struct Video {
     // SAFETY: the surface must not outlive the window it was created from, so the window is
     // declared after it and dropped after it.
     surface_config: wgpu::SurfaceConfiguration,
-    surface: wgpu::Surface<'static>,
+    /// Gone while the app is in the background on Android (its native window is lost); see [`Video::suspend`].
+    surface: Option<wgpu::Surface<'static>>,
+    instance: wgpu::Instance,
     cursors: Cursors,
     clipboard: ClipboardUtil,
     text_input: TextInputUtil,
@@ -119,6 +121,61 @@ pub struct Video {
     reconfigure: Reconfigure,
     started: Instant,
     window: Window,
+}
+
+/// The wgpu surface of `window`.
+fn create_surface(
+    instance: &wgpu::Instance,
+    window: &Window,
+) -> anyhow::Result<wgpu::Surface<'static>> {
+    // SAFETY: the callers keep the surface in `Video`, which drops it before the window (field order).
+    unsafe {
+        instance.create_surface_unsafe(
+            wgpu::SurfaceTargetUnsafe::from_display_and_window(window, window)
+                .map_err(|e| anyhow::anyhow!("getting the window handle: {e}"))?,
+        )
+    }
+    .map_err(|e| anyhow::anyhow!("creating the wgpu surface: {e}"))
+}
+
+type Gpu = (wgpu::Instance, wgpu::Surface<'static>, wgpu::Adapter, wgpu::Device, wgpu::Queue);
+
+/// The instance, surface, adapter, device and queue on the first backend of [`canvas::backends_to_try`] that
+/// works (Android tries Vulkan, then OpenGL ES). A software Vulkan adapter is passed over while another backend
+/// is left to try.
+fn open_gpu(window: &Window) -> anyhow::Result<Gpu> {
+    let backends = canvas::backends_to_try();
+    let mut last = anyhow::anyhow!("no graphics backend to try");
+    for (index, &backend) in backends.iter().enumerate() {
+        let more = index + 1 < backends.len();
+        let attempt = || -> anyhow::Result<Gpu> {
+            let instance = canvas::instance_on(backend);
+            let surface = create_surface(&instance, window)?;
+            let adapter =
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                    apply_limit_buckets: false,
+                }))
+                .map_err(|e| anyhow::anyhow!("no wgpu adapter: {e}"))?;
+            let info = adapter.get_info();
+            log::info!("wgpu adapter {} ({:?}, {:?})", info.name, info.backend, info.device_type);
+            if more && info.device_type == wgpu::DeviceType::Cpu {
+                anyhow::bail!("{} is a software adapter", info.name);
+            }
+            let (device, queue) = canvas::device(&adapter)?;
+            Ok((instance, surface, adapter, device, queue))
+        };
+        match attempt() {
+            Ok(gpu) => return Ok(gpu),
+            Err(e) => {
+                log::warn!("graphics backend {backend:?} failed: {e:#}");
+                last = e;
+            }
+        }
+    }
+    Err(last)
 }
 
 fn window_size(window: &Window) -> (u32, u32) {
@@ -137,25 +194,7 @@ impl Video {
             log::warn!("setting the minimum window size failed: {e}");
         }
 
-        let instance = canvas::instance();
-        // SAFETY: the surface is dropped before the window (field order of `Video`).
-        let surface = unsafe {
-            instance.create_surface_unsafe(
-                wgpu::SurfaceTargetUnsafe::from_display_and_window(&window, &window)
-                    .map_err(|e| anyhow::anyhow!("getting the window handle: {e}"))?,
-            )
-        }
-        .map_err(|e| anyhow::anyhow!("creating the wgpu surface: {e}"))?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-            apply_limit_buckets: false,
-        }))
-        .map_err(|e| anyhow::anyhow!("no wgpu adapter: {e}"))?;
-        let info = adapter.get_info();
-        log::info!("wgpu adapter {} ({:?})", info.name, info.backend);
-        let (device, queue) = canvas::device(&adapter)?;
+        let (instance, surface, adapter, device, queue) = open_gpu(&window)?;
 
         let capabilities = surface.get_capabilities(&adapter);
         let format =
@@ -181,7 +220,8 @@ impl Video {
         Ok(Self {
             canvas,
             surface_config,
-            surface,
+            surface: Some(surface),
+            instance,
             cursors: Cursors::default(),
             clipboard: video.clipboard(),
             text_input,
@@ -198,6 +238,47 @@ impl Video {
     /// (`WindowEvent::Minimized` / `WindowEvent::Restored`).
     pub fn set_minimized(&mut self, minimized: bool) {
         self.minimized = minimized;
+    }
+
+    /// The app goes to the background (Android): the window's native surface is about to be destroyed, so the wgpu
+    /// surface is dropped now and nothing is drawn until [`Video::resume`].
+    #[cfg(target_os = "android")]
+    pub fn suspend(&mut self) {
+        self.surface = None;
+        self.minimized = true;
+    }
+
+    /// The app is back in the foreground: the wgpu surface is made again on the window's new native surface
+    /// (`present` tries again on its own if the window has none yet).
+    #[cfg(target_os = "android")]
+    pub fn resume(&mut self) {
+        self.minimized = false;
+        self.recreate_surface();
+    }
+
+    /// Makes the wgpu surface on the window as it is now and configures it; whether it worked.
+    fn recreate_surface(&mut self) -> bool {
+        let (width, height) = window_size(&self.window);
+        if !should_render(width, height) {
+            return false;
+        }
+        match create_surface(&self.instance, &self.window) {
+            Ok(surface) => {
+                self.surface_config.width = width;
+                self.surface_config.height = height;
+                surface.configure(self.canvas.device(), &self.surface_config);
+                self.surface = Some(surface);
+                self.reconfigure = Reconfigure::default();
+                log::info!("the surface is made again ({width} x {height})");
+                true
+            }
+            Err(e) => {
+                log::warn!(
+                    "making the surface again failed (tried again at the next frame): {e:#}"
+                );
+                false
+            }
+        }
     }
 
     /// Window or fullscreen (the desktop's own mode, so the picture keeps its aspect in the window's size).
@@ -233,7 +314,9 @@ impl Video {
         {
             self.surface_config.width = width;
             self.surface_config.height = height;
-            self.surface.configure(self.canvas.device(), &self.surface_config);
+            if let Some(surface) = &self.surface {
+                surface.configure(self.canvas.device(), &self.surface_config);
+            }
         }
     }
 
@@ -243,6 +326,12 @@ impl Video {
             pixel_density: self.window.pixel_density(),
             pixels_per_point: self.window.display_scale().max(0.1),
         }
+    }
+
+    /// The window's area in egui points: what the touch controls lay out in.
+    pub fn screen_points(&self) -> egui::Rect {
+        let (width, height) = window_size(&self.window);
+        self.geometry().screen_rect(width, height)
     }
 
     /// Seconds since the window opened: the clock of the interface.
@@ -278,16 +367,20 @@ impl Video {
         if self.minimized || !should_render(size.0, size.1) {
             return Ok(());
         }
+        if self.surface.is_none() && !self.recreate_surface() {
+            return Ok(());
+        }
         let raw =
             input.take_raw_input(self.geometry(), size, self.now(), self.canvas.max_texture_side());
         let pass = self.canvas.run(raw, views, ui);
         self.handle_platform_output(&pass.platform);
+        let Some(surface) = self.surface.as_ref() else { return Ok(()) };
 
         // The last texture was presented, so none is alive: the surface may be configured now.
         if self.reconfigure.take() {
-            self.surface.configure(self.canvas.device(), &self.surface_config);
+            surface.configure(self.canvas.device(), &self.surface_config);
         }
-        let surface_texture = match self.surface.get_current_texture() {
+        let surface_texture = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => texture,
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
                 // Drawn and presented as it is; the surface adapts to the window before the next.
@@ -295,7 +388,7 @@ impl Video {
                 texture
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(self.canvas.device(), &self.surface_config);
+                surface.configure(self.canvas.device(), &self.surface_config);
                 self.canvas.discard(pass);
                 return Ok(());
             }
@@ -312,6 +405,60 @@ impl Video {
         self.canvas.paint(pass, &view, [self.surface_config.width, self.surface_config.height]);
         self.canvas.queue().present(surface_texture);
         Ok(())
+    }
+
+    /// Draws the picture of the window, as [`Video::present`] does but into a texture of the window's
+    /// size and with the interface `ui` builds (the game alone, for a screenshot), and returns it:
+    /// width, height and the RGBA pixels, top row first. The window itself is not touched.
+    ///
+    /// # Errors
+    ///
+    /// The window is not drawn now (minimised), or the pixels cannot be read back from the GPU.
+    pub fn capture(
+        &mut self,
+        views: &[GameView<'_>],
+        ui: impl FnMut(&mut egui::Ui, &[GameImage]),
+    ) -> anyhow::Result<(u32, u32, Vec<u8>)> {
+        let (width, height) = window_size(&self.window);
+        anyhow::ensure!(!self.minimized && should_render(width, height), "the window is not drawn");
+        let format = self.surface_config.format;
+        let target = self.canvas.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("screenshot"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        // No pointer and no keys: the input is the empty one, at the window's geometry.
+        let mut input = InputAdapter::default();
+        let raw = input.take_raw_input(
+            self.geometry(),
+            (width, height),
+            self.now(),
+            self.canvas.max_texture_side(),
+        );
+        let pass = self.canvas.run(raw, views, ui);
+        self.canvas.paint(pass, &view, [width, height]);
+        let mut pixels = crate::snapshot::read_texture(
+            self.canvas.device(),
+            self.canvas.queue(),
+            &target,
+            width,
+            height,
+        )?;
+        let bgra =
+            matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        for pixel in pixels.as_chunks_mut::<4>().0 {
+            if bgra {
+                pixel.swap(0, 2);
+            }
+            pixel[3] = 255;
+        }
+        Ok((width, height, pixels))
     }
 
     /// Carries out what egui asked of the system: cursor, clipboard, text input.

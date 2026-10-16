@@ -130,6 +130,8 @@ struct State {
     option_slots: SlotOptions,
     /// The PC options changed: the frame hands them to the host to be written.
     settings_changed: bool,
+    /// A button of the Game page asked for the setup: the host takes it, and restarts the game into it.
+    setup_request: Option<Opens>,
     /// While "Apply video changes?" asks: the PC options as they were before the change, which a Revert restores.
     video_backup: Option<Values>,
     /// The frames left before the question reverts the change.
@@ -183,6 +185,7 @@ impl Driver {
                 options: Options::default(),
                 option_slots: SlotOptions::empty(),
                 settings_changed: false,
+                setup_request: None,
                 video_backup: None,
                 video_frames: 0,
                 video_apply: false,
@@ -213,6 +216,17 @@ impl Driver {
     #[must_use]
     pub fn options(&self) -> &Options {
         &self.state.options
+    }
+
+    /// The setup a button of the Game page asked for, once (the host restarts the game into it).
+    pub fn take_setup_request(&mut self) -> Option<Opens> {
+        self.state.setup_request.take()
+    }
+
+    /// The options of this PC, to change from outside the menus: the touch controls write their layout here, so the
+    /// next time the Options screen saves the file it keeps them.
+    pub fn pc_options_mut(&mut self) -> &mut Values {
+        &mut self.state.options.pc
     }
 
     /// The machine frames to run for one frame of the screen now (the Gameplay page's battle animation speed in the
@@ -260,6 +274,7 @@ impl Driver {
             options: Options { game: Values::new(), pc },
             option_slots: self.state.option_slots.clone(),
             settings_changed: reverted,
+            setup_request: None,
             video_backup: None,
             video_frames: 0,
             video_apply: reverted,
@@ -461,7 +476,7 @@ impl State {
 
     /// The device the Controls page shows is the stored one.
     fn sync_device(&mut self) {
-        self.nav.set_controls_device(controls::device(&self.options.pc));
+        self.nav.set_controls_page(controls::page(&self.options.pc));
     }
 
     /// A key of the HD: see [`Driver::key`]. The Controls page shows the stored device before and after it.
@@ -518,8 +533,15 @@ impl State {
                 }
             }
             Action::OptionsResetPage(category) => self.reset_options(&[category], probe, wram),
-            Action::OptionsResetAll => self.reset_options(&Category::ALL, probe, wram),
+            Action::OptionsResetAll => self.reset_options(Category::shown(), probe, wram),
             Action::OptionsOpen(Opens::Cheats) => self.nav.enter_cheats_from_options(),
+            Action::OptionsOpen(Opens::ResetTouchLayout) => {
+                controls::reset_touch_layout(&mut self.options.pc);
+                self.settings_changed = true;
+            }
+            Action::OptionsOpen(opens @ (Opens::Mode | Opens::Pack)) => {
+                self.setup_request = Some(opens);
+            }
             Action::OptionsVideo { keep } => self.video_answer(keep),
             Action::ResetAll => {
                 self.cheats = Cheats::neutral();
@@ -1054,7 +1076,7 @@ fn choice(screen: Screen, entry: Entry, flying: bool, town: bool) -> Option<(Vec
             let rows = command_rows(flying, town);
             let row = rows.iter().position(|&e| e == entry)?;
             let (until, arrival) = match entry {
-                Entry::Talk | Entry::Look => (Until::Busy, Arrival::Lifted),
+                Entry::Talk | Entry::Look => (Until::Taken, Arrival::Lifted),
                 Entry::Fly => (Until::Screen(1), Arrival::Lifted),
                 Entry::Land => (Until::Screen(5), Arrival::Lifted),
                 Entry::Item => (Until::ItemList, Arrival::Show(Screen::Items)),
@@ -1076,10 +1098,15 @@ fn choice(screen: Screen, entry: Entry, flying: bool, town: bool) -> Option<(Vec
         }
         Screen::Items | Screen::Cheats | Screen::Options => return None,
     };
-    let steps = vec![
-        Step::Row { row: u8::try_from(row).ok()?, rows: u8::try_from(rows).ok()? },
-        Step::Press { button: Button::A, until },
-    ];
+    // The original draws what comes next, so the curtain lifts as the last press goes: the HD cursor moved on the
+    // rows above, and the HD window does not stay up (with rows the original's own window may not have) while
+    // the original runs its message or its scene.
+    let mut steps =
+        vec![Step::Row { row: u8::try_from(row).ok()?, rows: u8::try_from(rows).ok()? }];
+    if arrival == Arrival::Lifted {
+        steps.push(Step::Lift);
+    }
+    steps.push(Step::Press { button: Button::A, until });
     Some((steps, arrival))
 }
 
@@ -1259,6 +1286,51 @@ mod tests {
         assert_eq!(frame(&mut driver, &mut menu, a), a, "the live A dismisses the message");
         frame(&mut driver, &mut menu, Joypad::default());
         assert_eq!(driver.curtain(), Curtain::Down, "the field is free again");
+    }
+
+    #[test]
+    fn a_talk_whose_message_holds_the_field_is_taken_at_once_and_the_hd_window_goes_down_with_the_press()
+     {
+        let mut driver = Driver::new(Labels::default());
+        let mut menu = FakeMenu::default();
+        menu.hold = true;
+        open_by_player(&mut driver, &mut menu);
+        driver.key(Key::Confirm, &menu.wram());
+        // The press goes under a lifted curtain: the HD window is not drawn while the plan runs.
+        for frames in 1..=12 {
+            frame(&mut driver, &mut menu, Joypad::default());
+            assert!(driver.scene(&menu.wram()).is_none(), "no HD window at frame {frames}");
+            if !driver.busy() {
+                break;
+            }
+        }
+        assert!(
+            !driver.busy(),
+            "the plan ends within a few frames, as the original takes the press"
+        );
+        assert_eq!(menu.field, 5, "the message holds the field");
+        assert_eq!(driver.curtain(), Curtain::Lifted);
+        assert_eq!(driver.last_outcome(), Some(Outcome::Reached));
+    }
+
+    #[test]
+    fn fly_hides_the_hd_window_once_the_cursor_is_on_its_row() {
+        let mut driver = Driver::new(Labels::default());
+        let mut menu = FakeMenu::default();
+        open_by_player(&mut driver, &mut menu);
+        driver.key(Key::Down, &menu.wram());
+        driver.key(Key::Down, &menu.wram());
+        driver.key(Key::Confirm, &menu.wram());
+        let mut shown = 0;
+        while driver.busy() {
+            frame(&mut driver, &mut menu, Joypad::default());
+            // The last Down is held for three frames under the HD window; then the curtain lifts.
+            if menu.cursor == 2 && driver.scene(&menu.wram()).is_some() {
+                shown += 1;
+            }
+        }
+        assert!(shown <= 3, "the window is down once the Down press is over ({shown} frames)");
+        assert_eq!(driver.curtain(), Curtain::Lifted);
     }
 
     #[test]
@@ -1730,7 +1802,7 @@ mod tests {
         driver.key(Key::Right, &wram);
         assert_eq!(driver.options().pc.get("controls.device"), Some(1));
         driver.key(Key::Down, &wram);
-        assert_eq!(driver.nav().options_row(), 17, "the gamepad's first row");
+        assert_eq!(driver.nav().options_row(), 18, "the gamepad's first row");
         driver.key(Key::Confirm, &wram);
         assert_eq!(driver.listening(), Some(Device::Gamepad));
         driver.capture(Capture::Code(17)); // Left paddle 1: free

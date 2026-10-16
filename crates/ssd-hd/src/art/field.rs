@@ -32,8 +32,14 @@ impl ArtState {
         let Some(entry) = self.field_entry(field) else { return };
         // The map's layer takes BG2's place and leaves room in the records (a frame can match a
         // background class of the pack besides: it keeps the layers behind the map)
+        let before: Vec<u32> = self.lookup.bg_slots.iter().map(|slot| slot.entry).collect();
         self.lookup.bg_slots.retain(|slot| slot.bg != 1);
         self.lookup.bg_slots.truncate(crate::bgart::MAX_SLOTS - 1);
+        for entry in before {
+            if !self.lookup.bg_slots.iter().any(|slot| slot.entry == entry) {
+                self.stats.bg_unbound.push(entry);
+            }
+        }
         self.stats.field_map.bound = Some(entry as u32);
         let (width, height) = self.pack.maps.layer[entry].size();
         self.lookup.bg_slots.push(Slot {

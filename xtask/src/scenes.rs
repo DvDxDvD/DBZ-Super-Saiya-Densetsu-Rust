@@ -44,9 +44,36 @@ pub enum Reason {
     Flicker,
     /// A field sprite whose art differs from the original's colour regions (off model).
     OffModel,
+    /// A field figure drawn partly from art and partly from the original's pixels (or from two arts).
+    Mixed,
+    /// A field figure drawn from art whose box is not the original pose's (art fitted to another pose).
+    Stretched,
     /// A picture (a window with black beside it) with something else than black beside the window.
     Margin,
+    /// A pose drawn from an art entry that is a program's smoothing of the original's pixels (not
+    /// the model's art). Strict: only an entry reviewed as a real effect (no body, no face) may
+    /// stay, each named in `tools/hd-scenes.toml`.
+    Smoothed,
+    /// A fighter of a battle drawn from the original's pixels (its pose has no art at all). Strict
+    /// like [`Reason::Smoothed`]: a battle's modes are no longer excepted as a whole for it.
+    Character,
+    /// A region of the picture drawn from art whose colour is far from the original's in that frame
+    /// (a layer drawn in the wrong palette, or over by another layer).
+    Colour,
+    /// A layer whose content has art in the pack, shown in a frame that does not draw it (the art
+    /// is there in other frames of the scene).
+    Dropout,
+    /// A portrait or a face whose parts come from the art of more than one character (or from
+    /// the original's pixels beside the art's): it must be drawn whole from one.
+    MixedPortrait,
+    /// A field figure whose art shows a strong blue or purple where the original has none (a ground
+    /// shadow or the area under the feet drawn in a hue: the shadow must be a neutral darkening).
+    Tint,
 }
+
+/// The reasons that no exception covers by the scene's mode alone: each of their items needs an
+/// exception that names the reason and the item.
+const STRICT: [&str; 2] = ["smoothed", "character"];
 
 impl Reason {
     pub(crate) fn bit(self) -> u32 {
@@ -66,7 +93,15 @@ impl Reason {
             Self::Thin => "thin",
             Self::Flicker => "flicker",
             Self::OffModel => "off_model",
+            Self::Mixed => "mixed",
+            Self::Stretched => "stretched",
             Self::Margin => "margin",
+            Self::Smoothed => "smoothed",
+            Self::Character => "character",
+            Self::Colour => "colour",
+            Self::Dropout => "dropout",
+            Self::MixedPortrait => "mixed_portrait",
+            Self::Tint => "tint",
         }
     }
 
@@ -93,12 +128,45 @@ impl Reason {
     }
 }
 
+/// The ids of the art entries of a pack that a program drew (a smoothing of the original's pixels,
+/// not the model's art), read from the indexes of the classes 2 and 3: the entries whose `model`
+/// says `program` and the ones kept as a `pixel-upscale` fallback.
+///
+/// # Errors
+///
+/// An index exists and cannot be read.
+pub fn smoothed_ids(pack_dir: &Path) -> anyhow::Result<std::collections::BTreeSet<String>> {
+    let mut ids = std::collections::BTreeSet::new();
+    for class in ["class2", "class3"] {
+        let path = pack_dir.join(class).join("index.json");
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let index: serde_json::Value =
+            serde_json::from_str(&text).with_context(|| path.display().to_string())?;
+        let list = index.get("assets_list").and_then(|l| l.as_array());
+        for asset in list.into_iter().flatten() {
+            let program = asset
+                .get("model")
+                .and_then(|m| m.as_str())
+                .is_some_and(|m| m.starts_with("program"));
+            let upscale = asset.get("fallback").and_then(|m| m.as_str()) == Some("pixel-upscale");
+            if (program || upscale)
+                && let Some(id) = asset.get("id").and_then(|i| i.as_str())
+            {
+                ids.insert(id.to_owned());
+            }
+        }
+    }
+    Ok(ids)
+}
+
 /// The fewest pixels not drawn from art of a layer (a map, a picture, a background) that make a
 /// frame a fault, and the share of the layer's pixels the art must draw.
 const LAYER_MIN: u64 = 600;
 const LAYER_SHARE: u64 = 97;
 /// The fewest pixels of sprites not drawn from art that make a frame a fault.
 const SPRITE_MIN: u64 = 10;
+/// The least pixels of an effect pose of a story picture that is taken for a character.
+const STORY_MIN: u64 = 120;
 /// The first line of the overscan: what lies below the 224 lines the game draws its picture in.
 const OVERSCAN: u16 = 224;
 
@@ -134,8 +202,55 @@ pub fn evaluate(
     table: &AssetTable,
     scale: u32,
     art_id: &dyn Fn(u32) -> String,
+    smoothed: &dyn Fn(&str) -> bool,
 ) -> Verdict {
     let mut verdict = Verdict::default();
+    // Characters drawn from a program's smoothing, or from the original's pixels (in a battle)
+    // The game's sprites are read more than once (as a fighter, as an effect, as a field group,
+    // with different keys): a reading without art is no fault when a reading with art covers its
+    // box
+    let covered = |pose: &ssd_hd::PoseStat| {
+        let area = (pose.size.0 * pose.size.1) as i64;
+        stats.poses.iter().filter(|q| q.art.is_some()).any(|q| {
+            let w = (pose.org.0 + pose.size.0 as i32).min(q.org.0 + q.size.0 as i32)
+                - pose.org.0.max(q.org.0);
+            let h = (pose.org.1 + pose.size.1 as i32).min(q.org.1 + q.size.1 as i32)
+                - pose.org.1.max(q.org.1);
+            w > 0 && h > 0 && i64::from(w) * i64::from(h) * 10 >= area * 8
+        })
+    };
+    for pose in stats.poses.iter().filter(|p| u64::from(p.visible) >= SPRITE_MIN) {
+        match pose.art {
+            Some(at) => {
+                let id = art_id(at);
+                if smoothed(&id) {
+                    verdict.add(Reason::Smoothed, id, u64::from(pose.visible));
+                }
+            }
+            None if pose.fighter && !pose.field && (ctx.battle || ctx.story) && !covered(pose) => {
+                verdict.add(
+                    Reason::Character,
+                    format!("pose:{:016x}", pose.key),
+                    u64::from(pose.visible),
+                );
+            }
+            // A story picture draws its characters as effect poses; a small one is a spark or a
+            // fragment (named in the exceptions when it is one)
+            None if ctx.story
+                && !covered(pose)
+                && !pose.fighter
+                && !pose.field
+                && u64::from(pose.visible) >= STORY_MIN =>
+            {
+                verdict.add(
+                    Reason::Character,
+                    format!("pose:{:016x}", pose.key),
+                    u64::from(pose.visible),
+                );
+            }
+            None => {}
+        }
+    }
     // Pixels by class: all and the ones not drawn from art
     let mut totals: BTreeMap<Class, (u64, u64)> = BTreeMap::new();
     for count in &tally.counts {
@@ -157,6 +272,19 @@ pub fn evaluate(
         if bare >= min && (!layer || (all - bare) * 100 < all * LAYER_SHARE) {
             failing.push(class);
         }
+    }
+    for portrait in &tally.portraits {
+        eprintln!(
+            "    portrait at {},{} cells {:016b} pictures {:?} assets {:?} bound {:?} rows {:?} bare {}",
+            portrait.x,
+            portrait.y,
+            portrait.cells,
+            portrait.pictures,
+            portrait.picture_assets,
+            portrait.bound_assets,
+            portrait.rows,
+            portrait.bare
+        );
     }
     for item in &tally.items {
         let (class, id) = classify_item(&item.key, table, ctx);
@@ -185,6 +313,16 @@ pub fn evaluate(
             verdict.add(reason, "unnamed".to_owned(), totals[&class].1);
         }
     }
+    // A portrait must be one character's art, whole
+    for portrait in &tally.portraits {
+        if let Some(fault) = portrait.fault() {
+            verdict.add(
+                Reason::MixedPortrait,
+                format!("{} at {},{}: {fault}", portrait.name(), portrait.x, portrait.y),
+                u64::from(portrait.pixels),
+            );
+        }
+    }
     // Art that is drawn but wrong: dark or thin
     let per_pixel = 255 * u64::from(scale) * u64::from(scale);
     for drawn in stats.drawn.iter().filter(|d| !d.luma && d.drawn.visible >= POSE_MIN) {
@@ -204,6 +342,12 @@ pub fn evaluate(
             && let Some(what) = off_model(d)
         {
             verdict.add(Reason::OffModel, format!("{name}: {what}"), u64::from(d.visible));
+        }
+        if drawn.field
+            && !ctx.battle
+            && let Some(what) = tint(d)
+        {
+            verdict.add(Reason::Tint, format!("{name}: {what}"), u64::from(d.visible));
         }
         if d.weight * 100 < u64::from(d.visible) * per_pixel * 50 {
             verdict.add(Reason::Thin, name.clone(), u64::from(d.visible));
@@ -268,6 +412,25 @@ fn off_model(d: &ssd_hd::Drawn) -> Option<String> {
     let _ = NAMES;
     None
 }
+
+/// A strong hue the art has and the original does not: the share of blue or purple the art shows
+/// beyond the original's, when it is large (a ground shadow drawn purple instead of a neutral
+/// darkening, or the area under the feet redrawn as a coloured blob). Shares are of the pose's
+/// drawn pixels.
+fn tint(d: &ssd_hd::Drawn) -> Option<String> {
+    let all = |c: &[u64]| c.iter().sum::<u64>().max(1) as f64;
+    let (so, ss) = (all(&d.classes_original), all(&d.classes_shown));
+    for (name, at) in [("blue", 9), ("purple", 10)] {
+        let gain = d.classes_shown[at] as f64 / ss - d.classes_original[at] as f64 / so;
+        if gain > TINT_GAIN {
+            return Some(format!("{name} +{:.0}%", gain * 100.0));
+        }
+    }
+    None
+}
+
+/// The share of blue or purple the art may gain over the original's.
+const TINT_GAIN: f64 = 0.10;
 
 /// The share of skin the art may gain over the original's, the share of a colour that makes it
 /// one the original has, and the part of it the art must keep.
@@ -359,13 +522,15 @@ pub struct SceneRange {
 /// Where the scenes of every part are collected.
 pub struct Sink {
     pub dir: PathBuf,
+    /// The art entries a program smoothed (see [`smoothed_ids`]).
+    pub smoothed: std::collections::BTreeSet<String>,
     scenes: Mutex<Vec<SceneRange>>,
 }
 
 impl Sink {
     #[must_use]
-    pub fn new(dir: PathBuf) -> Self {
-        Self { dir, scenes: Mutex::new(Vec::new()) }
+    pub fn new(dir: PathBuf, smoothed: std::collections::BTreeSet<String>) -> Self {
+        Self { dir, smoothed, scenes: Mutex::new(Vec::new()) }
     }
 
     /// The scenes found so far.
@@ -432,11 +597,23 @@ pub struct Watcher {
     measure: WideRun,
     plain: WideRun,
     art: WideRun,
+    /// The run that draws the original's pixels at the scale 1 (to compare the art's colours with),
+    /// and the one that draws the backgrounds' art alone over them.
+    original: WideRun,
+    layers: WideRun,
     open: Option<Open>,
     /// Whether frames of a field state are drawn as the field whatever BG2 holds (a part that moves
     /// the camera by writing the machine's variables).
     trust: bool,
     flicker: crate::scene_flicker::Tracker,
+    /// The portraits of the last frame played (position and asset), to tell a face that just changed.
+    faces: Vec<(i32, i32, String)>,
+}
+
+fn layers_run(rom: &[u8], pack: &Arc<Pack>) -> WideRun {
+    let mut run = fresh_run(rom, Some(pack), None);
+    run.set_art_backgrounds_only(true);
+    run
 }
 
 fn fresh_run(rom: &[u8], pack: Option<&Arc<Pack>>, font: Option<Arc<ssd_hd::Font>>) -> WideRun {
@@ -464,9 +641,12 @@ impl Watcher {
             measure,
             plain: fresh_run(rom, None, font.cloned()),
             art: fresh_run(rom, Some(pack), font.cloned()),
+            original: fresh_run(rom, None, None),
+            layers: layers_run(rom, pack),
             open: None,
             trust: false,
             flicker: crate::scene_flicker::Tracker::default(),
+            faces: Vec::new(),
         }
     }
 
@@ -474,7 +654,13 @@ impl Watcher {
     /// `Recorder::trust_field`).
     pub fn set_trust(&mut self, trust: bool) {
         self.trust = trust;
-        for run in [&mut self.measure, &mut self.plain, &mut self.art] {
+        for run in [
+            &mut self.measure,
+            &mut self.plain,
+            &mut self.art,
+            &mut self.original,
+            &mut self.layers,
+        ] {
             run.set_trust_field(trust);
         }
     }
@@ -485,6 +671,8 @@ impl Watcher {
         self.measure.set_art_measure(true);
         self.plain = fresh_run(rom, None, font.cloned());
         self.art = fresh_run(rom, Some(&self.pack), font.cloned());
+        self.original = fresh_run(rom, None, None);
+        self.layers = layers_run(rom, &self.pack);
         self.set_trust(self.trust);
         self.flicker.clear();
     }
@@ -494,6 +682,8 @@ impl Watcher {
         self.measure.skip(machine.wram());
         self.plain.skip(machine.wram());
         self.art.skip(machine.wram());
+        self.original.skip(machine.wram());
+        self.layers.skip(machine.wram());
         self.flicker.clear();
     }
 
@@ -514,6 +704,16 @@ impl Watcher {
             HdOptions { scale: 1, look: Look::Crisp },
         );
         let stats = self.measure.art_stats();
+        let original = self.original.note_hd(
+            wram,
+            machine.frame_log(),
+            HdOptions { scale: 1, look: Look::Crisp },
+        );
+        let layers = self.layers.note_hd(
+            wram,
+            machine.frame_log(),
+            HdOptions { scale: 1, look: Look::Crisp },
+        );
         // A frame faded to black, or in the mosaic of a fade (a map loading, a battle starting),
         // shows nothing to cover
         let transition = machine.frame_log().is_none_or(|log| {
@@ -530,16 +730,43 @@ impl Watcher {
                 let sum: u64 = rgba.iter().step_by(64).map(|&c| u64::from(c)).sum();
                 sum < rgba.len() as u64 / 64 * 3 / 2
             });
+        // The game writes a new face's tiles a frame before its palette: on that one frame the art
+        // is in the colours of the face before, which is what the game shows too
+        let faces = tally.portraits.iter().map(|p| (p.x, p.y, p.name())).collect::<Vec<_>>();
+        let changed = |p: &ssd_hd::PortraitUse| {
+            p.distance > 0
+                && self.faces.iter().any(|(x, y, name)| (*x, *y) == (p.x, p.y) && *name != p.name())
+        };
+        let adjusted;
+        let tally = if tally.portraits.iter().any(changed) {
+            let mut copy = tally.clone();
+            for portrait in copy.portraits.iter_mut().filter(|p| changed(p)) {
+                portrait.distance = 0;
+            }
+            adjusted = copy;
+            &adjusted
+        } else {
+            tally
+        };
+        self.faces = faces;
         let mut verdict = if dark {
             Verdict::default()
         } else {
-            evaluate(tally, &stats, ctx, table, 1, &|at| {
-                self.pack
-                    .art
-                    .objects()
-                    .get(at as usize)
-                    .map_or_else(String::new, |object| object.id.clone())
-            })
+            evaluate(
+                tally,
+                &stats,
+                ctx,
+                table,
+                1,
+                &|at| {
+                    self.pack
+                        .art
+                        .objects()
+                        .get(at as usize)
+                        .map_or_else(String::new, |object| object.id.clone())
+                },
+                &|id| self.sink.smoothed.contains(id),
+            )
         };
         if verdict.reasons & Reason::Map.bit() != 0
             && let Some(state) = ssd_hd::world::FieldState::from_wram(wram)
@@ -592,8 +819,65 @@ impl Watcher {
                 Drawn::Field => {}
             }
         }
+        if let (Some(l), Some(o), false, true) =
+            (layers.as_ref(), original.as_ref(), transition, colour_check_on())
+        {
+            let faults = colour_faults(&l.picture, &o.picture);
+            if std::env::var("SCENES_DUMP").ok().and_then(|v| v.parse().ok()) == Some(frame) {
+                for (name, p) in [("layers", &l.picture), ("orig", &o.picture)] {
+                    let _ = ssd_hd::png::write_rgba(
+                        &self.sink.dir.join(format!("dump-{frame}-{name}.png")),
+                        p.width,
+                        p.height,
+                        &p.rgba,
+                    );
+                }
+            }
+            if let Some(range) = trace_range()
+                && (range.0..=range.1).contains(&frame)
+            {
+                let worst = faults.iter().map(|f| f.2).max().unwrap_or(0);
+                let sample: Vec<_> = faults.iter().step_by((faults.len() / 6).max(1)).collect();
+                println!(
+                    "colour {} {frame}: {} squares, worst {worst}, some {sample:?}",
+                    self.part,
+                    faults.len()
+                );
+            }
+            if faults.len() >= COLOUR_MIN_BLOCKS {
+                verdict.add(
+                    Reason::Colour,
+                    "art far from the original's colour".to_owned(),
+                    (faults.len() * COLOUR_BLOCK * COLOUR_BLOCK) as u64,
+                );
+            }
+        }
+        if !transition {
+            for at in &stats.bg_unbound {
+                let id =
+                    self.pack.bg.layer.get(*at as usize).map_or("?", |layer| layer.id.as_str());
+                verdict.add(Reason::Dropout, id.to_owned(), 1);
+            }
+        }
         // (the field groups are checked; the effects are what can cover them)
         self.flicker.check(&stats.poses, &mut verdict);
+        if !ctx.battle {
+            let art_id = |at: u32| {
+                self.pack
+                    .art
+                    .objects()
+                    .get(at as usize)
+                    .map_or_else(String::new, |object| object.id.clone())
+            };
+            let art_size =
+                |at: u32| self.pack.art.objects().get(at as usize).map(|o| (o.width, o.height));
+            crate::scene_mixed::check(&stats.poses, &art_id, &art_size, &mut verdict);
+        }
+        if std::env::var_os("SCENES_PORTRAITS").is_some() {
+            for portrait in &tally.portraits {
+                eprintln!("{} f{frame} portrait {portrait:?}", self.part);
+            }
+        }
 
         let key = (wram[0x1A0], wram[0x24] & 0x7F, verdict.reasons);
         let continues = self.open.as_ref().is_some_and(|open| {
@@ -685,9 +969,11 @@ impl Watcher {
         items.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let mut per: BTreeMap<String, usize> = BTreeMap::new();
         items.retain(|(name, _)| {
-            let count = per.entry(name.split(':').next().unwrap_or("").to_owned()).or_default();
+            let reason = name.split(':').next().unwrap_or("");
+            let count = per.entry(reason.to_owned()).or_default();
             *count += 1;
-            *count <= ITEMS_PER_REASON
+            // (the strict reasons list every item: each needs its own exception)
+            *count <= ITEMS_PER_REASON || STRICT.contains(&reason)
         });
         range.items = items;
         if let Ok(mut scenes) = self.sink.scenes.lock() {
@@ -701,7 +987,7 @@ impl Watcher {
     }
 }
 
-const ALL_REASONS: [Reason; 10] = [
+const ALL_REASONS: [Reason; 18] = [
     Reason::Map,
     Reason::Picture,
     Reason::Background,
@@ -711,8 +997,69 @@ const ALL_REASONS: [Reason; 10] = [
     Reason::Thin,
     Reason::Flicker,
     Reason::OffModel,
+    Reason::Mixed,
+    Reason::Stretched,
     Reason::Margin,
+    Reason::Smoothed,
+    Reason::Character,
+    Reason::Colour,
+    Reason::Dropout,
+    Reason::MixedPortrait,
+    Reason::Tint,
 ];
+
+/// The reasons no blanket exception excuses: a scene that has one is covered only by an exception
+/// that names it.
+const STRICT_REASONS: [&str; 2] = ["colour", "dropout"];
+
+/// The colour check is opt-in (`SCENES_COLOUR=1`): it is unreliable until the pictures it compares
+/// are aligned (it faults field maps and Mode 7 planes, which the backgrounds-only run does not draw).
+fn colour_check_on() -> bool {
+    std::env::var_os("SCENES_COLOUR").is_some_and(|v| v != "0")
+}
+
+/// Side of the squares the colour check compares (pixels of the 1x picture), the least difference
+/// of the squares' mean colour (levels of a channel, the largest of the three) that is a fault, and
+/// the fewest squares of a frame that make it one.
+const COLOUR_BLOCK: usize = 16;
+const COLOUR_LEVELS: i32 = 80;
+const COLOUR_MIN_BLOCKS: usize = 4;
+
+/// The squares of `art` whose mean colour is far from `original`'s (same size pictures at the
+/// scale 1, over the original window): their top left corner and the difference.
+fn colour_faults(art: &ssd_hd::HdFrame, original: &ssd_hd::HdFrame) -> Vec<(usize, usize, i32)> {
+    let (width, height) = (art.width as usize, art.height as usize);
+    let mut faults = Vec::new();
+    if (original.width as usize, original.height as usize) != (width, height) {
+        return faults;
+    }
+    let (left, right) = (
+        (art.logical.x as usize).min(width),
+        ((art.logical.x + art.logical.width) as usize).min(width),
+    );
+    for by in (0..height.saturating_sub(COLOUR_BLOCK - 1)).step_by(COLOUR_BLOCK) {
+        for bx in (left..right.saturating_sub(COLOUR_BLOCK - 1)).step_by(COLOUR_BLOCK) {
+            let mut sums = [[0_i64; 3]; 2];
+            for y in by..by + COLOUR_BLOCK {
+                for x in bx..bx + COLOUR_BLOCK {
+                    for (which, picture) in [art, original].into_iter().enumerate() {
+                        let at = (y * width + x) * 4;
+                        for (c, sum) in sums[which].iter_mut().enumerate() {
+                            *sum += i64::from(picture.rgba[at + c]);
+                        }
+                    }
+                }
+            }
+            let n = (COLOUR_BLOCK * COLOUR_BLOCK) as i64;
+            let diff =
+                (0..3).map(|c| ((sums[0][c] - sums[1][c]) / n).abs() as i32).max().unwrap_or(0);
+            if diff >= COLOUR_LEVELS {
+                faults.push((bx, by, diff));
+            }
+        }
+    }
+    faults
+}
 
 /// `tools/hd-scenes.toml`: the scenes that are accepted as they are, each with its reason.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -730,7 +1077,19 @@ pub struct Exception {
     pub modes: Option<Vec<u8>>,
     pub reason: Option<String>,
     pub item: Option<String>,
+    /// Several items, each one named: the exception covers a scene that has any of them (for a
+    /// strict reason, an item that is one of them).
+    #[serde(default)]
+    pub items: Vec<String>,
     pub note: String,
+}
+
+impl Exception {
+    /// Whether the exception names `item` (an item given, or one of the items listed).
+    fn names(&self, item: &str) -> bool {
+        self.item.as_ref().is_some_and(|i| item.contains(i.as_str()))
+            || self.items.iter().any(|i| item.contains(i.as_str()))
+    }
 }
 
 impl Exceptions {
@@ -750,16 +1109,40 @@ impl Exceptions {
     /// reason is one the scene has and, when it names an item, an item the scene has.
     #[must_use]
     pub fn covers(&self, scene: &SceneRange) -> Option<&str> {
+        let in_scope = |e: &Exception| {
+            e.part.as_ref().is_none_or(|p| scene.part.contains(p.as_str()))
+                && e.map.is_none_or(|m| m == scene.map)
+                && e.modes.as_ref().is_none_or(|modes| modes.contains(&scene.mode))
+        };
+        // The strict reasons: each of their items needs an exception that names the reason and
+        // the item (a mode's blanket exception does not cover them)
+        let mut strict_note = None;
+        for (name, _) in &scene.items {
+            let Some((reason, _)) = name.split_once(':') else { continue };
+            if !STRICT.contains(&reason) {
+                continue;
+            }
+            let found = self.exception.iter().find(|e| {
+                in_scope(e)
+                    && e.reason.as_deref() == Some(reason)
+                    && e.names(&name[reason.len() + 1..])
+            });
+            strict_note = Some(found?.note.as_str());
+        }
+        let only_strict = scene.reasons.iter().all(|r| STRICT.contains(&r.as_str()));
+        if only_strict && strict_note.is_some() {
+            return strict_note;
+        }
         self.exception
             .iter()
+            .filter(|e| e.reason.as_deref().is_none_or(|r| !STRICT.contains(&r)))
             .find(|e| {
-                e.part.as_ref().is_none_or(|p| scene.part.contains(p.as_str()))
-                    && e.map.is_none_or(|m| m == scene.map)
-                    && e.modes.as_ref().is_none_or(|modes| modes.contains(&scene.mode))
+                in_scope(e)
                     && e.reason.as_ref().is_none_or(|r| scene.reasons.contains(r))
-                    && e.item
-                        .as_ref()
-                        .is_none_or(|i| scene.items.iter().any(|(n, _)| n.contains(i.as_str())))
+                    && (e.reason.as_ref().is_some_and(|r| STRICT_REASONS.contains(&r.as_str()))
+                        || !scene.reasons.iter().any(|r| STRICT_REASONS.contains(&r.as_str())))
+                    && ((e.item.is_none() && e.items.is_empty())
+                        || scene.items.iter().any(|(n, _)| e.names(n)))
             })
             .map(|e| e.note.as_str())
     }
@@ -928,7 +1311,7 @@ pub fn run(
     let base_save = std::fs::read(&base_path)
         .with_context(|| format!("reading the base save {}", base_path.display()))?;
     let game = crate::save::Game::from_rom(rom)?;
-    let sink = Arc::new(Sink::new(dir.clone()));
+    let sink = Arc::new(Sink::new(dir.clone(), smoothed_ids(pack_dir)?));
     let full = std::env::var_os("SCENES_FULL").is_some();
     let mut env = crate::tour_run::Env::new(
         rom,
@@ -1043,7 +1426,7 @@ mod tests {
     }
 
     fn tally(counts: Vec<TallyCount>, items: Vec<TallyItem>) -> FrameTally {
-        FrameTally { counts, shapes: Vec::new(), items, uses: Vec::new() }
+        FrameTally { counts, shapes: Vec::new(), items, uses: Vec::new(), portraits: Vec::new() }
     }
 
     fn field() -> Context {
@@ -1051,7 +1434,15 @@ mod tests {
     }
 
     fn evaluate_of(tally: &FrameTally, ctx: Context) -> Verdict {
-        evaluate(tally, &ArtStats::default(), ctx, &AssetTable::of_ids(&[]), 1, &|_| String::new())
+        evaluate(
+            tally,
+            &ArtStats::default(),
+            ctx,
+            &AssetTable::of_ids(&[]),
+            1,
+            &|_| String::new(),
+            &|_| false,
+        )
     }
 
     #[test]
@@ -1091,6 +1482,104 @@ mod tests {
     }
 
     #[test]
+    fn a_strict_reason_is_excused_only_by_an_exception_that_names_it() {
+        let exceptions: Exceptions = toml::from_str(
+            "[[exception]]
+modes = [7]
+note = \"all of a mode\"
+
+[[exception]]
+reason = \"picture\"
+note = \"a picture\"
+
+[[exception]]
+reason = \"colour\"
+part = \"x\"
+note = \"art\"
+",
+        )
+        .unwrap();
+        let scene = |part: &str, reasons: &[&str]| SceneRange {
+            part: part.to_owned(),
+            first: 1,
+            last: 2,
+            faulty: 2,
+            map: 0,
+            mode: 7,
+            drawn_as: "Bordered".to_owned(),
+            reasons: reasons.iter().map(|r| (*r).to_owned()).collect(),
+            items: Vec::new(),
+            shown: 1,
+            plain: String::new(),
+            art: String::new(),
+            exception: None,
+        };
+        assert_eq!(exceptions.covers(&scene("y", &["picture"])), Some("all of a mode"));
+        // A blanket exception (a mode) or another reason's does not hide a colour fault
+        assert_eq!(exceptions.covers(&scene("y", &["picture", "colour"])), None);
+        assert_eq!(exceptions.covers(&scene("x", &["picture", "colour"])), Some("art"));
+        assert_eq!(exceptions.covers(&scene("y", &["dropout"])), None);
+    }
+
+    fn flat(width: u32, height: u32, rgb: [u8; 3]) -> ssd_hd::HdFrame {
+        let rgba = (0..width * height).flat_map(|_| [rgb[0], rgb[1], rgb[2], 255]).collect();
+        ssd_hd::HdFrame {
+            rgba,
+            width,
+            height,
+            scale: 1,
+            logical: ssd_hd::Rect { x: 0, y: 0, width, height },
+        }
+    }
+
+    #[test]
+    fn art_far_from_the_original_in_a_region_is_a_colour_fault() {
+        let original = flat(64, 32, [200, 40, 40]);
+        // The same colour, and a shade within the art's licence (the painted sea)
+        assert_eq!(colour_faults(&original, &original), []);
+        assert_eq!(colour_faults(&flat(64, 32, [150, 60, 60]), &original), []);
+        // A layer drawn in the wrong palette
+        let wrong = flat(64, 32, [40, 40, 90]);
+        assert_eq!(colour_faults(&wrong, &original).len(), 8);
+        // Only a part of it
+        let mut part = original.clone();
+        for y in 0..8 {
+            for x in 0..16 {
+                let at = (y * 64 + x) * 4;
+                part.rgba[at..at + 3].copy_from_slice(&[0, 0, 0]);
+            }
+        }
+        assert_eq!(colour_faults(&part, &original).len(), 1);
+    }
+
+    #[test]
+    fn a_portrait_of_two_characters_fails_the_audit_and_a_whole_one_does_not() {
+        let whole = ssd_hd::PortraitUse {
+            x: 74,
+            y: 175,
+            pixels: 1024,
+            cells: 0xFFFF,
+            pictures: vec![("face-8A9B-1".to_owned(), 1024)],
+            picture_assets: vec!["portrait/16:8A9B/4bpp".to_owned()],
+            bound_assets: vec!["portrait/16:8A9B/4bpp".to_owned()],
+            rows: vec![(11, 1024)],
+            ..ssd_hd::PortraitUse::default()
+        };
+        let mut frame = tally(Vec::new(), Vec::new());
+        frame.portraits = vec![whole.clone()];
+        assert!(!evaluate_of(&frame, field()).is_fault());
+        // The top rows are another character's art
+        let mut mixed = whole;
+        mixed.pictures = vec![("face-A780-1".to_owned(), 512), ("face-8A9B-1".to_owned(), 512)];
+        mixed.picture_assets.push("portrait/16:A780/4bpp".to_owned());
+        frame.portraits = vec![mixed];
+        let verdict = evaluate_of(&frame, field());
+        assert_eq!(verdict.reasons, Reason::MixedPortrait.bit());
+        let item = verdict.items.keys().next().unwrap();
+        assert!(item.starts_with("mixed_portrait:") && item.contains("face-A780-1"), "{item}");
+    }
+
+    #[test]
     fn an_exception_covers_the_scenes_it_names_and_no_other() {
         let exceptions: Exceptions = toml::from_str(
             "[[exception]]\nreason = \"map\"\nitem = \"unnamed\"\npart = \"title\"\nnote = \"the intro\"\n",
@@ -1116,11 +1605,115 @@ mod tests {
         assert_eq!(exceptions.covers(&scene("title", "sprite")), None);
     }
 
+    fn pose_stat(fighter: bool, art: Option<u32>) -> ssd_hd::PoseStat {
+        ssd_hd::PoseStat {
+            fighter,
+            field: !fighter,
+            shadow: false,
+            sprites: 0,
+            matched: art.is_some(),
+            recoloured: false,
+            visible: 300,
+            opaque: 300,
+            stripy: 0,
+            key: 0xAB,
+            palette: 2,
+            source: ssd_hd::ArtSource::Exact,
+            art,
+            org: (10, 10),
+            size: (16, 16),
+            look: 1,
+        }
+    }
+
+    #[test]
+    fn a_smoothed_entry_or_a_fighter_without_art_is_a_fault() {
+        let mut apart = pose_stat(true, None);
+        apart.org = (100, 100);
+        // A reading without art over a reading with art is no fault: the sprites are drawn
+        let stats = ArtStats {
+            poses: vec![pose_stat(false, Some(0)), apart, pose_stat(false, None)],
+            ..ArtStats::default()
+        };
+        let battle = Context { battle: true, ..Context::default() };
+        let run = |ctx: Context, smooth: bool| {
+            evaluate(
+                &tally(Vec::new(), Vec::new()),
+                &stats,
+                ctx,
+                &AssetTable::of_ids(&[]),
+                1,
+                &|_| "gallery-fx-1".to_owned(),
+                &|id| smooth && id == "gallery-fx-1",
+            )
+        };
+        let verdict = run(battle, true);
+        assert_eq!(verdict.reasons, Reason::Smoothed.bit() | Reason::Character.bit());
+        assert_eq!(verdict.items["smoothed:gallery-fx-1"], 300);
+        assert_eq!(verdict.items["character:pose:00000000000000ab"], 300);
+        assert_eq!(run(battle, false).reasons, Reason::Character.bit(), "AI art is no fault");
+        assert!(!run(field(), false).is_fault(), "the field's bare poses are the sprite check's");
+        let mut over = pose_stat(true, None);
+        over.org = (11, 11);
+        let stats =
+            ArtStats { poses: vec![pose_stat(false, Some(0)), over], ..ArtStats::default() };
+        let covered = evaluate(
+            &tally(Vec::new(), Vec::new()),
+            &stats,
+            battle,
+            &AssetTable::of_ids(&[]),
+            1,
+            &|_| "gallery-fx-1".to_owned(),
+            &|_| false,
+        );
+        assert!(!covered.is_fault(), "a reading that a drawn pose covers is no fault");
+    }
+
+    #[test]
+    fn a_strict_reason_is_covered_only_by_an_exception_that_names_it_and_its_item() {
+        let exceptions: Exceptions = toml::from_str(
+            "[[exception]]
+modes = [4]
+note = \"battle\"
+             [[exception]]
+reason = \"smoothed\"
+item = \"gallery-fx-1\"
+note = \"a ki ball\"
+",
+        )
+        .unwrap();
+        let scene = |items: &[&str], reasons: &[&str]| SceneRange {
+            part: "replay-x".to_owned(),
+            first: 1,
+            last: 2,
+            faulty: 2,
+            map: 0,
+            mode: 4,
+            drawn_as: "Bordered".to_owned(),
+            reasons: reasons.iter().map(|r| (*r).to_owned()).collect(),
+            items: items.iter().map(|i| ((*i).to_owned(), 5)).collect(),
+            shown: 1,
+            plain: String::new(),
+            art: String::new(),
+            exception: None,
+        };
+        let only = scene(&["smoothed:gallery-fx-1"], &["smoothed"]);
+        assert_eq!(exceptions.covers(&only), Some("a ki ball"));
+        let other = scene(&["smoothed:gallery-fx-2"], &["smoothed"]);
+        assert_eq!(exceptions.covers(&other), None, "the mode's blanket exception is not enough");
+        let mixed = scene(&["smoothed:gallery-fx-1", "sprite:x"], &["smoothed", "sprite"]);
+        assert_eq!(exceptions.covers(&mixed), Some("battle"));
+        let loose = scene(&["character:pose:ab"], &["character"]);
+        assert_eq!(exceptions.covers(&loose), None);
+    }
+
     #[test]
     fn a_pose_that_changes_art_with_the_same_pixels_flickers() {
         let pose = |art: Option<u32>| ssd_hd::PoseStat {
             fighter: false,
             field: true,
+            shadow: false,
+            sprites: 0,
             matched: art.is_some(),
             recoloured: false,
             visible: 300,

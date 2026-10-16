@@ -1,0 +1,380 @@
+//! Where the touch controls are: the shapes of the buttons of each layout (landscape, minimal for battles,
+//! portrait) worked out from the screen, the player's places and sizes, and the area left to the game picture.
+//! All sizes are egui points, which on Android are density-independent pixels (dp). The design is the approved
+//! mock-up (932 x 430 dp landscape, 430 x 932 dp portrait).
+
+#![allow(clippy::many_single_char_names)]
+
+use super::settings::{Group, Orient, Settings};
+use egui::{Color32, Pos2, Rect, Vec2, pos2, vec2};
+
+/// The smallest size of a control, in dp.
+pub const MIN_DP: f32 = 48.0;
+
+/// Every button the overlay has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Btn {
+    Up,
+    Down,
+    Left,
+    Right,
+    A,
+    B,
+    X,
+    Y,
+    L,
+    R,
+    Start,
+    Select,
+    Speed,
+    Menu,
+    /// Minimal layout only: back to all the controls.
+    Full,
+    /// The full layout's button for the minimal one.
+    Min,
+}
+
+/// The shape of a button.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Shape {
+    /// A pill (a rounded rectangle) with this corner radius.
+    Pill(Rect, f32),
+    /// A cell of the d-pad.
+    Cell(Rect),
+    Circle(Pos2, f32),
+}
+
+impl Shape {
+    #[must_use]
+    pub fn bounds(self) -> Rect {
+        match self {
+            Self::Pill(r, _) | Self::Cell(r) => r,
+            Self::Circle(c, r) => Rect::from_center_size(c, vec2(2.0 * r, 2.0 * r)),
+        }
+    }
+
+    /// Whether `p` is on the shape grown by `slop`.
+    #[must_use]
+    pub fn hit(self, p: Pos2, slop: f32) -> bool {
+        match self {
+            Self::Pill(r, _) | Self::Cell(r) => r.expand(slop).contains(p),
+            Self::Circle(c, r) => c.distance(p) <= r + slop,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Item {
+    pub btn: Btn,
+    pub group: Group,
+    pub shape: Shape,
+    /// The ring and the glyph's colour.
+    pub accent: Color32,
+}
+
+pub const CREAM: Color32 = Color32::from_rgb(0xFF, 0xEF, 0xCE);
+pub const ORANGE: Color32 = Color32::from_rgb(0xFF, 0x52, 0x00);
+pub const DARK_RED: Color32 = Color32::from_rgb(0x84, 0x00, 0x00);
+pub const RED: Color32 = Color32::from_rgb(0xFF, 0x6B, 0x6B);
+pub const YELLOW: Color32 = Color32::from_rgb(0xFF, 0xD2, 0x3F);
+pub const BLUE: Color32 = Color32::from_rgb(0x5A, 0xB0, 0xFF);
+pub const GREEN: Color32 = Color32::from_rgb(0x62, 0xD8, 0x7A);
+
+/// Everything the overlay needs to draw and to hit-test one frame.
+#[derive(Debug, Clone)]
+pub struct Geometry {
+    pub orient: Orient,
+    pub screen: Rect,
+    /// The area the game picture is fitted in.
+    pub picture: Rect,
+    /// Portrait: the opaque band under the picture.
+    pub band: Option<Rect>,
+    pub items: Vec<Item>,
+    /// The floating stick's touch zone (instead of the d-pad's cells).
+    pub stick_zone: Option<Rect>,
+    /// The d-pad's centre and its half size (also the stick zone's centre).
+    pub dpad: (Pos2, f32),
+}
+
+#[must_use]
+pub fn orient_of(screen: Rect) -> Orient {
+    if screen.width() >= screen.height() { Orient::Landscape } else { Orient::Portrait }
+}
+
+/// The default centre of a group on `screen`.
+fn default_centre(o: Orient, g: Group, s: Rect) -> Pos2 {
+    let (w, h) = (s.width(), s.height());
+    let at = |x: f32, y: f32| pos2(s.min.x + x, s.min.y + y);
+    match o {
+        Orient::Landscape => match g {
+            Group::Dpad => at(80.0, 0.619 * h),
+            Group::Face => at(w - 82.0, 0.633 * h),
+            Group::L => at(65.0, 34.0),
+            Group::R => at(w - 65.0, 34.0),
+            Group::Speed => at(46.0, 94.0),
+            Group::Menu => at(w - 65.0, 94.0),
+            Group::StartSelect => at(w / 2.0, h - 28.0),
+        },
+        Orient::Portrait => match g {
+            Group::Dpad => at(0.256 * w, 0.616 * h),
+            Group::Face => at(0.749 * w, 0.616 * h),
+            Group::L => at(0.137 * w, 0.354 * h),
+            Group::Speed => at(0.379 * w, 0.354 * h),
+            Group::Menu => at(0.62 * w, 0.354 * h),
+            Group::R => at(0.863 * w, 0.354 * h),
+            Group::StartSelect => at(0.5 * w, 0.88 * h),
+        },
+    }
+}
+
+/// The size a group is drawn at on top of the player's: the portrait layout has bigger cells for a thumb.
+fn base_scale(o: Orient, g: Group) -> f32 {
+    match (o, g) {
+        (Orient::Portrait, Group::Dpad) => 56.0 / 48.0,
+        (Orient::Portrait, Group::Face) => 1.15,
+        _ => 1.0,
+    }
+}
+
+/// The centre and the size factor of `g` for the player's choices, kept on the screen.
+#[must_use]
+pub fn placed(o: Orient, g: Group, s: Rect, settings: &Settings) -> (Pos2, f32) {
+    let p = settings.place(o, g);
+    let mut c = default_centre(o, g, s);
+    if let Some(x) = p.x {
+        c.x = s.min.x + s.width() * x as f32 / 1000.0;
+    }
+    if let Some(y) = p.y {
+        c.y = s.min.y + s.height() * y as f32 / 1000.0;
+    }
+    let k = base_scale(o, g) * p.scale.unwrap_or(100) as f32 / 100.0;
+    (pos2(c.x.clamp(s.min.x, s.max.x), c.y.clamp(s.min.y, s.max.y)), k)
+}
+
+fn pill(c: Pos2, w: f32, h: f32) -> Shape {
+    Shape::Pill(Rect::from_center_size(c, vec2(w, h)), h / 2.0)
+}
+
+fn push(items: &mut Vec<Item>, btn: Btn, group: Group, shape: Shape, accent: Color32) {
+    items.push(Item { btn, group, shape, accent });
+}
+
+/// The picture area and the controls for `screen`.
+#[must_use]
+pub fn compute(screen: Rect, minimal: bool, settings: &Settings) -> Geometry {
+    let o = orient_of(screen);
+    let (w, h) = (screen.width(), screen.height());
+    let (picture, band) = match o {
+        Orient::Landscape => {
+            let top = 8.0_f32.max(0.02 * h);
+            let area = Rect::from_min_max(
+                pos2(screen.min.x, screen.min.y + top),
+                pos2(screen.max.x, screen.max.y - 56.0),
+            );
+            (area, None)
+        }
+        Orient::Portrait => {
+            let top = screen.min.y + 28.0;
+            let bottom = top + w * 9.0 / 16.0;
+            let area = Rect::from_min_max(pos2(screen.min.x, top), pos2(screen.max.x, bottom));
+            (area, Some(Rect::from_min_max(pos2(screen.min.x, bottom), screen.max)))
+        }
+    };
+    let mut items = Vec::new();
+    let mut stick_zone = None;
+    let portrait = o == Orient::Portrait;
+
+    // The d-pad: four cells of 48 dp in a cross, or the floating stick's zone.
+    let (dc, dk) = placed(o, Group::Dpad, screen, settings);
+    let cell = 48.0 * dk;
+    if settings.stick {
+        let zone = Rect::from_center_size(dc, vec2(150.0 * dk, 246.0 * dk));
+        stick_zone = Some(zone.intersect(screen));
+    } else {
+        for (btn, dx, dy) in [
+            (Btn::Up, 0.0, -1.0),
+            (Btn::Left, -1.0, 0.0),
+            (Btn::Right, 1.0, 0.0),
+            (Btn::Down, 0.0, 1.0),
+        ] {
+            let r = Rect::from_center_size(dc + vec2(dx, dy) * cell, vec2(cell, cell));
+            push(&mut items, btn, Group::Dpad, Shape::Cell(r), CREAM);
+        }
+    }
+
+    // A, B, X, Y in the SNES diamond (A right, B bottom, X top, Y left); the minimal layout has a big A and a B.
+    let (fc, fk) = placed(o, Group::Face, screen, settings);
+    if minimal {
+        let big = 88.0 * fk.max(1.0);
+        let small = 68.0 * fk.max(1.0);
+        let a_at = fc + vec2(if portrait { 8.0 } else { 0.0 }, -28.0 * fk);
+        push(&mut items, Btn::A, Group::Face, Shape::Circle(a_at, big / 2.0), RED);
+        let b_at = a_at + vec2(-(big / 2.0 + small / 2.0 + 4.0), small * 0.6);
+        push(&mut items, Btn::B, Group::Face, Shape::Circle(b_at, small / 2.0), YELLOW);
+    } else {
+        let d = 50.0 * fk;
+        for (btn, dx, dy, accent) in [
+            (Btn::A, 1.0, 0.0, RED),
+            (Btn::B, 0.0, 1.0, YELLOW),
+            (Btn::X, 0.0, -1.0, BLUE),
+            (Btn::Y, -1.0, 0.0, GREEN),
+        ] {
+            push(
+                &mut items,
+                btn,
+                Group::Face,
+                Shape::Circle(fc + vec2(dx, dy) * d, d / 2.0),
+                accent,
+            );
+        }
+    }
+
+    // The top buttons.
+    let wide = if portrait { 90.0 } else { 110.0 };
+    let (mc, mk) = placed(o, Group::Menu, screen, settings);
+    if minimal {
+        // Fixed to the corners: FULL (back to all controls) top-left, MENU top-right.
+        push(
+            &mut items,
+            Btn::Full,
+            Group::L,
+            pill(pos2(screen.min.x + 52.0, screen.min.y + 34.0), 84.0, MIN_DP),
+            ORANGE,
+        );
+        let at = if portrait { mc } else { pos2(screen.max.x - 65.0, screen.min.y + 34.0) };
+        push(&mut items, Btn::Menu, Group::Menu, pill(at, wide * mk, MIN_DP * mk), ORANGE);
+    } else {
+        let (lc, lk) = placed(o, Group::L, screen, settings);
+        push(&mut items, Btn::L, Group::L, pill(lc, wide * lk, MIN_DP * lk), CREAM);
+        let (rc, rk) = placed(o, Group::R, screen, settings);
+        push(&mut items, Btn::R, Group::R, pill(rc, wide * rk, MIN_DP * rk), CREAM);
+        let (sc, sk) = placed(o, Group::Speed, screen, settings);
+        let sw = if portrait { 90.0 } else { 72.0 };
+        push(&mut items, Btn::Speed, Group::Speed, pill(sc, sw * sk, MIN_DP * sk), ORANGE);
+        push(
+            &mut items,
+            Btn::Min,
+            Group::Speed,
+            pill(sc + vec2(0.0, 56.0 * sk), sw * sk, MIN_DP * sk),
+            ORANGE,
+        );
+        push(&mut items, Btn::Menu, Group::Menu, pill(mc, wide * mk, MIN_DP * mk), ORANGE);
+        let (cc, ck) = placed(o, Group::StartSelect, screen, settings);
+        for (btn, dx) in [(Btn::Select, -64.0), (Btn::Start, 64.0)] {
+            push(
+                &mut items,
+                btn,
+                Group::StartSelect,
+                pill(cc + vec2(dx * ck, 0.0), 100.0 * ck, MIN_DP * ck),
+                CREAM,
+            );
+        }
+    }
+    Geometry { orient: o, screen, picture, band, items, stick_zone, dpad: (dc, 72.0 * dk) }
+}
+
+impl Geometry {
+    /// The items of one group.
+    pub fn group(&self, g: Group) -> impl Iterator<Item = &Item> {
+        self.items.iter().filter(move |i| i.group == g)
+    }
+
+    /// The box around a group (the stick's zone for the stick).
+    #[must_use]
+    pub fn group_bounds(&self, g: Group) -> Option<Rect> {
+        if g == Group::Dpad
+            && let Some(zone) = self.stick_zone
+        {
+            return Some(zone);
+        }
+        self.group(g).map(|i| i.shape.bounds()).reduce(Rect::union)
+    }
+
+    #[must_use]
+    pub fn item(&self, btn: Btn) -> Option<&Item> {
+        self.items.iter().find(|i| i.btn == btn)
+    }
+}
+
+/// The d-pad directions a finger at offset `d` from the centre holds: 8-way, with a dead zone of `dead` dp.
+#[must_use]
+pub fn directions(d: Vec2, dead: f32) -> [bool; 4] {
+    let len = d.length();
+    if len < dead {
+        return [false; 4];
+    }
+    // tan(22.5 degrees): a diagonal begins where the minor axis is this much of the vector.
+    let t = 0.4142 * len;
+    // up, down, left, right
+    [
+        d.y < -t.max(dead * 0.5),
+        d.y > t.max(dead * 0.5),
+        d.x < -t.max(dead * 0.5),
+        d.x > t.max(dead * 0.5),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn screen(w: f32, h: f32) -> Rect {
+        Rect::from_min_size(Pos2::ZERO, vec2(w, h))
+    }
+
+    #[test]
+    fn the_default_landscape_layout_matches_the_design() {
+        let g = compute(screen(932.0, 430.0), false, &Settings::default());
+        let a = g.item(Btn::A).unwrap().shape.bounds();
+        // The design has A at x 875..925, y 247..297 and B below the diamond's centre.
+        assert!((a.min.x - 875.0).abs() < 1.5 && (a.min.y - 247.0).abs() < 4.0, "{a:?}");
+        let up = g.item(Btn::Up).unwrap().shape.bounds();
+        assert!((up.min.x - 54.0).abs() < 4.0, "{up:?}");
+        let menu = g.item(Btn::Menu).unwrap().shape.bounds();
+        assert!(menu.width() >= MIN_DP && menu.height() >= MIN_DP);
+        assert!(g.picture.height() > 300.0 && g.band.is_none());
+    }
+
+    #[test]
+    fn no_control_is_smaller_than_48_dp_and_none_leaves_the_screen_at_the_defaults() {
+        for (w, h) in [(932.0, 430.0), (800.0, 360.0), (430.0, 932.0)] {
+            for minimal in [false, true] {
+                let s = screen(w, h);
+                let g = compute(s, minimal, &Settings::default());
+                for i in &g.items {
+                    let b = i.shape.bounds();
+                    assert!(b.width() >= MIN_DP - 0.01 && b.height() >= MIN_DP - 0.01, "{i:?}");
+                    assert!(s.expand(1.0).contains_rect(b), "{:?} off the {w}x{h} screen", i.btn);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn portrait_has_the_picture_on_top_and_an_opaque_band_below() {
+        let g = compute(screen(430.0, 932.0), false, &Settings::default());
+        let band = g.band.unwrap();
+        assert!((g.picture.max.y - band.min.y).abs() < 0.01);
+        assert!(g.items.iter().all(|i| i.shape.bounds().min.y >= band.min.y));
+    }
+
+    #[test]
+    fn a_stored_place_moves_and_resizes_a_group() {
+        let mut s = Settings::default();
+        *s.place_mut(Orient::Landscape, Group::Face) =
+            super::super::settings::Place { x: Some(500), y: Some(500), scale: Some(150) };
+        let g = compute(screen(1000.0, 400.0), false, &s);
+        let b = g.group_bounds(Group::Face).unwrap();
+        assert!((b.center().x - 500.0).abs() < 1.0 && (b.center().y - 200.0).abs() < 1.0);
+        assert!((b.width() - 150.0 * 1.5).abs() < 1.0, "{b:?}");
+    }
+
+    #[test]
+    fn directions_are_eight_way_with_a_dead_zone() {
+        assert_eq!(directions(vec2(3.0, -2.0), 20.0), [false; 4]);
+        assert_eq!(directions(vec2(0.0, -40.0), 20.0), [true, false, false, false]);
+        assert_eq!(directions(vec2(40.0, 5.0), 20.0), [false, false, false, true]);
+        assert_eq!(directions(vec2(30.0, 30.0), 20.0), [false, true, false, true]);
+        assert_eq!(directions(vec2(-30.0, -30.0), 20.0), [true, false, true, false]);
+    }
+}

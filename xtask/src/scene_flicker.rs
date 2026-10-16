@@ -128,6 +128,8 @@ mod tests {
         PoseStat {
             fighter: false,
             field,
+            shadow: false,
+            sprites: 0,
             matched: art.is_some(),
             recoloured: false,
             visible: 300,

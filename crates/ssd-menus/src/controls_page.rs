@@ -14,7 +14,7 @@ const WIDTH: f32 = 878.0;
 const SIDE: f32 = 18.0;
 const PAD_TOP: f32 = 12.0;
 const GROUP: f32 = 28.0;
-const ROW: f32 = 44.0;
+const ROW: f32 = 40.0;
 const GAP: f32 = 2.0;
 const COLUMN_GAP: f32 = 24.0;
 const LABEL_TEXT: f32 = 20.0;
@@ -25,7 +25,7 @@ const BOX_PADDING: f32 = 20.0;
 const DEVICE_BUTTON_HEIGHT: f32 = 40.0;
 const TINT: crate::draw::Color = crate::draw::Color([0xFF, 0x52, 0x00, 36]);
 
-/// Draws the rows window of the Controls page for `view` (its values are the codes of the 33 rows).
+/// Draws the rows window of the Controls page for `view` (its values are the codes of the 35 rows).
 pub(crate) fn rows(list: &mut DrawList, view: &OptionsView) {
     let window = Rect::new(LEFT_EDGE, TOP, WIDTH, HEIGHT);
     list.push(Op::Window { rect: window });
@@ -36,15 +36,19 @@ pub(crate) fn rows(list: &mut DrawList, view: &OptionsView) {
     let at = position(view.row);
     let device = Device::from_index(view.values.first().copied().unwrap_or(0));
 
+    let page = view.values.first().copied().unwrap_or(0);
+
     // The device row, alone on its line.
     let middle = y + ROW / 2.0;
     cursor_row(list, left, right, y, at == 0);
     list.text(left + 26.0, middle, "Device", LABEL_TEXT, palette::BLACK, Align::Left);
-    let widths = [136.0, 120.0];
-    let mut x = right - widths[0] - widths[1] - 2.0;
-    for (index, (text, width)) in ["Keyboard", "Gamepad"].into_iter().zip(widths).enumerate() {
+    let widths = [136.0, 120.0, 100.0];
+    let mut x = right - widths[0] - widths[1] - widths[2] - 4.0;
+    for (index, (text, width)) in
+        ["Keyboard", "Gamepad", "Touch"].into_iter().zip(widths).enumerate()
+    {
         let rect = Rect::new(x, middle - DEVICE_BUTTON_HEIGHT / 2.0, width, DEVICE_BUTTON_HEIGHT);
-        if index == device.index() {
+        if index == page {
             list.fill(rect, palette::ORANGE);
             list.push(Op::Outline { rect, width: LINE, color: palette::DARK_RED });
         }
@@ -52,6 +56,21 @@ pub(crate) fn rows(list: &mut DrawList, view: &OptionsView) {
         x += width + 2.0;
     }
     y += ROW + GAP;
+
+    if page == controls::TOUCH_DEVICE {
+        // The touch controls' rows: a list under the device row, drawn like any page's rows. The view's cursor is a
+        // row of the table, so the generic list tints the row it is on.
+        let first = controls::TOUCH_ROW0;
+        crate::screens::option_row_list(
+            list,
+            view,
+            first..first + controls::TOUCH_ROWS,
+            left,
+            right,
+            y,
+        );
+        return;
+    }
 
     // The two groups of the SNES buttons: the d-pad and the shoulders on the left, the buttons on the right.
     for (index, title) in ["D-pad and shoulders", "Buttons"].into_iter().enumerate() {
@@ -64,13 +83,13 @@ pub(crate) fn rows(list: &mut DrawList, view: &OptionsView) {
     }
     group(list, left, y, "Shortcuts");
     y += GROUP + GAP;
-    for line in BUTTONS / 2..ACTIONS / 2 {
+    for line in BUTTONS / 2..ACTIONS.div_ceil(2) {
         key_line(list, view, device, (left, right, column), y, line);
         y += ROW + GAP;
     }
 }
 
-/// The place of the cursor in the grid (0 the device row, 1 to 16 the actions) of a row of the table.
+/// The place of the cursor in the grid (0 the device row, 1 to 17 the actions) of a row of the table.
 fn position(row: usize) -> usize {
     if row == 0 { 0 } else { (row - 1) % ACTIONS + 1 }
 }
@@ -107,6 +126,9 @@ fn key_line(
     let at = position(view.row);
     for side in 0..2 {
         let action = line * 2 + side;
+        if action >= ACTIONS {
+            break;
+        }
         let x = left + side as f32 * (column + COLUMN_GAP);
         let edge = if side == 0 { x + column } else { right };
         let middle = y + ROW / 2.0;

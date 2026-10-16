@@ -1,0 +1,40 @@
+[package]
+name = "ssd-android"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# The Android build of the app (README, "Android (M9)"): the same program as `ssd-app`, built as the shared
+# library `libmain.so` that SDL's activity loads and enters through `SDL_main`. Empty on every other target.
+[lib]
+name = "main"
+path = "../ssd-app/src/android.rs"
+crate-type = ["cdylib"]
+
+# The dependencies of `ssd-app` (its modules are included from there), plus the logger.
+[dependencies]
+ssd-game = { workspace = true }
+ssd-hd = { workspace = true }
+ssd-oracle = { workspace = true }
+ssd-rom = { workspace = true }
+ssd-catalogue = { workspace = true }
+ssd-menus = { workspace = true }
+ssd-hdpack = { workspace = true }
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+snes-config = { workspace = true }
+sdl3 = { workspace = true, features = ["build-from-source"] }
+pollster = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.15"
+libc = "0.2"
+
+[lints]
+workspace = true

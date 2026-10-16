@@ -833,7 +833,22 @@ pub(crate) fn refine_field(
                 .collect();
             let pose = field_pose(&rest, log, view, FIELD_MIN)?;
             let opaque = pose.arr.iter().filter(|&&c| c != 0).count();
-            has_art(&pose).then_some((opaque, pose))
+            if !has_art(&pose) {
+                return None;
+            }
+            // A figure is drawn whole or not at all: what the art does not take (an arm piece
+            // the pose's own art would have drawn) may stay out only as a few pixels (a halo's
+            // spark) or where it has art of its own
+            let gone: Vec<&Sprite> = taken.iter().map(|&n| members[n]).collect();
+            for cluster in components(&gone, FIELD_GAP) {
+                let part: Vec<&Sprite> = cluster.iter().map(|&i| gone[i]).collect();
+                if let Some(left) = field_pose(&part, log, view, LEFTOVER_MIN)
+                    && !has_art(&left)
+                {
+                    return None;
+                }
+            }
+            Some((opaque, pose))
         };
         let mut tries: Vec<Vec<usize>> = (0..members.len()).map(|one| vec![one]).collect();
         if members.len() >= 3 {
@@ -1310,13 +1325,35 @@ mod tests {
         let whole = field_pose(&all, &log, &view, 40).expect("a pose");
         assert_ne!(whole.key, body_key);
         let found = vec![whole];
-        let mut has = art_for(&log, &sprites, vec![body_key]);
+        let halo_key = field_pose(&[&sprites[2]], &log, &view, 40).expect("a pose").key;
+        let mut has = art_for(&log, &sprites, vec![body_key, halo_key]);
         let out = refine_field(found, &sprites, &log, &view, &mut has);
-        // The body is a pose of its own; what is left is the halo, a pose of its own too
+        // The body is a pose of its own; what is left is the halo, a pose of its own too (it has art)
         assert_eq!(out.len(), 2);
         assert!(out.iter().any(|pose| pose.key == body_key));
         let halo = out.iter().find(|pose| pose.key != body_key).expect("the halo");
         assert_eq!(halo.sprites, 1 << 2);
+    }
+
+    #[test]
+    fn a_group_is_never_cut_where_what_is_left_has_no_art() {
+        let log = log();
+        let view = View::window();
+        let sprites = vec![
+            sprite(0, 40, 40, 4, filled(3)),
+            sprite(1, 40, 48, 4, filled(5)),
+            sprite(2, 40, 32, 4, filled(7)),
+        ];
+        let body: Vec<&Sprite> = sprites[..2].iter().collect();
+        let body_key = field_pose(&body, &log, &view, 40).expect("a pose").key;
+        let all: Vec<&Sprite> = sprites.iter().collect();
+        let whole = field_pose(&all, &log, &view, 40).expect("a pose");
+        let mut has = art_for(&log, &sprites, vec![body_key]);
+        let out = refine_field(vec![whole.clone()], &sprites, &log, &view, &mut has);
+        // the art of the body would leave the third sprite as bare pixels beside it: the group
+        // stays whole (all of it is the original's)
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].key, whole.key);
     }
 
     #[test]

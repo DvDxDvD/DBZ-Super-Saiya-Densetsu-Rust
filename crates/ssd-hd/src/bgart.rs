@@ -423,6 +423,50 @@ impl Classes {
         self.by_class.is_empty()
     }
 
+    /// The entries whose content a frame shows (by the registers and the key, as [`Classes::find`]
+    /// finds it, whatever VRAM is loaded while it is displayed) that none of `slots` draws: art the
+    /// frame has and does not use.
+    pub(crate) fn unbound(
+        &self,
+        index: &Index,
+        log: &ssd_oracle::FrameLog,
+        slots: &[Slot],
+    ) -> Vec<u32> {
+        let mut missed = Vec::new();
+        for (class, keys, _) in &self.by_class {
+            let bg = usize::from(class.bg);
+            let shown = log.entries.iter().find(|entry| {
+                let regs = &entry.regs;
+                !regs.forced_blanking
+                    && regs.bg_mode == class.mode
+                    && regs.main_bg[bg]
+                    && regs.bg_map_base[bg] == class.map_base
+                    && regs.bg_char_base[bg] == class.char_base
+                    && regs.bg_screen_size[bg] == class.size
+            });
+            let Some(shown) = shown else { continue };
+            let large = shown.regs.bg_large_tiles[bg];
+            let planes = if class.mode == 0 || bg >= 2 { 2 } else { 4 };
+            let key = layer_key(
+                &log.vram,
+                class.map_base,
+                class.char_base,
+                class.size,
+                large,
+                planes,
+                class.rows,
+            );
+            let Some(variants) = keys.get(&key) else { continue };
+            let drawn = slots.iter().any(|slot| {
+                !slot.field && variants.iter().any(|variant| variant.entry == slot.entry)
+            });
+            if !drawn && !index.layer.is_empty() {
+                missed.push(variants[0].entry);
+            }
+        }
+        missed
+    }
+
     /// The layers of `index` a frame shows: by its first lines that show a layer of each class.
     pub(crate) fn find(&self, index: &Index, log: &ssd_oracle::FrameLog) -> Vec<Slot> {
         let mut slots = Vec::new();
@@ -855,6 +899,63 @@ mod tests {
         // A change in a tile that the rows use does
         vram[0x1000 + 16] ^= 1;
         assert_ne!(base, key(&vram, [0, 2]));
+    }
+
+    #[test]
+    fn a_layer_whose_content_has_art_and_is_not_drawn_is_unbound() {
+        let mut vram = vec![0_u16; 32768];
+        vram[0x0400] = 1;
+        vram[0x1000 + 16] = 0x00FF;
+        let key = layer_key(&vram, 0x0400, 0x1000, 0, false, 4, [0, 32]);
+        let entry = Entry {
+            id: "a".to_owned(),
+            key: format!("{key:016x}"),
+            bg: 1,
+            mode: 1,
+            map_base: 0x0400,
+            char_base: 0x1000,
+            size: 0,
+            rows: [0, 32],
+            fill: true,
+            art: String::new(),
+            source: String::new(),
+            palette_key: String::new(),
+            palette: String::new(),
+        };
+        let index = Index { layer: vec![entry] };
+        let classes = Classes::new(&index);
+        let mut regs = ssd_oracle::LineRegs { bg_mode: 1, ..ssd_oracle::LineRegs::default() };
+        regs.main_bg[1] = true;
+        regs.bg_map_base[1] = 0x0400;
+        regs.bg_char_base[1] = 0x1000;
+        let log = ssd_oracle::FrameLog {
+            complete: true,
+            height: 224,
+            h_hi_res: false,
+            v_hi_res: false,
+            entries: vec![ssd_oracle::LineEntry {
+                scanline: 1,
+                from_pixel: 0,
+                regs,
+                sprites: ssd_oracle::SpriteLine::default(),
+            }],
+            cgram_start: vec![0; 256],
+            cgram_writes: Vec::new(),
+            vram,
+            vram_writes: Vec::new(),
+            oam_low: vec![0; 512],
+            oam_high: vec![0; 32],
+            oam_writes: Vec::new(),
+        };
+        let found = classes.find(&index, &log);
+        assert_eq!(found.len(), 1);
+        assert_eq!(classes.unbound(&index, &log, &found), Vec::<u32>::new());
+        // The slot lost (the field's map took BG2): the art the frame has is not drawn
+        assert_eq!(classes.unbound(&index, &log, &[]), vec![0]);
+        // Another content: no art, nothing lost
+        let mut other = log.clone();
+        other.vram[0x0401] = 1;
+        assert_eq!(classes.unbound(&index, &other, &[]), Vec::<u32>::new());
     }
 
     #[test]

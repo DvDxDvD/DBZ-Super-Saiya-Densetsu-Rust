@@ -18,6 +18,9 @@ mod replay_io;
 mod replays;
 mod rom_setup;
 mod saves;
+mod screenshot;
+#[cfg(any(target_os = "android", test))]
+mod setup_ui;
 mod snapshot;
 mod tab_debugger;
 mod tab_memory;
@@ -26,6 +29,7 @@ mod tab_routines;
 #[cfg(test)]
 mod test_support;
 mod theme;
+mod touch;
 mod ui;
 mod ui_script;
 mod video;
@@ -146,6 +150,10 @@ struct Cli {
     /// (the HD menus in the window and in UI snapshots) [default: classic].
     #[arg(long, value_enum, default_value_t = ModeArg::Classic)]
     mode: ModeArg,
+    /// Draw the touch controls (always on in the Android app): the buttons over the game, fed by touch events. With
+    /// --ui-snapshot the script's `touch` lines set what they show.
+    #[arg(long)]
+    touch_ui: bool,
 }
 
 /// `--mode`: the two modes of the game (spec §5.8).
@@ -167,8 +175,16 @@ impl ModeArg {
 pub(crate) const TITLE: &str = "Dragon Ball Z: Super Saiya Densetsu Recompiled";
 
 fn main() -> ExitCode {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let cli = Cli::parse();
+    run(std::env::args_os().collect())
+}
+
+/// The whole program for the arguments `args` (the first is the program's name). The Android library
+/// (`crates/ssd-android`) calls this with the arguments it reads, since a shared library has no `argv`.
+pub fn run(args: Vec<std::ffi::OsString>) -> ExitCode {
+    // `try_init`: the Android library installs its own logger first.
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .try_init();
+    let cli = Cli::parse_from(args);
     if cli.record.is_some() && cli.hooks != HooksArg::Original {
         Cli::command()
             .error(
@@ -241,6 +257,7 @@ fn main() -> ExitCode {
     });
     // Only a windowed run writes the player's files (see `persists`): set before the first read.
     paths::set_persistent(persists(&cli));
+    touch::force(cli.touch_ui);
     // A windowed Enhanced run takes the scale and the look of the options where no flag gives them; headless
     // runs, snapshots and benchmarks ignore the saved file, so they do not depend on this PC's choices.
     let saved_video =
@@ -287,6 +304,7 @@ fn main() -> ExitCode {
                 out,
                 size: cli.ui_size.unwrap_or(snapshot::DEFAULT_SIZE),
                 script: &script,
+                touch: cli.touch_ui,
                 enhanced,
             };
             let switch = load_switch(&cli);

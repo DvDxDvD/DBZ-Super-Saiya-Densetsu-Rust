@@ -16,6 +16,7 @@
 //! menu show field|menu|items|cheats|options
 //! menu press <key>|esc|backspace|pad <button>
 //! menu tab all|allies|tools
+//! touch menu|options|edit|hidden|play|minimal|full|stick|dpad|gamepad|nogamepad|select <group>|press <buttons>|release
 //! ```
 //!
 //! The `menu` lines are for `--mode enhanced`, and play the HD menu as a player does: `menu open`
@@ -53,6 +54,8 @@ pub enum Command {
     Mode { routine: String, mode: HookMode },
     /// A line of the HD menu (Enhanced mode).
     Menu(MenuCommand),
+    /// A line of the touch controls (`--touch-ui`): see [`crate::touch::Touch::script`].
+    Touch(String),
 }
 
 /// What a `menu` line does.
@@ -172,9 +175,11 @@ fn parse_command(text: &str) -> Result<Command, String> {
         ("menu", ["press", name]) => menu_press_named(Device::Keyboard, name)
             .map(|capture| Command::Menu(MenuCommand::Press(capture))),
         ("menu", _) => Err(MENU_USAGE.to_owned()),
+        ("touch", rest) if !rest.is_empty() => Ok(Command::Touch(rest.join(" "))),
+        ("touch", _) => Err("touch takes a word, such as menu, edit or press up,a".to_owned()),
         _ => Err(format!(
             "unknown action `{action}`: expected panel, tab, pause, step, frames, select, \
-             breakpoint, mode or menu"
+             breakpoint, mode, menu or touch"
         )),
     }
 }

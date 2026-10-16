@@ -271,21 +271,41 @@ impl Nav {
     /// The category the options screen is on.
     #[must_use]
     pub fn options_category(&self) -> Category {
-        Category::ALL[self.options.category.min(Category::ALL.len() - 1)]
+        {
+            let shown = Category::shown();
+            shown[self.options.category.min(shown.len() - 1)]
+        }
     }
 
     /// The row of the options screen under the cursor (an index of the category's rows; 0 when it has none).
     /// On the Controls page the cursor is a place in the grid ([`Nav::controls_position`]), and the row is the
-    /// shown device's row of that place.
+    /// shown device's row of that place (the Touch page: one of its six rows, a list).
     #[must_use]
     pub fn options_row(&self) -> usize {
         if self.options_category() == Category::Controls {
+            if self.touch_page() {
+                return match self.options.row.min(controls::TOUCH_ROWS) {
+                    0 => 0,
+                    at => controls::TOUCH_ROW0 + at - 1,
+                };
+            }
             return match self.controls_action() {
                 Some(action) => controls::row_of(self.controls_device(), action),
                 None => 0,
             };
         }
         self.options.row.min(self.options_category().rows().len().saturating_sub(1))
+    }
+
+    /// Whether the Controls page shows the touch controls' rows.
+    #[must_use]
+    pub fn touch_page(&self) -> bool {
+        usize::from(self.options.device) == controls::TOUCH_DEVICE
+    }
+
+    /// The host tells the Controls page which page the stored Device value says (0 keyboard, 1 gamepad, 2 touch).
+    pub fn set_controls_page(&mut self, page: usize) {
+        self.options.device = u8::try_from(page).unwrap_or(0);
     }
 
     /// The device the Controls page shows.
@@ -296,16 +316,16 @@ impl Nav {
 
     /// The host tells the Controls page which device the stored value says.
     pub fn set_controls_device(&mut self, device: Device) {
-        self.options.device = u8::try_from(device.index()).unwrap_or(0);
+        self.set_controls_page(device.index());
     }
 
-    /// The place of the Controls page's cursor: 0 is the device row, 1 to 16 the actions, two to a line.
+    /// The place of the Controls page's cursor: 0 is the device row, 1 to 17 the actions, two to a line.
     #[must_use]
     pub fn controls_position(&self) -> usize {
         self.options.row.min(controls::ACTIONS)
     }
 
-    /// The action under the Controls page's cursor (0 to 15), none on the device row.
+    /// The action under the Controls page's cursor (0 to 16), none on the device row.
     #[must_use]
     pub fn controls_action(&self) -> Option<usize> {
         self.controls_position().checked_sub(1)
@@ -584,11 +604,14 @@ impl Nav {
     /// (the device row between), Left and Right move across a line or, on the device row, change the device; A
     /// waits for a new key on a key box.
     fn key_controls(&mut self, key: Key) -> Action {
+        if self.touch_page() {
+            return self.key_touch(key);
+        }
         let at = self.controls_position();
         match key {
             Key::Up => {
                 self.options.row = match at {
-                    0 => controls::ACTIONS - 1,
+                    0 => controls::ACTIONS,
                     1 | 2 => 0,
                     _ => at - 2,
                 };
@@ -605,11 +628,45 @@ impl Nav {
                 return Action::OptionChange { category: Category::Controls, row: 0, by };
             }
             Key::Left if at.is_multiple_of(2) => self.options.row = at - 1,
-            Key::Right if at % 2 == 1 => self.options.row = at + 1,
+            Key::Right if at % 2 == 1 && at < controls::ACTIONS => self.options.row = at + 1,
             Key::Confirm if at == 0 => {
                 return Action::OptionChange { category: Category::Controls, row: 0, by: 1 };
             }
             Key::Confirm => self.options.listening = true,
+            _ => {}
+        }
+        Action::None
+    }
+
+    /// What `key` does on the Touch page of the Controls (M9): the device row, then a list of six rows. Up and Down
+    /// move (wrapping), Left and Right change a row (the device row: the page), A opens the reset button.
+    fn key_touch(&mut self, key: Key) -> Action {
+        let at = self.options.row.min(controls::TOUCH_ROWS);
+        match key {
+            Key::Up => {
+                self.options.row = if at == 0 { controls::TOUCH_ROWS } else { at - 1 };
+            }
+            Key::Down => {
+                self.options.row = if at == controls::TOUCH_ROWS { 0 } else { at + 1 };
+            }
+            Key::Left | Key::Right | Key::Confirm if at == 0 => {
+                let by = if key == Key::Left { -1 } else { 1 };
+                return Action::OptionChange { category: Category::Controls, row: 0, by };
+            }
+            Key::Left | Key::Right | Key::Confirm => {
+                let row = controls::TOUCH_ROW0 + at - 1;
+                let def = &controls::ROWS[row];
+                if let Kind::Button(_) = def.kind {
+                    if key != Key::Left
+                        && let crate::options::Source::Opens(opens) = def.source
+                    {
+                        return Action::OptionsOpen(opens);
+                    }
+                    return Action::None;
+                }
+                let by = if key == Key::Left { -1 } else { 1 };
+                return Action::OptionChange { category: Category::Controls, row, by };
+            }
             _ => {}
         }
         Action::None
@@ -898,6 +955,33 @@ mod tests {
     }
 
     #[test]
+    fn the_touch_page_is_a_list_under_the_device_row_and_its_button_opens_the_reset() {
+        let mut nav = Nav::default();
+        nav.enter(Screen::Options);
+        let key = |nav: &mut Nav, key| nav.key(key, false, false, 0);
+        for _ in 0..4 {
+            key(&mut nav, Key::Tab);
+        }
+        nav.set_controls_page(controls::TOUCH_DEVICE);
+        assert!(nav.touch_page());
+        assert_eq!(nav.options_row(), 0, "the device row first");
+        key(&mut nav, Key::Down);
+        assert_eq!(nav.options_row(), controls::TOUCH_ROW0);
+        assert_eq!(
+            key(&mut nav, Key::Right),
+            Action::OptionChange { category: Category::Controls, row: controls::TOUCH_ROW0, by: 1 }
+        );
+        // Up from the device row wraps to the last row, the reset button: A opens it, Left does nothing.
+        key(&mut nav, Key::Up);
+        key(&mut nav, Key::Up);
+        assert_eq!(nav.options_row(), controls::TOUCH_ROW0 + controls::TOUCH_ROWS - 1);
+        assert_eq!(key(&mut nav, Key::Left), Action::None);
+        assert_eq!(key(&mut nav, Key::Confirm), Action::OptionsOpen(Opens::ResetTouchLayout));
+        key(&mut nav, Key::Down);
+        assert_eq!(nav.options_row(), 0, "the list wraps through the device row");
+    }
+
+    #[test]
     fn the_controls_page_is_a_grid_two_to_a_line_and_a_waits_for_a_key() {
         let mut nav = Nav::default();
         nav.enter(Screen::Options);
@@ -928,7 +1012,15 @@ mod tests {
         for _ in 0..7 {
             key(&mut nav, Key::Down);
         }
-        assert_eq!(nav.controls_action(), Some(14), "Save state, third line of the shortcuts' two");
+        assert_eq!(
+            nav.controls_action(),
+            Some(14),
+            "Save state, second line of the shortcuts' three"
+        );
+        key(&mut nav, Key::Down);
+        assert_eq!(nav.controls_action(), Some(16), "Screenshot is alone on the last line");
+        assert_eq!(key(&mut nav, Key::Right), Action::None, "Right of the lone box stays");
+        assert_eq!(nav.controls_action(), Some(16));
         key(&mut nav, Key::Down);
         assert_eq!(nav.controls_position(), 0, "the grid wraps through the device row");
         // Left and Right on the device row change the device; A on a key box waits.

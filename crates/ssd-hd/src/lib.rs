@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 pub use art::{
     ArtSource, ArtStats, COLOUR_CLASSES, Drawn, DrawnPose, Fate, FrameTally, Image, ItemKey,
-    KindPixels, PoseShape, PoseStat, TallyCount, TallyItem, TallyLayer, colour_class,
+    KindPixels, PortraitUse, PoseShape, PoseStat, TallyCount, TallyItem, TallyLayer, colour_class,
 };
 pub use binding::Binder;
 pub use cards::{CardArt, Preview as CardPreview};

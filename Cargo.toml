@@ -7,6 +7,7 @@ members = [
     "crates/ssd-recomp-gen",
     "crates/ssd-game",
     "crates/ssd-app",
+    "crates/ssd-android",
     "crates/ssd-catalogue",
     "crates/ssd-save",
     "crates/ssd-hd",
@@ -51,7 +52,8 @@ regex = "1"   # export-public: the rules of the scan (xtask)
 rayon = "1"   # the row-parallel passes of the Enhanced picture (ssd-hd)
 raw-window-handle = "0.6"
 rustc-hash = "2"
-sdl3 = { version = "0.20", features = ["raw-window-handle", "build-from-source-static"] }
+# The desktop build links SDL statically (ssd-app); the Android build uses the shared library (ssd-android).
+sdl3 = { version = "0.20", features = ["raw-window-handle"] }
 serde = { version = "1", features = ["derive"] }
 ab_glyph = "0.2"   # rasterising the HD text font (ssd-hd)
 png = "0.18"   # decoding the HD art (ssd-hd, xtask)

@@ -232,7 +232,7 @@ Download from the [Releases](../../releases) page:
 
 **Keys.** Arrows = D-pad, X = A, Z = B, S = X, A = Y, Q = L, W = R, Enter = Start, Right Shift = Select. Tab cycles
 the speed (x1, x2, x4, x8), P pauses, F5 and F9 save and load a state, 1 to 4 choose the state slot, F1 shows the
-debug panel, Esc quits. A standard gamepad works too (the SNES layout by position).
+debug panel, F12 saves a screenshot as a PNG in your Pictures folder, Esc quits. A standard gamepad works too (the SNES layout by position).
 
 **Where things are.** Saves, states and the cached ROM are under `%LOCALAPPDATA%\dbz-ssd-recompiled\`
 (`SSD_DATA_DIR` overrides the folder).

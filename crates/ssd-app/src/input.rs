@@ -42,6 +42,8 @@ const ALL: [PadButton; 12] = [
 pub struct InputState {
     keys: [bool; 12],
     pad: [bool; 12],
+    /// The touch controls (M9), in the order of [`ALL`].
+    touch: [bool; 12],
 }
 
 fn idx(b: PadButton) -> usize {
@@ -61,13 +63,18 @@ impl InputState {
         }
     }
 
+    /// The buttons the touch controls hold now (in the order up, down, left, right, A, B, X, Y, L, R, Start, Select).
+    pub fn set_touch(&mut self, held: [bool; 12]) {
+        self.touch = held;
+    }
+
     /// Release everything (focus lost, gamepad removed).
     pub fn clear(&mut self) {
         *self = Self::default();
     }
 
     pub fn joypad(&self) -> Joypad {
-        let on = |b: PadButton| self.keys[idx(b)] || self.pad[idx(b)];
+        let on = |b: PadButton| self.keys[idx(b)] || self.pad[idx(b)] || self.touch[idx(b)];
         Joypad {
             up: on(PadButton::Up),
             down: on(PadButton::Down),

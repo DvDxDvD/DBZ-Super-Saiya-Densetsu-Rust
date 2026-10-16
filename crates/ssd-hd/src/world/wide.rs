@@ -394,6 +394,14 @@ impl WideRenderer {
         }
     }
 
+    /// Makes [`WideRenderer::render_hd`] draw the art of the backgrounds alone (the layers, not the
+    /// poses, portraits or shadows): the picture an audit compares with the original's colours.
+    pub fn set_art_backgrounds_only(&mut self, on: bool) {
+        if let Some(art) = self.art.as_mut() {
+            art.backgrounds_only = on;
+        }
+    }
+
     /// What the art did in the last picture drawn with it.
     #[must_use]
     pub fn art_stats(&self) -> crate::ArtStats {
@@ -448,6 +456,13 @@ impl WideRenderer {
         if let Some(art) = art.as_mut() {
             art.begin(options.width, usize::from(log.height), scale);
             art.begin_bg(log);
+            // A picture of the pack's own art on BG2 (the island of a story picture) is not the
+            // map, whatever the tile check says of a picture of mostly empty words beyond the map
+            let picture = scene != Scene::Field
+                && art.bg_slots().iter().any(|slot| slot.bg == 1 && !slot.field);
+            if picture {
+                self.mapped = false;
+            }
             art.field_frame = Some(matches!(game_mode & 0x7F, 0x00 | 0x01 | 0x03 | 0x05 | 0x06));
             // Whether the frame shows the field's map in any main loop state: a field the original
             // draws that the art does not take for the field is a frame the art misses
@@ -455,6 +470,7 @@ impl WideRenderer {
             // (a frame the game shows dark, in forced blanking or at brightness 0 on every line,
             // has no map to draw: the fade around a battle keeps the map in VRAM)
             if !dark_frame(log)
+                && !picture
                 && (scene == Scene::Field
                     || self.mapped
                     || classify_with(rom, 0, in_any_state.as_ref(), log, self.trust_field)
@@ -1241,6 +1257,11 @@ impl WideRun {
     /// Measures the colours the art draws against the original's ([`crate::ArtStats::drawn`]).
     pub fn set_art_measure(&mut self, on: bool) {
         self.renderer().set_art_measure(on);
+    }
+
+    /// Draws the art of the backgrounds alone ([`WideRenderer::set_art_backgrounds_only`]).
+    pub fn set_art_backgrounds_only(&mut self, on: bool) {
+        self.renderer().set_art_backgrounds_only(on);
     }
 
     /// What the art did in the last Enhanced picture.

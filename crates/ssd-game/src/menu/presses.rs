@@ -33,8 +33,11 @@ pub enum Until {
     Command,
     /// The cursor of the open list is on this row (`map_entry_value`).
     Cursor(u8),
-    /// A message or an effect runs (`menu_busy`).
-    Busy,
+    /// The original took the press on its command window: a message or an effect runs (`menu_busy`), the menu moved
+    /// on to a screen of its own or closed, or the field holds the party for the message (`field_state` 5 while a
+    /// Talk or Look message waits for A) or for a scene. A press the original refuses (nobody to talk to, no place to
+    /// land) leaves the command window idle, and is not this.
+    Taken,
     /// The Item list is drawn and ready (screen 2, step 1).
     ItemList,
     /// The Use or Drop choice of an item is drawn (screen 2, step 2).
@@ -371,7 +374,9 @@ fn satisfied(probe: &MenuProbe<'_>, until: Until) -> bool {
         Until::Screen(screen) => probe.menu_open() && probe.screen() == Some(screen),
         Until::Command => probe.menu_open() && matches!(probe.screen(), Some(0 | 13)),
         Until::Cursor(row) => probe.menu_open() && probe.cursor() == Some(row),
-        Until::Busy => probe.menu_open() && probe.busy(),
+        Until::Taken => {
+            probe.busy() || !probe.menu_open() || !matches!(probe.screen(), Some(0 | 13))
+        }
         Until::ItemList => {
             probe.menu_open() && probe.screen() == Some(2) && probe.step() == Some(1)
         }

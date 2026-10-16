@@ -939,6 +939,7 @@ const OPT_TITLE: f32 = 26.0;
 const OPT_GROUP: f32 = 28.0;
 /// A category row is 58 px high; a value row 44 px; the rows are 2 px apart.
 const OPT_CATEGORY_ROW: f32 = 58.0;
+const OPT_CATEGORY_ROW_TIGHT: f32 = 48.0;
 const OPT_ROW: f32 = 44.0;
 const OPT_GAP: f32 = 2.0;
 /// A button of the category window (Reset this page, Reset all): 44 px high, 6 px apart.
@@ -999,15 +1000,19 @@ fn options_categories(list: &mut DrawList, view: &OptionsView) {
         Align::Left,
     );
     let mut y = top + OPT_TITLE + 6.0;
-    for category in Category::ALL {
-        let row = Rect::new(left, y, width, OPT_CATEGORY_ROW);
+    let shown = Category::shown();
+    // Seven pages (the Game page is on) are packed a little closer so that the list keeps its room.
+    let step = if shown.len() > 6 { OPT_CATEGORY_ROW_TIGHT } else { OPT_CATEGORY_ROW };
+    let squeeze = step / OPT_CATEGORY_ROW;
+    for &category in shown {
+        let row = Rect::new(left, y, width, step);
         if category == view.category {
             list.fill(row, OPT_TINT);
             list.push(Op::Cursor { x: left, y: row.middle_y() - CURSOR_HEIGHT / 2.0 });
         }
         list.text(
             left + 26.0,
-            y + 20.0,
+            y + (20.0 * squeeze),
             category.name(),
             OPT_CATEGORY_TEXT,
             palette::BLACK,
@@ -1015,13 +1020,13 @@ fn options_categories(list: &mut DrawList, view: &OptionsView) {
         );
         list.text(
             left + 26.0,
-            y + 44.0,
+            y + (44.0 * squeeze),
             category.scope_label(),
             OPT_SUB_TEXT,
             palette::DARK_RED,
             Align::Left,
         );
-        y += OPT_CATEGORY_ROW;
+        y += step;
     }
     let bottom = window.bottom() - FRAME - OPT_PAD_TOP;
     for (index, text) in ["Reset this page", "Reset all"].into_iter().enumerate() {
@@ -1049,9 +1054,37 @@ fn options_rows(list: &mut DrawList, view: &OptionsView) {
     list.push(Op::Window { rect: window });
     let left = window.x + FRAME + OPT_SIDE;
     let right = window.right() - FRAME - OPT_SIDE;
-    let mut y = window.y + FRAME + OPT_PAD_TOP;
+    let y = window.y + FRAME + OPT_PAD_TOP;
+    let count = view.category.rows().len();
+    let y = option_row_list(list, view, 0..count, left, right, y);
+    if let Some(note) = view.category.note() {
+        list.text(
+            left + 26.0,
+            y + 4.0 + CAPTION_TEXT / 2.0,
+            note,
+            CAPTION_TEXT,
+            palette::DARK_RED,
+            Align::Left,
+        );
+    }
+    if view.category == Category::Accessibility {
+        access_sample(list, window);
+    }
+}
+
+/// The rows `range` of the category as a list from `y` down (each group's title, each row with its value at the
+/// right end), between `left` and `right`: returns where the next line would start.
+pub(crate) fn option_row_list(
+    list: &mut DrawList,
+    view: &OptionsView,
+    range: std::ops::Range<usize>,
+    left: f32,
+    right: f32,
+    mut y: f32,
+) -> f32 {
     let mut group = None;
-    for (index, row) in view.category.rows().iter().enumerate() {
+    for index in range {
+        let Some(row) = view.category.rows().get(index) else { break };
         if group != Some(row.group) {
             group = Some(row.group);
             let title = format!("-- {} --", row.group);
@@ -1143,19 +1176,7 @@ fn options_rows(list: &mut DrawList, view: &OptionsView) {
         }
         y += OPT_ROW + OPT_GAP;
     }
-    if let Some(note) = view.category.note() {
-        list.text(
-            left + 26.0,
-            y + 4.0 + CAPTION_TEXT / 2.0,
-            note,
-            CAPTION_TEXT,
-            palette::DARK_RED,
-            Align::Left,
-        );
-    }
-    if view.category == Category::Accessibility {
-        access_sample(list, window);
-    }
+    y
 }
 
 /// The "Sample" of the Accessibility page: a small menu window at the foot of the rows window, drawn in the
@@ -1342,7 +1363,7 @@ fn options_video_question(list: &mut DrawList, ask: &VideoAsk) {
 }
 
 /// The words of `text` in lines of at most `width` characters; a word longer than a line has a line of its own.
-fn wrap(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for word in text.split_whitespace() {
         match lines.last_mut() {
@@ -1851,10 +1872,39 @@ mod tests {
     }
 
     #[test]
+    fn the_game_page_shows_with_its_rows_when_the_platform_turns_it_on_and_fits_the_list() {
+        let _guard =
+            crate::options::GAME_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::options::show_game_page(true);
+        crate::options::set_game_info("Enhanced", "Installed, 0.9 GB");
+        let list = options_screen(&options_view(Category::Game, 1, None));
+        let text = texts(&list);
+        crate::options::show_game_page(false);
+        for label in [
+            "Game",
+            "This device",
+            "Change mode",
+            "Install the HD pack",
+            "Enhanced",
+            "Installed, 0.9 GB",
+        ] {
+            assert!(text.contains(&label), "{label} in {text:?}");
+        }
+        assert_eq!(
+            Category::Accessibility.next(),
+            Category::Difficulty,
+            "hidden again: the old ring"
+        );
+    }
+
+    #[test]
     fn the_options_screen_lists_the_categories_with_where_each_is_kept_and_the_two_buttons() {
+        let _guard =
+            crate::options::GAME_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let list = options_screen(&options_view(Category::Gameplay, 0, None));
         let text = texts(&list);
-        for category in Category::ALL {
+        assert!(!text.contains(&"Game"), "the Game page is hidden unless the platform turns it on");
+        for &category in Category::shown() {
             assert!(text.contains(&category.name()), "{}", category.name());
         }
         assert_eq!(text.iter().filter(|t| **t == "Saved with the game").count(), 2);

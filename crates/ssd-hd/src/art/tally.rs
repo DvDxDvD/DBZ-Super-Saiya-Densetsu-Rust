@@ -86,6 +86,8 @@ pub struct FrameTally {
     /// Every pose of the frame (a fighter, an effect, a field group) with where its art came from:
     /// the audit of the tour reads which art each instance was drawn from.
     pub uses: Vec<super::PoseStat>,
+    /// The portraits and faces of the frame and where their parts come from.
+    pub portraits: Vec<super::PortraitUse>,
 }
 
 impl FrameTally {
@@ -164,6 +166,7 @@ impl ArtState {
                 }
             }
         }
+        self.repair_portraits();
         let poses = &self.stats.poses;
         let fate = |at: usize| {
             let pose = &poses[at];
@@ -262,6 +265,7 @@ impl ArtState {
             tally.shapes.push(super::PoseShape { fate: fate(at), ..shape });
         }
         tally.uses.clone_from(&self.stats.poses);
+        tally.portraits = self.portrait_uses();
         self.tally = tally;
     }
 }
@@ -298,6 +302,7 @@ mod tests {
             shapes: vec![],
             items: vec![],
             uses: vec![],
+            portraits: vec![],
         };
         assert_eq!((tally.pixels(), tally.art_pixels()), (40, 30));
     }

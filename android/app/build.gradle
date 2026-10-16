@@ -1,0 +1,33 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'io.github.dbz_ssd_recompiled'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'io.github.dbz_ssd_recompiled'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '0.1.0'
+    }
+
+    buildTypes {
+        debug {
+            debuggable true
+        }
+        release {
+            // Signing is the release step of a later milestone; a release build is unsigned for now.
+            minifyEnabled false
+        }
+    }
+
+    // libmain.so and libSDL3.so, put in jniLibs/<abi>/ by android/build-apk.sh.
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
+    }
+}

@@ -15,6 +15,7 @@ pub mod layout;
 pub mod nav;
 pub mod options;
 pub mod screens;
+pub mod setup;
 pub mod style;
 pub mod view;
 

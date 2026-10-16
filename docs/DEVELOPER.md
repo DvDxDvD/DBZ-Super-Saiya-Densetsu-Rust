@@ -152,8 +152,9 @@ the town, so `FieldState::in_room` reads the size and the grid from the table re
 
 Arrows = D-pad, X = A, Z = B, S = X, A = Y, Q = L, W = R, Enter = Start, Right Shift = Select.
 F5 = save state, F9 = load state, 1–4 = state slot, Tab = cycle speed ×1/×2/×4/×8, P = pause, Esc = quit.
-F1 = show or hide the debug panel (see below). These are the defaults: in Enhanced mode the Controls page of the Options
-remaps the buttons and the four shortcuts (save, load, speed, pause), keyboard and gamepad apart (see "Options (M7)").
+F1 = show or hide the debug panel (see below). F12 = save a screenshot as a PNG (see "Screenshots"). These are the defaults: in
+Enhanced mode the Controls page of the Options remaps the buttons and the five shortcuts (save, load, speed, pause,
+screenshot), keyboard and gamepad apart (see "Options (M7)").
 
 The debug panel docks to the right of the game. Closed (the default), the window shows only a small "F1 debug" label
 top-right and, when a verified routine diverges, a short message bottom-right. Open, it has a header (frame, frames
@@ -183,7 +184,9 @@ Zeni window; the Menu list (Cheats opens the cheats screen below; Options opens 
 While an HD menu is up the keys belong to it: the arrows move its cursor, X confirms, Z goes back and Q or W changes
 the bag's tab (the game gets no buttons until the original draws a message or a screen of its own, such as Cards, Save
 or the take-off). The original menu keeps running underneath and performs every consequence (Talk, Look, the take-off,
-saving, the effects of the objects): the HD only presses its buttons, so Classic stays byte-exact. While the HD plays
+saving, the effects of the objects): the HD only presses its buttons, so Classic stays byte-exact. The HD window goes down
+as the last press of Talk, Look, Fly, Land or a Menu entry goes (the original shows its own window, message or scene from
+there, and the press is taken when the original answers, a message that holds the field included). While the HD plays
 a choice (a few seconds), its keys wait for it to end. Options is greyed out: A on it does nothing, and its help line
 says "Coming soon."
 
@@ -256,7 +259,7 @@ the block at frame 300, Enhanced mode), and `menu show cheats` in a UI script ch
 
 In Enhanced mode the Menu list's Options entry opens the Options screen (original style, over the field; the original's Menu
 list stays open unseen underneath, as for the Cheats). A category list on the left (Difficulty, Gameplay, Video, Audio,
-Controls, Accessibility, each labelled "Saved with the game" or "This PC"), the rows of the chosen category on the right, and a
+Controls, Accessibility, each labelled "Saved with the game" or "This PC") (on Android a seventh page, Game, labelled "This device", see "Android (M9)"), the rows of the chosen category on the right, and a
 help strip with the key hints. Up and Down choose a row, Left and Right (or X) change it, L and R change the page, Y is Reset
 this page, Select is Reset all (a Yes/No question, the cursor on No), Z goes back. The rows so far: Gameplay has the text
 speed (the original Menu's Text entry: the same byte, `$01D0`, five speeds) and the random-encounter rate (the Cheats
@@ -314,7 +317,7 @@ silence, mono plays the mean of both sides on both. The machine, Classic and the
 
 The Controls page (this PC; keys `controls.device`, `controls.kb.<action>`, `controls.pad.<action>`): the Device row (Keyboard
 or Gamepad: each device has its own map) and a key box per action, two to a line: the SNES buttons (the d-pad and the
-shoulders on the left, the buttons on the right) and four shortcuts (speed, pause, save state, load state). A on a box
+shoulders on the left, the buttons on the right) and five shortcuts (speed, pause, save state, load state, screenshot). A on a box
 waits for the next key (or, on the Gamepad page, button); Esc cancels and Backspace clears a shortcut (a SNES button keeps
 its key). A key or button an action already has is refused, there is no swap: the box says "Key in use" and flashes, and
 the help strip says "Key already used by <action>. Choose another key." The window's own keys (Esc, F1, 1 to 4) cannot be
@@ -340,9 +343,113 @@ F1 shows or hides the panel. Its tabs:
 - Debugger: pause, breakpoints by symbol or address, step into, over and out, and stop at interrupts.
 - Replays: record a replay from power-on, play one (Stop replay ends it), verify one in lockstep against the original,
   and the divergences a check saved, which Reproduce runs again.
+- Below the transport and state controls: Save screenshot (the same as F12) and Save 1x frame (the PPU's own frame, 256 x 224
+  or 239 lines, unscaled). The line next to them says where the file went.
 
 Keys 1–4 select the save-state slot. The panel can be checked without a window with `--ui-snapshot` (see "UI snapshots"
 below).
+
+## Android (M9)
+
+State: a feasibility spike with a real first launch. A debug APK builds, installs on an x86_64 emulator and runs the game,
+Classic and Enhanced (with the HD pack). The first launch asks for the ROM, the mode and, for Enhanced, the HD pack, on screens in
+the game's style (the system file picker is Android's). The touch controls are in (below); nothing has run on a phone (arm64) yet.
+
+First launch (`crates/ssd-app/src/android_setup.rs`, before the game starts): the screens of the approved boards, drawn with the
+HD menus' own drawing. `ssd_menus::setup` (pure, tested) builds each page as a draw list in a 932 x 430 space (a cream window in
+an orange frame with a dark-red line, the orange main button with the cursor, quiet dark-red buttons, a progress bar) plus the
+buttons' rectangles; `crates/ssd-app/src/setup_ui.rs` paints it through `hd::paint_fit` and turns a tap on a button (at least
+48 logical pixels high) into a command; the d-pad or arrow keys move between the buttons and A, Enter or Space chooses, B, Esc
+or Back goes back. The pages: Choose your ROM (accepted: English v1.02, CRC-32 A8CF4F2A, or Japanese Rev 1 plus the patch,
+which asks for `dbz102.ips` on a page of its own), Choose a mode (Classic or Enhanced), Install the HD pack (Select
+hd-pack.zip, or Skip, play Classic only; a bar with the step: copying, unpacking N%, building, putting the art in place,
+starting). The system file picker is SDL's file dialog, which on Android is the Storage Access Framework: SDL opens the
+`content://` address it returns as an I/O stream, and a worker thread copies the file in 1 MiB blocks to the app's folder
+and gives it to the same identify, normalise and cache code as `--rom` (a copier header is stripped); the screen keeps
+drawing and shows the steps. A wrong file shows the reason on the same page and the choice stays open. The mode is kept in
+`files/android-mode.txt` (`--mode` in the arguments file wins). An install copies the picked `hd-pack.zip` (deleted afterwards)
+and runs the desktop installer; Skip writes Classic when there is no pack yet. A launch that needs nothing opens no setup window.
+
+Later: the Options have a Game page on Android only (`options::show_game_page`; the rows are hidden on the desktop). It shows the
+current mode and the HD pack (revision and size) and has Change mode and Install the HD pack. A button ends the game and the
+launch loop (`SDL_main` in `android.rs`) runs the setup again at that page (`android_setup::request`), then starts the game in
+the new mode, so "applied at the next start" costs a second of waiting and no manual restart. Classic has no Options, so there
+Select + Start held for two seconds does the same (the Mode page). `hd_art` forgets its pack and font between runs, so a pack
+installed in between is the one used.
+
+Layout: `crates/ssd-android` is the shared library `libmain.so` (empty on every other target); its root,
+`crates/ssd-app/src/android.rs`, includes the desktop `main.rs` and adds the `SDL_main` entry that SDL's activity calls. The
+Gradle project is in `android/` (`GameActivity` is SDL's activity; SDL's Java glue is copied from the SDL sources that
+cargo fetched, and is not tracked). The recompiled code (`--features recomp`) is never part of the APK. The desktop build is
+unchanged: the Android parts are `cfg(target_os = "android")` or separate crates outside the default members.
+
+Build (Linux, or any host with the Android SDK and NDK, a JDK 17+, cmake, Rust with the Android targets and `cargo-ndk`):
+
+    export ANDROID_HOME=~/Android/Sdk ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653
+    android/build-apk.sh                 # x86_64 for the emulator; add arm64-v8a for a phone; --release first for release
+    # the APK: android/app/build/outputs/apk/debug/app-debug.apk
+
+Test on a headless emulator (`emulator -avd NAME -no-window -no-audio -gpu swiftshader_indirect`): install the APK with
+`adb install`, then put the files into the app's private folder (the debug build allows `run-as`):
+
+    adb push canonical.sfc /data/local/tmp/r.sfc
+    adb shell "run-as io.github.dbz_ssd_recompiled sh -c 'mkdir -p files/cache/rom && cp /data/local/tmp/r.sfc files/cache/rom/canonical.sfc'"
+
+`files/android-args.txt` (one line) holds extra launch arguments: `ENV:NAME=value` sets an environment variable, the rest is
+the command line (`--mode enhanced --install-hd-pack /data/data/io.github.dbz_ssd_recompiled/files/hd-pack.zip`).
+Errors and the log go to `adb logcat -s ssd`.
+
+Graphics backend (`canvas::backends_to_try`, `video::open_gpu`): `WGPU_BACKEND` (for example `ENV:WGPU_BACKEND=gl` in the
+arguments file) wins; otherwise an emulator (system properties `ro.hardware`, `ro.kernel.qemu`) gets OpenGL ES alone, because its
+Vulkan is SwiftShader, which crashes the emulator; any other device tries Vulkan first and falls back to OpenGL ES when the
+adapter or device cannot be created, or the Vulkan adapter is a software one.
+
+Lifecycle: the activity follows the sensor (landscape and portrait), keeps the screen on and hides the system bars (immersive, sticky). When the window loses
+the focus (home button, another app, screen off, the notification shade) the game stops running, the wgpu surface is dropped, the
+battery save is flushed and the whole machine state is written to `states/background.ssdstate` (not in a run that does not
+persist, a recording or a replay); SDL then blocks the event pump until the app is back, which also pauses the audio. On
+`FocusGained` the surface is made again on the window's new native surface (retried every frame until the window has one), the
+pacing clock starts over and the state file is deleted, so the game continues exactly where it was. If the system kills the
+process while it is in the background, the next launch loads that file once and deletes it, so nothing is lost beyond what the
+game itself would lose; the file can never replace a newer battery save, since it only exists between a background and the next
+start. Tested on the emulator: five home/return cycles and two screen off/on cycles with the same process alive and the intro
+continuing, and a kill in the background followed by a launch that resumed.
+
+Touch controls (`crates/ssd-app/src/touch/`): on Android (and with `--touch-ui` on a desktop, for UI snapshots) an overlay of
+buttons is drawn over the game and driven by SDL's finger events; the design is the owner's approved mock-up. They feed the
+same input state as the keyboard and the gamepad (`InputState::touch`), so the game, the HD menus and the shortcuts work
+unchanged, and a replay (which records the SNES buttons after the map) does not depend on them. It is drawn with egui, the
+overlay the app already has: anti-aliased shapes and Share Tech Mono text in dp (egui points), where the HD menus' draw
+lists are a fixed 1280 x 720 design mapped onto the picture. SDL's touch-to-mouse events are turned off so the fingers are the
+controls' alone.
+
+- Landscape: the 16:9 picture is centred with the controls in the side margins and Start and Select below it. A fixed d-pad at
+  the left (or, as an option, a floating stick that appears under the thumb in a zone at the left), A/B/X/Y in the SNES diamond
+  (A right red, B bottom yellow, X top blue, Y left green), L and R at the top corners, a speed button (x1/x2/x4/x8 cycle),
+  MENU, and MIN. Multi-touch: the d-pad and A at once; a finger slides across the d-pad directions (8-way) or the face
+  buttons, and lets go when it leaves. A pressed button turns solid cream; the rest is 75% opaque (20 to 100%).
+- Minimal (battles): only the d-pad, a big A and B, MENU and FULL (back to all). Switched by hand with MIN and FULL, or by itself
+  in a battle (option "Switch automatically in battle", off by default; a battle is the game mode of a battle with `in_battle`
+  set, `ssd_game::gameplay::in_battle`).
+- Portrait (the activity is no longer locked to landscape): the picture on top, the controls on an opaque band below.
+- MENU pauses: Save state and Load state (the current slot), Options (the touch options), Edit layout, Hide controls (a chip
+  at the top right brings them back), Resume, and "Hide controls when a gamepad is connected" (on by default; only a pad
+  with a stick and face buttons counts). The Android back key opens it too.
+- Edit layout: tap a group to select it, drag it, drag a corner handle or use +/- for the size (100 to 180%, so never under
+  48 dp), opacity, Reset to default, Done. The layout is kept per device in `saves/ssd.settings` under `controls.touch.*`
+  (`style`, `opacity` as a step of five percent, `haptics`, `auto_battle`, `hide_pad`, and `<group>.x|y|s` or
+  `p.<group>.x|y|s` for the portrait layout: the centre in per mille of the screen and the size in percent).
+- Options > Controls: the Device row has a third page, Touch, with Touch layout (D-pad or Stick), Opacity, Haptics, Switch
+  automatically in battle, Hide with gamepad and Reset touch layout.
+- Haptics: a light tick on a press, on by default; the native side sends a command to `GameActivity`, which performs the
+  system's keyboard-tap feedback (no permission needed).
+
+In a UI snapshot with `--touch-ui`, `touch menu|options|edit|hidden|play|minimal|full|stick|dpad|gamepad|select <group>|press up,a|release`
+lines set the state drawn (README, "UI snapshots"). Tested on the x86_64 emulator: the d-pad and the START and A buttons
+played the intro past the title, MENU, Edit layout (a drag, saved in `ssd.settings`), MIN/FULL and portrait.
+
+Next: a gamepad-aware first launch, a check of the touch controls on a phone
+(with the touch controls done), performance on a phone, saves and states in app storage, and a signed release build.
 
 ## Data and files
 
@@ -354,6 +461,16 @@ Saves, save states and the ROM cache live in `%LOCALAPPDATA%\dbz-ssd-recompiled\
 
 The environment variable `SSD_DATA_DIR` overrides that directory (the tests use it).
 
+## Screenshots
+
+F12 (or the debug panel's Save screenshot) saves the picture the window shows as a PNG, without the debug panel: the
+Enhanced picture with the HD menus and overlays at the window's size in pixels, or the Classic picture, laid out as with the
+panel closed. Save 1x frame saves the PPU's own frame unscaled. The files go to `<Pictures>\DBZ SSD Recompiled\`
+(the system's Pictures folder), named `dbz-YYYYMMDD-HHMMSS.png` in local time (`-2`, `-3` if several are taken in one
+second; a file is never overwritten). Without a Pictures folder, and on Android, they go to `screenshots\` of the data
+folder. A short notice (2 s) shows the path. The key is remappable on the Controls page; `SSD_SCREENSHOT_DIR` overrides
+the folder (the tests use it). A screenshot is not a save: a headless run, a UI snapshot or a `--replay` run takes none.
+
 Only a windowed run writes the saves and states folders. A run that does not persist (a headless run, a UI snapshot, a
 benchmark or a `--replay` run) writes none of their files and does not create the folders: its battery save, bag and cheat
 changes and its save states stay in memory for the run. It still reads the battery save, the bag and cheat files and the
@@ -364,6 +481,7 @@ is given `--rom` or installs a pack: they are caches of the ROM, not saves.
 Headless test mode: `ssd-recompiled --headless-frames N --screenshot out.bmp` runs N frames without a window and
 writes the last frame as a BMP.
 
+`--touch-ui` draws the touch controls (always on in the Android app): with `--ui-snapshot` they are in the picture and the script's `touch` lines set them (see "Android (M9)").
 UI snapshots: `ssd-recompiled --headless-frames N --ui-snapshot out.png [--ui-script actions.txt] [--ui-size 1440x900]`
 runs N frames without a window, applies the script to the debug panel and writes the whole picture as a PNG. It writes no
 file of the saves or states folders and reads no option file (see "Data and files" and "Options (M7)"). The panel
@@ -388,7 +506,10 @@ skipped, and a line that is not an action is a usage error (exit 2) that names i
 
 The twelve reference frames of M6 task 3 (title, flight, field, a message, the command menu, two menu screens, the
 battle command screen, an attack, three of the ending) are drawn at 4x from the reference replays and written to
-`.work/hd/`; their CRC-32s are asserted by a ROM-gated test (`SSD_ROM_PATH` names the ROM):
+`.work/hd/`. A ROM-gated test (`SSD_ROM_PATH` names the ROM) compares each one with a coarse signature (the channel
+means and the edge strength of 128 x 128 pixel cells, and the centre of the edges), not with its bytes: the GPU's
+rounding moves the signature by less than one step and passes, while a blanked cell, a shifted or recoloured
+picture or a filter fails (see the test's module documentation):
 `cargo test -p ssd-app --release --test hd_snapshots -- --ignored`.
 
 Symbols need the symbols file (see "Symbols" below). Nothing is paced: the header shows the rate the window runs at
@@ -849,6 +970,18 @@ most fighters show (a formation sheet), with `<part>.json` (the frame, and where
         [--out DIR] [--jobs N] [--base SAVE]
     cargo run --release -p xtask -- hd-art scenes merge <out dir> <run dir>...
 
+    cargo run --release -p xtask -- hd-art figures [replay|dir...] [--jobs N]
+    cargo run --release -p xtask -- hd-art figures --walk MAP:PARTY [--frames N] [--dump] [--out DIR]
+
+`hd-art figures` looks at every field frame for a figure drawn partly from art and partly from the original's pixels (a bare
+group of the same palette touching an art-drawn figure) or from two different arts that overlap in one palette, and for a
+figure drawn from art whose box does not fit its pose's (`stretched`: the art's width and height disagree on the scale by more
+than two pixels of the original); the same checks are the `mixed` and `stretched` reasons of `hd-art scenes`. It lists each
+case per replay and exits 1 on any. `--walk` boots a crafted map and party and walks it in the four directions (the map
+decides who leads on screen; `--dump` lists every frame's poses, `--out DIR` writes the groups seen with no art as gap files).
+The binding draws a field figure whole or not at all: a group with no art of its own is read as a smaller figure plus a piece
+only where the piece has art of its own, never leaving an arm of it as the original's pixels.
+
 the scene audit of the HD remaster: it plays the frames of the parts of the tour (every reference replay, a visit of every map
 and a walk of the party's characters in the four directions on a map, the menus and the title; `--replays`, `--maps`,
 `--menus` and `--title` choose, the battle groups are the tour's), three consecutive frames of every eight of a replay (and
@@ -859,15 +992,22 @@ drawn wrong. A frame is faulty when it shows (reason, in the report) a map layer
 from art; a sprite whose art is much darker than the original's pixels (`dark`, a silhouette) or draws under half of its
 pixels (`thin`); a figure whose pixels did not change between two frames while its art did (`flicker`: the grouping of
 the sprites differs, or a piece of the figure takes its sprites; not when an effect that the original draws over the figure in
-one of the frames was drawn from art made with the figure in it); and a field sprite whose art lacks a colour the original
-has a good share of, or has far more skin than the original (`off_model`, the gi that became a bare chest). Frames faded to
+one of the frames was drawn from art made with the figure in it); a field sprite whose art lacks a colour the original
+has a good share of, or has far more skin than the original (`off_model`, the gi that became a bare chest); a field sprite whose art shows far more blue or purple than the original (`tint`, a ground shadow baked into the art in a hue); and a portrait or face that is not one character's art, whole
+(`mixed_portrait`: its cells come from more than one picture, or from pictures of more than one portrait stream, or are in more than
+one palette row, or sit beside pixels of the original that no picture draws, or the art is drawn in colours far from the palette it was
+made in (a fade, which scales every colour, is not far), or the characters the game put on screen are of another stream than the
+picture that draws them). The game's VRAM can hold the tiles of two faces in one portrait (the top rows of the face before, the
+bottom rows of the speaker, each with its own palette row); the renderer then draws the portrait whole from the one picture that has
+over two thirds of its pixels, or else the one in the colours nearest the game's, or else the one that holds the lower rows, in the
+row of that picture's cells, and the audit still reports the frame (the characters of two streams) so that it is looked at. Frames faded to
 black or in the mosaic of a fade are left out. The report is `.work/scenes/index.html` (one 4x frame of each scene, plain and
 with the art, its part and frame range, the map and the game mode, and what is missing with its pixels) and `scenes.json`; the
 poses with no art are also written to `.work/scenes/gaps/` (as `hd-tour --gaps` does), which is what art is made from.
 `tools/hd-scenes.toml` lists the scenes that are accepted as they are (`part`, `map`, `reason` and `item`, each a substring or
-a value, and a `note` that says why); the command exits 1 while a scene is not covered by one. `SCENES_SNAP=N` writes the
+a value, and a `note` that says why); the command exits 1 while a scene is not covered by one. `SCENES_PORTRAITS=1` prints, for every portrait of every frame, where its cells come from (pictures, streams, palette rows, how far the colours are from the art's), `SCENES_SNAP=N` writes the
 picture of every Nth frame, `SCENES_TRACE=A-B` prints what the frames A to B are made of (their poses, with where each one's
-art came from) and `SCENES_FULL=1` counts every frame of the replays (not three of eight) and `SCENES_UNTIL=N` stops the replays after N frames, to look at one scene without playing the rest. `merge` puts the reports of runs made in parts (one `--out` folder each, below `<out dir>`) into one report with the exceptions applied.
+art came from) and `SCENES_COLOUR=1` turns on the `colour` check (the backgrounds-only picture against the original's, per 16x16 square; off by default: it is unreliable until the two pictures are aligned, and faults field maps and Mode 7 planes), and the `dropout` check (always on) finds a layer whose content has art in the pack and that a frame shows without drawing it. `SCENES_FULL=1` counts every frame of the replays (not three of eight) and `SCENES_UNTIL=N` stops the replays after N frames, to look at one scene without playing the rest. `merge` puts the reports of runs made in parts (one `--out` folder each, below `<out dir>`) into one report with the exceptions applied.
 
     cargo run --release -p xtask -- menu-test field --save <file.sav> [--slot N] [name...]
     cargo run --release -p xtask -- menu-test town --replay <file.ssdreplay> --frames N [name...]
