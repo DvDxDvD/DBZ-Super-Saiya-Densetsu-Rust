@@ -202,6 +202,12 @@ is distributed as an IPS patch, `dbz102.ips`, by ROM-hacking archives; it is not
 files with any hashing tool (`certutil -hashfile "your.sfc" SHA1` on Windows, or the file's CRC-32 in your
 patcher) against the table above.
 
+A dump of the same game that is none of those images (another fan translation, a rebuild with the header checksum
+left wrong) can still be played with `--force-rom`: the copier header is stripped and the game runs on it. Everything
+built from the canonical image is then your own risk: the catalogue of names and texts, the HD art and the recompiled
+code are made for `A8CF4F2A` and are not guaranteed to line up. The flag also lets the shared HD pack be installed on
+such a ROM instead of being refused.
+
 ### 2. Apply the patch (Japanese Rev 1 only)
 
 If you already have the English version in one of the first two rows, skip this step. With the Japanese Rev 1 ROM

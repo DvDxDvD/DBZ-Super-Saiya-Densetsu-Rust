@@ -219,27 +219,36 @@ impl Write for Lines<'_> {
 }
 
 /// Installs the shared art pack at `source` for `rom` under `cache`; every step is said through
-/// `say`. Does nothing when the pack of the ROM was made from this art already.
+/// `say`. Does nothing when the pack of the ROM was made from this art already. A pack made for
+/// another ROM is refused unless `force` is set, which says so and installs it anyway: the art can
+/// still line up when only the text of the ROM differs.
 ///
 /// # Errors
 ///
-/// The pack is not a pack of this format or of this ROM, or a file cannot be read or written; the
-/// pack of the ROM is the one it was before.
+/// The pack is not a pack of this format, or (unless `force`) not of this ROM, or a file cannot be
+/// read or written; the pack of the ROM is the one it was before.
 pub fn install(
     rom: &[u8],
     source: &Path,
     cache: &Path,
     say: &mut dyn FnMut(&str),
+    force: bool,
 ) -> anyhow::Result<Outcome> {
     let started = std::time::Instant::now();
     let mut files = Files::open(source)?;
     let manifest = files.manifest()?;
     let crc = ssd_rom::crc32(rom);
-    anyhow::ensure!(
-        manifest.rom_crc32.eq_ignore_ascii_case(&format!("{crc:08X}")),
-        "this HD pack is made for the ROM {}, yours is {crc:08X}",
-        manifest.rom_crc32
-    );
+    if !manifest.rom_crc32.eq_ignore_ascii_case(&format!("{crc:08X}")) {
+        anyhow::ensure!(
+            force,
+            "this HD pack is made for the ROM {}, yours is {crc:08X}",
+            manifest.rom_crc32
+        );
+        say(&format!(
+            "HD pack made for the ROM {} is being installed on {crc:08X} anyway (--force-rom)",
+            manifest.rom_crc32
+        ));
+    }
     let target = convert::pack_dir(cache, crc);
     let wanted = Installed {
         digest: manifest.digest.clone(),
@@ -378,10 +387,29 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rom = vec![0_u8; 0x8000];
         let wrong = zipped(dir.path(), "", "12345678");
-        let error = install(&rom, &wrong, &dir.path().join("cache"), &mut |_| {}).unwrap_err();
+        let error =
+            install(&rom, &wrong, &dir.path().join("cache"), &mut |_| {}, false).unwrap_err();
         assert!(error.to_string().contains("12345678"), "{error:#}");
         std::fs::write(dir.path().join("x.zip"), b"not a zip").unwrap();
-        assert!(install(&rom, &dir.path().join("x.zip"), dir.path(), &mut |_| {}).is_err());
+        assert!(install(&rom, &dir.path().join("x.zip"), dir.path(), &mut |_| {}, false).is_err());
+    }
+
+    #[test]
+    fn a_pack_for_another_rom_is_installed_when_forced_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let rom = vec![0_u8; 0x10_0000];
+        let other = shared_pack(dir.path(), 0xDEAD_BEEF);
+        let mut said = Vec::new();
+        let out = install(
+            &rom,
+            &other,
+            &dir.path().join("cache"),
+            &mut |l| said.push(l.to_owned()),
+            true,
+        )
+        .unwrap();
+        assert!(matches!(out, Outcome::Installed { .. }));
+        assert!(said.iter().any(|l| l.contains("DEADBEEF")), "{said:?}");
     }
 
     /// A shared pack of one pose (a lossless WebP, its outline in masks.bin), one background layer
@@ -444,7 +472,7 @@ digest = \"00000002\"
         let cache = dir.path().join("cache");
         let mut said = Vec::new();
         let Outcome::Installed { pack, report } =
-            install(&rom, &zip, &cache, &mut |line| said.push(line.to_owned())).unwrap()
+            install(&rom, &zip, &cache, &mut |line| said.push(line.to_owned()), false).unwrap()
         else {
             panic!("the first install does the work")
         };
@@ -467,7 +495,10 @@ digest = \"00000002\"
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, ["1"], "{names:?}");
-        assert!(matches!(install(&rom, &zip, &cache, &mut |_| {}).unwrap(), Outcome::Current(_)));
+        assert!(matches!(
+            install(&rom, &zip, &cache, &mut |_| {}, false).unwrap(),
+            Outcome::Current(_)
+        ));
     }
 
     #[test]

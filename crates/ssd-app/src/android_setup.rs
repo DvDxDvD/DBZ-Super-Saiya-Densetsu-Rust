@@ -55,7 +55,7 @@ pub fn take_request() -> Option<Forced> {
 /// The two lines of the Options' Game page: the mode, and the HD pack's state (its revision and size).
 pub fn game_info(dir: &Path) -> (String, String) {
     let mode = if read_mode(dir) == Some(true) { "Enhanced" } else { "Classic" };
-    let pack = match rom_setup::resolve_rom(None, None) {
+    let pack = match rom_setup::resolve_rom(None, None, false) {
         Ok(rom_setup::RomSetup::Ready(rom)) => {
             ssd_hd::pack::Pack::find(&paths::data_dir().join("cache"), ssd_rom::crc32(&rom))
                 .map_or_else(
@@ -151,7 +151,7 @@ impl Flow {
 /// player quit.
 pub fn run(args: &mut Vec<OsString>, dir: &Path, forced: Option<Forced>) -> bool {
     let mut note = None;
-    let rom = match rom_setup::resolve_rom(None, None) {
+    let rom = match rom_setup::resolve_rom(None, None, false) {
         Ok(rom_setup::RomSetup::Ready(bytes)) => Some(bytes),
         Ok(rom_setup::RomSetup::Missing) => None,
         Err(error) => {
@@ -434,7 +434,7 @@ fn start_work(
 fn check_rom(uri: &str, dir: &Path) -> Result<Vec<u8>, RomProblem> {
     let tmp = dir.join("rom-import.tmp");
     copy_uri(uri, &tmp, MAX_ROM_BYTES, &mut |_| ()).map_err(|e| RomProblem::Refused(e.to_string()))?;
-    match rom_setup::resolve_rom(Some(&tmp), None) {
+    match rom_setup::resolve_rom(Some(&tmp), None, false) {
         Ok(rom_setup::RomSetup::Ready(bytes)) => {
             let _ = std::fs::remove_file(&tmp);
             Ok(bytes)
@@ -461,7 +461,9 @@ fn check_patch(uri: &str, dir: &Path) -> Result<Vec<u8>, RomProblem> {
     let ips = dir.join("patch-import.tmp");
     let result = copy_uri(uri, &ips, MAX_PATCH_BYTES, &mut |_| ())
         .map_err(|e| e.to_string())
-        .and_then(|()| rom_setup::resolve_rom(Some(&rom), Some(&ips)).map_err(|e| format!("{e:#}")));
+        .and_then(|()| {
+            rom_setup::resolve_rom(Some(&rom), Some(&ips), false).map_err(|e| format!("{e:#}"))
+        });
     let _ = std::fs::remove_file(&ips);
     match result {
         Ok(rom_setup::RomSetup::Ready(bytes)) => {
@@ -474,7 +476,7 @@ fn check_patch(uri: &str, dir: &Path) -> Result<Vec<u8>, RomProblem> {
 }
 
 fn install_pack_from(uri: &str, dir: &Path, sender: &Sender<Msg>) -> Result<(), String> {
-    let rom = match rom_setup::resolve_rom(None, None) {
+    let rom = match rom_setup::resolve_rom(None, None, false) {
         Ok(rom_setup::RomSetup::Ready(bytes)) => bytes,
         _ => return Err("the ROM is not set up".to_owned()),
     };
@@ -503,7 +505,7 @@ fn install_pack_from(uri: &str, dir: &Path, sender: &Sender<Msg>) -> Result<(), 
                 status("Putting the art in place...", None);
             }
         };
-        match install::install(&rom, &source, &cache, &mut say) {
+        match install::install(&rom, &source, &cache, &mut say, false) {
             Ok(Outcome::Current(_) | Outcome::Installed { .. }) => Ok(()),
             Err(error) => Err(format!("{error:#}")),
         }

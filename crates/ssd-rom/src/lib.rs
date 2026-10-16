@@ -18,6 +18,7 @@ pub enum RomSource {
     Canonical,
     KleptoUnfixedChecksum,
     JapaneseRev1Patched,
+    Forced,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +109,24 @@ pub fn normalize(input: &[u8], ips: Option<&[u8]>) -> Result<NormalizedRom, RomE
     }
 }
 
+/// [`normalize`], but an image that is none of the known ones is taken as it is when `force` is set.
+///
+/// # Errors
+///
+/// The same as [`normalize`], except [`RomError::Unknown`] when `force` is not set. A wrong size is
+/// still an error either way: the copier header is stripped, the rest is the player's ROM.
+pub fn normalize_forced(
+    input: &[u8],
+    ips: Option<&[u8]>,
+    force: bool,
+) -> Result<NormalizedRom, RomError> {
+    let rom = strip_copier_header(input)?;
+    if force && !matches!(crc32(rom), CANONICAL_CRC32 | KLEPTO_UNFIXED_CRC32 | JP_REV1_CRC32) {
+        return Ok(NormalizedRom { bytes: rom.to_vec(), source: RomSource::Forced });
+    }
+    normalize(input, ips)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +160,18 @@ mod tests {
         let err = normalize(&rom, None).unwrap_err();
         assert!(matches!(err, RomError::Unknown { crc32 } if crc32 == crc32_of(&rom)));
         assert!(err.to_string().contains(&format!("{:08X}", crc32_of(&rom))));
+    }
+
+    #[test]
+    fn forced_takes_an_unknown_rom_as_it_is_and_the_copier_header_is_still_stripped() {
+        let rom = vec![0x42_u8; 0x8000];
+        assert!(matches!(normalize_forced(&rom, None, false), Err(RomError::Unknown { .. })));
+        let out = normalize_forced(&rom, None, true).unwrap();
+        assert_eq!(out.source, RomSource::Forced);
+        assert_eq!(out.bytes, rom);
+        let mut headered = vec![0x00_u8; 512];
+        headered.extend_from_slice(&rom);
+        assert_eq!(normalize_forced(&headered, None, true).unwrap().bytes, rom);
     }
 
     fn crc32_of(b: &[u8]) -> u32 {
