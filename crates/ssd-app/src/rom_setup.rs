@@ -19,14 +19,20 @@ impl std::fmt::Debug for RomSetup {
 /// Turns the launch arguments into a ready ROM image.
 ///
 /// With `--rom` the image is identified, normalised and written to the cache (via a temp file and a
-/// rename, so an interrupted run never leaves a half-written cache). Without it the cache is read
-/// and re-validated.
+/// rename, so an interrupted run never leaves a half-written cache), unless it was forced: a dump of
+/// another translation is never cached, so it cannot take the place of the canonical image that a
+/// launch without `--rom` reads. Without `--rom` the cache is read and re-validated. With `force` an
+/// image that is none of the known ones is taken as it is.
 ///
 /// # Errors
 ///
-/// Fails if a given file cannot be read, the ROM is not one of the accepted images, or the cached
-/// ROM is unreadable or damaged.
-pub fn resolve_rom(rom_arg: Option<&Path>, ips_arg: Option<&Path>) -> anyhow::Result<RomSetup> {
+/// Fails if a given file cannot be read, the ROM is not one of the accepted images (and `force` is
+/// not set), or the cached ROM is unreadable or damaged.
+pub fn resolve_rom(
+    rom_arg: Option<&Path>,
+    ips_arg: Option<&Path>,
+    force: bool,
+) -> anyhow::Result<RomSetup> {
     let cache = crate::paths::cached_rom();
     if let Some(rom_path) = rom_arg {
         let input = std::fs::read(rom_path)
@@ -36,12 +42,24 @@ pub fn resolve_rom(rom_arg: Option<&Path>, ips_arg: Option<&Path>) -> anyhow::Re
                 std::fs::read(path).with_context(|| format!("reading patch {}", path.display()))
             })
             .transpose()?;
-        let rom = ssd_rom::normalize(&input, ips.as_deref())?;
-        std::fs::create_dir_all(cache.parent().expect("cache path has a parent"))?;
-        let tmp = cache.with_extension("tmp");
-        std::fs::write(&tmp, &rom.bytes)?;
-        std::fs::rename(&tmp, &cache)?;
-        log::info!("ROM accepted ({:?}) and cached at {}", rom.source, cache.display());
+        let rom = ssd_rom::normalize_forced(&input, ips.as_deref(), force)?;
+        if rom.source == ssd_rom::RomSource::Forced {
+            // Not cached: the cache holds the canonical image, the one a launch without `--rom` reads,
+            // so a dump of another translation must not take its place there.
+            eprintln!(
+                "ROM forced (--force-rom): CRC32 {:08X} is not one of the known images, so the \
+                 catalogue, the HD art and the recompiled code may not line up. It is not cached: \
+                 pass --rom on every run",
+                ssd_rom::crc32(&rom.bytes)
+            );
+            log::info!("ROM accepted ({:?}), not cached", rom.source);
+        } else {
+            std::fs::create_dir_all(cache.parent().expect("cache path has a parent"))?;
+            let tmp = cache.with_extension("tmp");
+            std::fs::write(&tmp, &rom.bytes)?;
+            std::fs::rename(&tmp, &cache)?;
+            log::info!("ROM accepted ({:?}) and cached at {}", rom.source, cache.display());
+        }
         return Ok(RomSetup::Ready(rom.bytes));
     }
     match std::fs::read(&cache) {
@@ -67,7 +85,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: serialised by ENV_LOCK.
         unsafe { std::env::set_var("SSD_DATA_DIR", dir.path()) };
-        assert!(matches!(resolve_rom(None, None).unwrap(), RomSetup::Missing));
+        assert!(matches!(resolve_rom(None, None, false).unwrap(), RomSetup::Missing));
         unsafe { std::env::remove_var("SSD_DATA_DIR") };
     }
 
@@ -80,9 +98,25 @@ mod tests {
         unsafe { std::env::set_var("SSD_DATA_DIR", dir.path()) };
         let bogus = dir.path().join("bogus.sfc");
         std::fs::write(&bogus, vec![0x42_u8; 0x8000]).unwrap();
-        let err = resolve_rom(Some(&bogus), None).unwrap_err();
+        let err = resolve_rom(Some(&bogus), None, false).unwrap_err();
         assert!(err.to_string().contains("unknown ROM"));
         assert!(!crate::paths::cached_rom().exists());
+        unsafe { std::env::remove_var("SSD_DATA_DIR") };
+    }
+
+    #[test]
+    fn a_forced_rom_is_not_cached_so_a_plain_start_still_works() {
+        let _guard =
+            crate::paths::ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: serialised by ENV_LOCK.
+        unsafe { std::env::set_var("SSD_DATA_DIR", dir.path()) };
+        let dump = dir.path().join("dump.sfc");
+        std::fs::write(&dump, vec![0x42_u8; 0x8000]).unwrap();
+        assert!(matches!(resolve_rom(Some(&dump), None, true).unwrap(), RomSetup::Ready(_)));
+        assert!(!crate::paths::cached_rom().exists());
+        // The launchers pass no --rom: that start must not find the dump there and call it damaged.
+        assert!(matches!(resolve_rom(None, None, false).unwrap(), RomSetup::Missing));
         unsafe { std::env::remove_var("SSD_DATA_DIR") };
     }
 
@@ -96,7 +130,7 @@ mod tests {
         let cache = crate::paths::cached_rom();
         std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
         std::fs::write(&cache, vec![0x42_u8; 0x8000]).unwrap();
-        let err = resolve_rom(None, None).unwrap_err();
+        let err = resolve_rom(None, None, false).unwrap_err();
         assert!(err.to_string().contains("damaged"));
         assert!(err.to_string().contains("--rom"));
         unsafe { std::env::remove_var("SSD_DATA_DIR") };

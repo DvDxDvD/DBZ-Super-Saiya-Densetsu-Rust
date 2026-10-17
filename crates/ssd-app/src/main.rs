@@ -82,6 +82,12 @@ struct Cli {
     /// With --ui-snapshot: the picture's size in pixels, `WIDTHxHEIGHT` [default: 1440x900].
     #[arg(long, value_parser = parse_size, requires = "ui_snapshot")]
     ui_size: Option<(u32, u32)>,
+    /// Take a ROM that is none of the known images as it is: the copier header is stripped and the
+    /// game runs on it, but every part built from the canonical image (the catalogue of names and
+    /// texts, the HD art, the recompiled code) is not guaranteed to line up. Also lets an HD pack
+    /// made for another ROM be installed, when only the text of the ROM differs.
+    #[arg(long)]
+    force_rom: bool,
     /// Enhanced graphics: the picture drawn again at this many times the PPU's resolution (2 to 8),
     /// from the state the PPU drew it from. Without it the Classic picture is shown. In a window or
     /// with --ui-snapshot.
@@ -206,7 +212,7 @@ pub fn run(args: Vec<std::ffi::OsString>) -> ExitCode {
                 return ExitCode::from(EXIT_SYMBOLS);
             }
         };
-    let rom = match rom_setup::resolve_rom(cli.rom.as_deref(), cli.ips.as_deref()) {
+    let rom = match rom_setup::resolve_rom(cli.rom.as_deref(), cli.ips.as_deref(), cli.force_rom) {
         Ok(rom_setup::RomSetup::Ready(bytes)) => bytes,
         Ok(rom_setup::RomSetup::Missing) => {
             let msg = "No ROM yet. Start once with:\n\nssd-recompiled --rom \"path\\to\\rom.sfc\"\n\n\
@@ -245,7 +251,7 @@ pub fn run(args: Vec<std::ffi::OsString>) -> ExitCode {
         hd_install::Need::No
     };
     if let Err(hd_install::Failed(message)) =
-        hd_install::ensure(&rom, need, cli.install_hd_pack.as_deref())
+        hd_install::ensure(&rom, need, cli.install_hd_pack.as_deref(), cli.force_rom)
     {
         eprintln!("HD pack: {message}");
         return ExitCode::from(EXIT_HD_PACK);

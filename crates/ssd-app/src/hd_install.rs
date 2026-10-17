@@ -28,7 +28,7 @@ pub struct Failed(pub String);
 /// The player named a pack (`explicit`) that cannot be installed, or none was found for it. A pack
 /// that was only found next to the game and fails to install is a warning: the game starts without
 /// the art.
-pub fn ensure(rom: &[u8], need: Need, explicit: Option<&Path>) -> Result<(), Failed> {
+pub fn ensure(rom: &[u8], need: Need, explicit: Option<&Path>, force: bool) -> Result<(), Failed> {
     if need == Need::No {
         return Ok(());
     }
@@ -43,7 +43,7 @@ pub fn ensure(rom: &[u8], need: Need, explicit: Option<&Path>) -> Result<(), Fai
     };
     let cache = crate::paths::data_dir().join("cache");
     let mut say = |line: &str| eprintln!("{line}");
-    match install::install(rom, &source, &cache, &mut say) {
+    match install::install(rom, &source, &cache, &mut say, force) {
         Ok(Outcome::Current(pack)) => {
             log::info!("HD pack: {} is made from {}", pack.display(), source.display());
             Ok(())
@@ -74,16 +74,16 @@ mod tests {
 
     #[test]
     fn nothing_is_installed_when_nothing_is_asked_or_found() {
-        assert!(ensure(&[], Need::No, None).is_ok());
+        assert!(ensure(&[], Need::No, None, false).is_ok());
         // Wanted with no pack beside the test executable: the game just starts
-        assert!(ensure(&[], Need::Wanted, None).is_ok());
+        assert!(ensure(&[], Need::Wanted, None, false).is_ok());
     }
 
     #[test]
     fn a_named_pack_that_is_not_there_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let Failed(message) =
-            ensure(&[], Need::Asked, Some(&dir.path().join("nope.zip"))).unwrap_err();
+            ensure(&[], Need::Asked, Some(&dir.path().join("nope.zip")), false).unwrap_err();
         assert!(message.contains("nope.zip"), "{message}");
     }
 }
