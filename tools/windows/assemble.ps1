@@ -22,6 +22,7 @@ param(
     [switch]$Zip
 )
 $ErrorActionPreference = 'Stop'
+$OutDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutDir)
 $here = $PSScriptRoot
 $root = Split-Path -Parent (Split-Path -Parent $here)
 
