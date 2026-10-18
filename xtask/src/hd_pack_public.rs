@@ -770,13 +770,13 @@ pub fn run(
         let cache = scratch.0.join("cache");
         let mut lines = Vec::new();
         let done =
-            install::install(rom, &options.out, &cache, &mut |line| lines.push(line.to_owned()))?;
+            install::install(rom, &options.out, &cache, &mut |line| lines.push(line.to_owned()), false)?;
         let install::Outcome::Installed { pack, .. } = done else {
             anyhow::bail!("the scratch install found a pack already")
         };
         compare(&reference, &pack, out)?;
         // and a second install is a no-op
-        let again = install::install(rom, &options.out, &cache, &mut |_| {})?;
+        let again = install::install(rom, &options.out, &cache, &mut |_| {}, false)?;
         anyhow::ensure!(matches!(again, install::Outcome::Current(_)), "a second install did work");
     }
     if let Some(keep) = &options.keep_reference {
