@@ -11,6 +11,7 @@ mod hook_setup;
 mod hotkeys;
 mod input;
 mod lang;
+mod language_pick;
 mod layout;
 mod options;
 mod panel;
@@ -20,7 +21,6 @@ mod replays;
 mod rom_setup;
 mod saves;
 mod screenshot;
-#[cfg(any(target_os = "android", test))]
 mod setup_ui;
 mod snapshot;
 mod tab_debugger;

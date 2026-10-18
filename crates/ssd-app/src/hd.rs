@@ -393,7 +393,6 @@ pub struct Art {
 }
 
 impl Art {
-    #[cfg(any(target_os = "android", test))]
     /// An art with no ROM and no pack: it paints what needs no picture (the first-launch screens).
     #[must_use]
     pub fn empty() -> Self {
