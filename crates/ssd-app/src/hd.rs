@@ -20,7 +20,7 @@ use ssd_menus::bag::Sidecar;
 use ssd_menus::cheats::{CheatSidecar, MARKER, MARKER_BYTES, SUSPENDED};
 use ssd_menus::layout::{self, palette};
 use ssd_menus::screens::SlotList;
-use ssd_menus::{Color, DrawList, Key, Op, Picture, Rect};
+use ssd_menus::{Color, DrawList, Key, Language, Op, Picture, Rect};
 use ssd_oracle::{Frame, FrameLog, Joypad};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -99,6 +99,11 @@ pub struct Hd {
     wide: WideRun,
     /// The cheats' notices on the field.
     notice: CheatNotice,
+    /// The language of the game's text (see [`crate::lang`]).
+    language: Language,
+    /// The language the PC file held when it was last seen: a change of the Options' row is measured from it, so
+    /// another row's change does not undo `--lang`.
+    language_saved: Option<Language>,
 }
 
 impl Hd {
@@ -119,6 +124,8 @@ impl Hd {
             if ruleset.cheats() { driver.with_cheats(read_cheats_sidecar()?) } else { driver };
         let driver =
             driver.with_options(crate::options::read_slots()?, crate::options::read_settings()?);
+        let language_saved = Language::from_values(&driver.options().pc);
+        let language = crate::lang::effective(&driver.options().pc);
         Ok(Self {
             driver,
             art: Art {
@@ -145,7 +152,24 @@ impl Hd {
                 wide
             },
             notice: CheatNotice::default(),
+            language,
+            language_saved,
         })
+    }
+
+    /// Draws the game's text in `language` from the next frame on.
+    pub fn set_language(&mut self, language: Language) {
+        self.language = language;
+    }
+
+    /// The PC file now holds `values` (the Options changed a row): a new choice of the Language row takes effect at
+    /// once, and wins over `--lang` from then on.
+    pub fn follow_language(&mut self, values: &ssd_menus::options::Values) {
+        let saved = Language::from_values(values);
+        if saved != self.language_saved {
+            self.language_saved = saved;
+            self.set_language(saved.unwrap_or_default());
+        }
     }
 
     /// The machine's state was replaced (a state loaded): see [`Driver::reset`].

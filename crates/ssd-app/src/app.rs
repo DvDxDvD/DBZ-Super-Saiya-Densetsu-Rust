@@ -357,6 +357,7 @@ fn hd_frame(
         log::warn!("{error:#}");
     }
     if let Some(values) = settings.as_ref() {
+        hd.follow_language(values);
         state.touch.apply_settings(touch::settings::Settings::from_values(values));
         let map = Bindings::from_values(values);
         if map != state.bindings {
