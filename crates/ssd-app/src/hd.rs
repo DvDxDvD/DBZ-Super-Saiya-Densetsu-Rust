@@ -166,6 +166,7 @@ impl Hd {
             Some(table) => ssd_catalogue::translated_labels(&self.labels, table),
             None => self.labels.clone(),
         });
+        self.wide.set_overlay(crate::lang::overlay(language));
     }
 
     /// The PC file now holds `values` (the Options changed a row): a new choice of the Language row takes effect at

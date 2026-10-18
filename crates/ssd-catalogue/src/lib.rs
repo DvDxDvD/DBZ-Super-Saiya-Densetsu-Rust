@@ -8,6 +8,7 @@
 //! its row, in hex.
 
 pub mod art;
+pub mod engine;
 mod cards;
 mod characters;
 mod encounters;

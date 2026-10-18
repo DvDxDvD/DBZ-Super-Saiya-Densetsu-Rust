@@ -33,6 +33,7 @@ pub mod png;
 mod screen;
 mod sprites;
 mod tooltip;
+pub mod translate;
 mod transfer;
 pub mod world;
 

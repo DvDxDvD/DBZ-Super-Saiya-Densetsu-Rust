@@ -8,6 +8,7 @@
 
 use crate::paths;
 use ssd_catalogue::translation::Translation;
+use ssd_hd::translate::{ChineseFace, Overlay};
 use ssd_menus::Language;
 use ssd_menus::options::Values;
 use std::path::PathBuf;
@@ -20,15 +21,35 @@ pub const TABLE_FILE: &str = "zh-hk.tsv";
 static OVERRIDE: Mutex<Option<Language>> = Mutex::new(None);
 /// The translation, read on first use (`None` inside: looked for and not found, or unreadable), and forgotten by
 /// [`configure`]: Android runs the game more than once in a process.
-static TABLE: Mutex<Option<Option<Arc<Translation>>>> = Mutex::new(None);
+static TABLE: Mutex<Lookup<Arc<Translation>>> = Mutex::new(Lookup::Unread);
 /// The Chinese font's bytes, read on first use, kept as [`TABLE`] is (but not forgotten: the windows' fonts are
 /// made from it).
-static FONT: Mutex<Option<Option<Arc<[u8]>>>> = Mutex::new(None);
+static FONT: Mutex<Lookup<Arc<[u8]>>> = Mutex::new(Lookup::Unread);
+/// The font made from [`FONT`]'s bytes for the translation's text, on first use.
+static FACE: Mutex<Lookup<Arc<ChineseFace>>> = Mutex::new(Lookup::Unread);
+
+/// A file looked for once: not yet, or found (`Some`) or not.
+enum Lookup<T> {
+    Unread,
+    Read(Option<T>),
+}
+
+/// The value of `slot`, read with `read` on first use.
+fn looked_up<T: Clone>(slot: &Mutex<Lookup<T>>, read: impl FnOnce() -> Option<T>) -> Option<T> {
+    let mut slot = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Lookup::Unread = *slot {
+        *slot = Lookup::Read(read());
+    }
+    match &*slot {
+        Lookup::Read(value) => value.clone(),
+        Lookup::Unread => None,
+    }
+}
 
 /// Sets the language of the command line (`None`: the PC file's), and forgets the files read by an earlier run.
 pub fn configure(language: Option<Language>) {
     *OVERRIDE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = language;
-    *TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    *TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Lookup::Unread;
 }
 /// The language the command line gave, if it gave one.
 pub fn overridden() -> Option<Language> {
@@ -62,8 +83,7 @@ pub fn translation(language: Language) -> Option<Arc<Translation>> {
     if language != Language::ZhHk {
         return None;
     }
-    let mut slot = TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    slot.get_or_insert_with(|| {
+    looked_up(&TABLE, || {
         let places = places();
         let Some(path) = find_in(&places, TABLE_FILE) else {
             let looked: Vec<String> = places.iter().map(|dir| dir.display().to_string()).collect();
@@ -81,16 +101,16 @@ pub fn translation(language: Language) -> Option<Arc<Translation>> {
             }
         }
     })
-    .clone()
 }
 
 /// The font files a Traditional Chinese face is taken from, in the `fonts` folder of a place: Noto Sans HK (SIL OFL),
 /// else Noto Sans TC, the regular weight first. Fonts of the player's, never built in.
 fn font_rank(name: &str) -> Option<u8> {
-    let lower = name.to_ascii_lowercase();
-    if !(lower.ends_with(".ttf") || lower.ends_with(".otf")) {
+    let extension = std::path::Path::new(name).extension()?;
+    if !(extension.eq_ignore_ascii_case("ttf") || extension.eq_ignore_ascii_case("otf")) {
         return None;
     }
+    let lower = name.to_ascii_lowercase();
     let family = if lower.starts_with("notosanshk") {
         0
     } else if lower.starts_with("notosanstc") {
@@ -118,8 +138,7 @@ fn find_font(places: &[PathBuf]) -> Option<PathBuf> {
 /// The bytes of the Traditional Chinese font (see [`font_rank`]), read on first use; `None` when there is none (said
 /// once in the log). The HD menus take it as a fallback of their font, and the translation is drawn with it.
 pub fn cjk_font() -> Option<Arc<[u8]>> {
-    let mut slot = FONT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    slot.get_or_insert_with(|| {
+    looked_up(&FONT, || {
         let Some(path) = find_font(&places()) else {
             log::info!(
                 "no fonts/NotoSansHK-*.otf in the data folder: no Chinese text can be drawn"
@@ -137,7 +156,23 @@ pub fn cjk_font() -> Option<Arc<[u8]>> {
             }
         }
     })
-    .clone()
+}
+
+/// The overlay that draws the translation of `language` over the game's message windows (`ssd_hd::translate`):
+/// `None` for English, and without the translation or the font (the text stays English).
+pub fn overlay(language: Language) -> Option<Arc<Overlay>> {
+    let table = translation(language)?;
+    let face = looked_up(&FACE, || {
+        let bytes = cjk_font()?;
+        match ChineseFace::new(bytes.to_vec()) {
+            Ok(face) => Some(Arc::new(face)),
+            Err(error) => {
+                log::warn!("the Chinese font cannot be read ({error}): the text stays English");
+                None
+            }
+        }
+    })?;
+    Some(Arc::new(Overlay::new(table, face)))
 }
 
 /// The tests that set the process-wide override (or depend on it) hold this lock.
