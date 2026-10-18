@@ -98,3 +98,249 @@ Press a button...	請按一個按鈕……
 Press a key...	請按一個按鍵……
 Shortcuts	快捷鍵
 Touch	觸控
+
+# The options, cheats and setup pages
+# cheats.rs
+Atk	攻擊
+Battle	戰鬥
+Battles on the map. Story battles always happen.	地圖上的戰鬥。劇情戰鬥一定會發生。
+Both	攻防
+Def	防禦
+Damage	傷害
+Damage you take is divided by this.	受到的傷害會除以這個數值。
+Defence	防禦
+EXP	經驗
+EXP gained after every battle.	每場戰鬥後得到的經驗值。
+Encounters	遇敵
+Endless items	道具無限
+Enemies	敵人數
+Enemy power	敵人強度
+Every card you draw carries a Z.	抽到的每張卡都有Z。
+For	對象
+HP and BP of every enemy.	所有敵人的HP及BP。
+How hard your fighters hit.	我方戰士的攻擊力。
+How many enemies come at once.	一次出現的敵人數目。
+How often	頻率
+How often a random battle starts.	隨機戰鬥發生的頻率。
+Keep zeni at the most you can carry.	金幣保持在上限。
+Max zeni	金幣全滿
+Money	金幣
+Off	關閉
+On	開啟
+Random battles	隨機戰鬥
+Resources	資源
+Turn every cheat off.	關閉所有秘技。
+Using an item does not use it up.	使用道具後不會減少。
+Who gets the Z cards.	誰得到Z卡。
+Whole party	全隊
+Z cards	Z卡
+# options\accessibility.rs
+Cursor	游標
+High contrast	高對比
+Language	語言
+Large	大
+Large makes the text of the menus a quarter bigger where it has room.	「大」會在有空間時把選單文字放大四分之一。
+Menus	選單
+Normal	普通
+Orange	橙色
+Safe	醒目
+Safe is a bigger blue arrow with a bar under the row: it does not rely on orange against red.	「醒目」是較大的藍色箭頭，該行下方有橫線，不靠紅底上的橙色辨認。
+Text size	文字大小
+The story's text in Enhanced mode. Chinese needs zh-hk.tsv and a Noto Sans HK font in the data folder.	加強模式中故事的文字。中文需要 data 資料夾內的 zh-hk.tsv 及 Noto Sans HK 字型。
+White windows with black text and a black frame, instead of cream and orange.	白色視窗、黑色文字及黑框，取代米色及橙色。
+# options\audio.rs
+Mono	單聲道
+Mono plays the same sound from both sides, for one speaker or one ear.	單聲道會從兩邊播放相同的聲音，適合單一喇叭或單耳收聽。
+Output	輸出
+Sound	聲音
+Stereo	立體聲
+Volume	音量
+Volume of the game's sound, in steps of ten. Left and Right change it by one step.	遊戲聲音的音量，以十為一級。左及右每次調整一級。
+# options\controls.rs
+A (confirm)	A（確定）
+A light tick of the phone under the finger when a button is pressed.	按下按鈕時，手機會在手指下輕輕震動。
+B (back)	B（返回）
+Back	返回
+Button	按鈕
+Button {}	按鈕 {}
+Confirms in the menus and talks on the map. Press A, then the new key. Esc cancels.	在選單中確定，在地圖上對話。按A，然後按新的按鍵。Esc取消。
+Cycles the game speed. Works in every mode. Press A, then the new key. Esc cancels, Backspace clears.	切換遊戲速度，所有模式都適用。按A，然後按新的按鍵。Esc取消，Backspace清除。
+D-pad	十字鍵
+D-pad Down	十字鍵下
+D-pad Left	十字鍵左
+D-pad Right	十字鍵右
+D-pad Up	十字鍵上
+D-pad is the fixed cross at the left. Stick is a floating stick that appears under the thumb. Move and resize the buttons in the Edit layout of the touch MENU.	「十字鍵」是固定在左邊的十字。「搖桿」是在拇指下出現的浮動搖桿。可在觸控MENU的「編輯配置」中移動按鈕及調整大小。
+Debug panel	除錯面板
+Down	下
+Each device has its own map. A gamepad is found by itself when it is plugged in.	每個裝置有各自的按鍵配置。手掣接上後會自動偵測。
+East	右方鍵
+Goes back in the menus. Press A, then the new key. Esc cancels.	在選單中返回。按A，然後按新的按鍵。Esc取消。
+Guide	導覽鍵
+Haptics	震動回饋
+Hide with gamepad	用手掣時隱藏
+How see-through the touch buttons are, from 20% to 100%.	觸控按鈕的透明度，由20%至100%。
+Key	按鍵
+Key {}	按鍵 {}
+Left	左
+Left bumper	左肩鍵
+Left paddle 1	左背鍵1
+Left paddle 2	左背鍵2
+Left stick	左搖桿
+Load state	即時讀取
+Loads the state of the chosen slot. Esc cancels, Backspace clears.	讀取所選欄位的即時記錄。Esc取消，Backspace清除。
+Misc 1	其他1
+Misc 2	其他2
+Misc 3	其他3
+Misc 4	其他4
+Misc 5	其他5
+Misc 6	其他6
+None	無
+North	上方鍵
+On: in a battle only the d-pad and big A and B show, and the full layout comes back after it. Off: the MIN and FULL buttons switch by hand.	開啟：戰鬥中只顯示十字鍵及大的A和B，戰鬥後回復完整配置。關閉：用MIN及FULL按鈕手動切換。
+On: the touch buttons hide while a gamepad is connected.	開啟：接上手掣時隱藏觸控按鈕。
+Opacity	不透明度
+Pause	暫停
+Pauses the game. Press A, then the new key. Esc cancels, Backspace clears.	暫停遊戲。按A，然後按新的按鍵。Esc取消，Backspace清除。
+Press A, then the new key. Esc cancels. A key already used is refused.	按A，然後按新的按鍵。Esc取消。已使用的按鍵不能選。
+Puts every touch button back where the design has it, in both orientations. The other choices stay.	把所有觸控按鈕放回原本設計的位置（直向及橫向）。其他選擇不變。
+Quit	結束
+Reset	重設
+Reset touch layout	重設觸控配置
+Right	右
+Right bumper	右肩鍵
+Right paddle 1	右背鍵1
+Right paddle 2	右背鍵2
+Right stick	右搖桿
+Save slot 1	記錄欄位1
+Save slot 2	記錄欄位2
+Save slot 3	記錄欄位3
+Save slot 4	記錄欄位4
+Save state	即時記錄
+Saves the picture as a PNG in the Pictures folder. Esc cancels, Backspace clears.	把畫面以PNG存到「圖片」資料夾。Esc取消，Backspace清除。
+Screenshot	截圖
+South	下方鍵
+Space	空白鍵
+Speed x1/x2/x4/x8	速度 x1/x2/x4/x8
+Stick	搖桿
+Switch automatically in battle	戰鬥中自動切換
+Touch controls	觸控操作
+Touch layout	觸控配置
+Touchpad	觸控板
+Up	上
+West	左方鍵
+Writes the state of the chosen slot (Classic and Enhanced). Esc cancels, Backspace clears.	把即時記錄寫入所選欄位（經典及加強模式）。Esc取消，Backspace清除。
+{} already used by {}. Choose another {}.	{}已被{}使用。請選擇另一個{}。
+# options\difficulty.rs
+Cheats screen	秘技畫面
+Cheats: EXP	秘技：經驗
+Cheats: Enemy power	秘技：敵人強度
+Damage, defence, encounters, Z cards and more, step by step. A preset changed there reads Custom.	傷害、防禦、遇敵、Z卡等，逐項設定。在那裏改動後，預設會顯示「自訂」。
+Difficulty	難度
+EXP per battle	每場經驗
+Easy	容易
+Easy and Hard mark the save with the CHEATS badge. Only Normal is clean.	「容易」及「困難」會在記錄加上「秘技」標記。只有「普通」沒有標記。
+Fine control	細項調整
+Hard	困難
+Money from events	事件金幣
+Open Cheats	打開秘技
+Preset	預設
+Sets enemy power, EXP and money together. Normal is the original game. Easy and Hard mark the save with the CHEATS badge.	同時設定敵人強度、經驗及金幣。「普通」即原版遊戲。「容易」及「困難」會在記錄加上「秘技」標記。
+The preset and the Cheats screen write the same numbers: the last change wins.	預設及秘技畫面寫入相同的數值，以最後的改動為準。
+The preset sets	預設會設定
+Zeni multiplier	金幣倍率
+# options\game.rs
+Change mode	更改模式
+Change...	更改……
+Choose Classic or Enhanced. The game restarts into the choice; your saves stay.	選擇經典或加強模式。遊戲會以所選模式重新啟動，記錄會保留。
+Current mode	目前模式
+HD pack	HD資源包
+Install the HD pack	安裝HD資源包
+Install...	安裝……
+Mode	模式
+Pick hd-pack.zip to install or update the art (about 0.9 GB). The game restarts into the install.	選擇hd-pack.zip以安裝或更新圖像（約0.9 GB）。遊戲會重新啟動並進行安裝。
+The art pack the Enhanced mode draws from.	加強模式使用的圖像資源包。
+The game restarts when a button here opens the setup.	按這裏的按鈕開啟設定時，遊戲會重新啟動。
+The mode the game starts in.	遊戲啟動時的模式。
+# options\gameplay.rs
+Auto-run messages	自動播放訊息
+Auto-run wait	自動播放等待
+Battle animation speed	戰鬥動畫速度
+Exploring	探索
+Fast	快
+Fastest	最快
+How fast a message is written, from Slowest to Fastest. The same setting as the Text entry of the Menu: change it in either place.	訊息顯示的速度，由「最慢」至「最快」。與選單中「文字」一項是同一設定，可在任何一處更改。
+How long a finished message stays up before A is pressed: a short, a normal or a long time.	訊息顯示完後，在按A之前停留的時間：短、普通或長。
+How often a random battle comes. The same value as the Cheats screen rows Random battles and How often.	隨機戰鬥出現的頻率。與秘技畫面中「隨機戰鬥」及「頻率」兩行是同一數值。
+Long	長
+Messages	訊息
+Plays the battle animations faster. The turn order and the numbers do not change.	加快戰鬥動畫。行動次序及數值不變。
+Random encounters	隨機遇敵
+Short	短
+Slow	慢
+Slowest	最慢
+Text speed	文字速度
+When a message has been written and waits for A, the game presses A for you after the wait below.	訊息顯示完並等待按A時，遊戲會在下面的等待時間後代你按A。
+# options\video.rs
+16:9 shows the extra map at the sides. 4:3 is the original picture shape. The change asks for confirmation.	16:9會在兩旁顯示更多地圖。4:3是原本的畫面比例。更改時需要確認。
+A tube's look: a soft glow, a dark edge and a faint mask. Soft is light, Full is heavy.	映像管的效果：柔和光暈、暗邊及淡淡的遮罩。「柔和」較輕，「完整」較重。
+Aspect	比例
+CRT filter	CRT濾鏡
+Changes ask for confirmation and revert after 10 s if you do not keep them.	更改時需要確認，如不保留會在10秒後還原。
+Crisp	銳利
+Crisp is pixel art made bigger with smoothed diagonals. Smooth is a soft bicubic filter.	「銳利」是放大的像素圖，斜線經平滑處理。「平滑」是柔和的雙三次濾鏡。
+Dark lines between the lines of the original picture, as on a television.	在原本畫面的每行之間加上暗線，像電視一樣。
+Display	顯示
+Filters	濾鏡
+Full	完整
+Fullscreen	全螢幕
+How many times the PPU picture is redrawn in HD (2 to 8). Higher looks finer and costs more. The change asks for confirmation.	PPU畫面以HD重繪的倍數（2至8）。越高越精細，但較耗效能。更改時需要確認。
+Light	輕
+Picture	畫面
+Picture size	畫面大小
+Scale	倍數
+Scanlines	掃描線
+Smooth	平滑
+Soft	柔和
+Strong	強
+The size of the picture the game draws at this scale and aspect.	遊戲在此倍數及比例下繪製的畫面大小。
+Waits for the screen's refresh before showing a frame: no tearing, a little more delay.	顯示畫格前先等待螢幕更新：沒有畫面撕裂，但延遲稍多。
+Window	視窗
+Window or fullscreen on the desktop. The change asks for confirmation.	在桌面上以視窗或全螢幕顯示。更改時需要確認。
+# setup.rs
+CHOOSE A MODE	選擇模式
+CHOOSE THE PATCH	選擇修正檔
+CHOOSE YOUR ROM	選擇你的ROM
+Classic	經典
+Continue	繼續
+Enhanced	加強
+INSTALL THE HD PACK	安裝HD資源包
+STEP 1 OF 2	第1步，共2步
+STEP 2 OF 2	第2步，共2步
+Select ROM file...	選擇ROM檔案……
+Select hd-pack.zip...	選擇hd-pack.zip……
+Select patch file...	選擇修正檔……
+Skip, play Classic only	略過，只玩經典模式
+Start game	開始遊戲
+This game needs your own copy of Super Saiya Densetsu. The file stays on this device and is never uploaded.	本遊戲需要你自己的《超撒亞傳說》。檔案只會留在這部裝置上，不會上載。
+Opens the system file picker.	開啟系統的檔案選擇器。
+Accepted ROMs	接受的ROM
+English v1.02 - CRC-32 A8CF4F2A	英文版 v1.02 - CRC-32 A8CF4F2A
+Japanese Rev 1 + patch	日文版 Rev 1 + 修正檔
+No file selected yet.	尚未選擇檔案。
+This is the Japanese Rev 1 ROM. It needs the English v1.02 patch, the file dbz102.ips. Pick it to go on.	這是日文版 Rev 1 ROM，需要英文版 v1.02 修正檔 dbz102.ips。請選擇它以繼續。
+Needed	需要
+dbz102.ips - the v1.02 patch	dbz102.ips - v1.02 修正檔
+It is applied once; the patched ROM is kept.	修正只進行一次，修正後的ROM會保留。
+No patch selected yet.	尚未選擇修正檔。
+Enhanced mode uses the HD art pack. Pick the file hd-pack.zip. It takes about {} of free space once installed.	加強模式使用HD圖像資源包。請選擇檔案hd-pack.zip。安裝後約佔 {} 空間。
+Pick the file to install the pack.	選擇檔案以安裝資源包。
+Keep the app open while it installs. You can install the pack later from Options.	安裝期間請勿關閉程式。你也可以之後在「選項」中安裝資源包。
+How do you want to play? Your saves stay either way.	你想怎樣玩？無論選哪一個，記錄都會保留。
+The original game and its menus,	原版遊戲及其選單，
+as it was on the console.	與主機上的一樣。
+HD menus, art and extra options.	HD選單、圖像及額外選項。
+Needs the HD pack (about 0.9 GB).	需要HD資源包（約0.9 GB）。
+Change it later: Options > Game in Enhanced, or hold Select and Start for 2 seconds in Classic.	之後可更改：加強模式中選「選項 > 遊戲」，經典模式中按住Select及Start 2秒。
+# Not translated on purpose: generic patterns ("{} {}", ", {} {}", "{}, {}, {} ({} x {})") would match any run.
+# Known clash: the Video page's "Look" row shows 調查 (the field command); it needs its own English label.
