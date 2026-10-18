@@ -1654,6 +1654,24 @@ fn windowed_loop(
         sdl.gamepad().inspect_err(|e| log::warn!("gamepad support unavailable: {e}")).ok();
     let mut gamepads: Vec<Gamepad> = Vec::new();
 
+    // The first Enhanced launch asks for the language of the text, in this window, before the first frame.
+    if let Some(hd) = state.hd.as_mut()
+        && crate::language_pick::needed(true, &settings_file)
+    {
+        let pads = (gamepad_subsystem.as_ref(), &mut gamepads);
+        let Some(language) =
+            crate::language_pick::run(&mut video, &mut events, &mut ui_input, pads)?
+        else {
+            return Ok(());
+        };
+        let values = hd.pc_options_mut();
+        language.store(values);
+        let values = values.clone();
+        hd.follow_language(&values);
+        if let Err(error) = crate::options::write_settings(&values) {
+            log::warn!("the language was not saved: {error:#}");
+        }
+    }
     let mut pacer = Pacer::new(Duration::from_secs_f64(1.0 / machine.target_fps()));
     let mut stats_start = pacer.next;
     let mut stats_frames = 0_u32;
