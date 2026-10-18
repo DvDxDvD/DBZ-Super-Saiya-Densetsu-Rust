@@ -8,6 +8,7 @@
 
 use crate::paths;
 use ssd_catalogue::translation::Translation;
+use ssd_hd::translate::{ChineseFace, Overlay};
 use ssd_menus::Language;
 use ssd_menus::options::Values;
 use std::path::PathBuf;
@@ -24,6 +25,8 @@ static TABLE: Mutex<Lookup<Arc<Translation>>> = Mutex::new(Lookup::Unread);
 /// The Chinese font's bytes, read on first use, kept as [`TABLE`] is (but not forgotten: the windows' fonts are
 /// made from it).
 static FONT: Mutex<Lookup<Arc<[u8]>>> = Mutex::new(Lookup::Unread);
+/// The font made from [`FONT`]'s bytes for the translation's text, on first use.
+static FACE: Mutex<Lookup<Arc<ChineseFace>>> = Mutex::new(Lookup::Unread);
 
 /// A file looked for once: not yet, or found (`Some`) or not.
 enum Lookup<T> {
@@ -153,6 +156,23 @@ pub fn cjk_font() -> Option<Arc<[u8]>> {
             }
         }
     })
+}
+
+/// The overlay that draws the translation of `language` over the game's message windows (`ssd_hd::translate`):
+/// `None` for English, and without the translation or the font (the text stays English).
+pub fn overlay(language: Language) -> Option<Arc<Overlay>> {
+    let table = translation(language)?;
+    let face = looked_up(&FACE, || {
+        let bytes = cjk_font()?;
+        match ChineseFace::new(bytes.to_vec()) {
+            Ok(face) => Some(Arc::new(face)),
+            Err(error) => {
+                log::warn!("the Chinese font cannot be read ({error}): the text stays English");
+                None
+            }
+        }
+    })?;
+    Some(Arc::new(Overlay::new(table, face)))
 }
 
 /// The tests that set the process-wide override (or depend on it) hold this lock.

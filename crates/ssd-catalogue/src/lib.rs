@@ -12,6 +12,7 @@ mod cards;
 mod characters;
 mod encounters;
 mod enemies;
+pub mod engine;
 pub mod graphics;
 pub mod menus;
 mod names;
