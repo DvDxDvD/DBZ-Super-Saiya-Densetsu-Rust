@@ -21,6 +21,9 @@ static OVERRIDE: Mutex<Option<Language>> = Mutex::new(None);
 /// The translation, read on first use (`None` inside: looked for and not found, or unreadable), and forgotten by
 /// [`configure`]: Android runs the game more than once in a process.
 static TABLE: Mutex<Lookup<Arc<Translation>>> = Mutex::new(Lookup::Unread);
+/// The Chinese font's bytes, read on first use, kept as [`TABLE`] is (but not forgotten: the windows' fonts are
+/// made from it).
+static FONT: Mutex<Lookup<Arc<[u8]>>> = Mutex::new(Lookup::Unread);
 
 /// A file looked for once: not yet, or found (`Some`) or not.
 enum Lookup<T> {
@@ -97,6 +100,61 @@ pub fn translation(language: Language) -> Option<Arc<Translation>> {
     })
 }
 
+/// The font files a Traditional Chinese face is taken from, in the `fonts` folder of a place: Noto Sans HK (SIL OFL),
+/// else Noto Sans TC, the regular weight first. Fonts of the player's, never built in.
+fn font_rank(name: &str) -> Option<u8> {
+    let extension = std::path::Path::new(name).extension()?;
+    if !(extension.eq_ignore_ascii_case("ttf") || extension.eq_ignore_ascii_case("otf")) {
+        return None;
+    }
+    let lower = name.to_ascii_lowercase();
+    let family = if lower.starts_with("notosanshk") {
+        0
+    } else if lower.starts_with("notosanstc") {
+        2
+    } else {
+        return None;
+    };
+    Some(family + u8::from(!lower.contains("-regular")))
+}
+
+/// The best Chinese font file of the `fonts` folders of `places` (see [`font_rank`]).
+fn find_font(places: &[PathBuf]) -> Option<PathBuf> {
+    places
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir.join("fonts")).ok())
+        .flat_map(|entries| entries.flatten().map(|entry| entry.path()))
+        .filter_map(|path| {
+            let rank = font_rank(path.file_name()?.to_str()?)?;
+            Some((rank, path))
+        })
+        .min_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, path)| path)
+}
+
+/// The bytes of the Traditional Chinese font (see [`font_rank`]), read on first use; `None` when there is none (said
+/// once in the log). The HD menus take it as a fallback of their font, and the translation is drawn with it.
+pub fn cjk_font() -> Option<Arc<[u8]>> {
+    looked_up(&FONT, || {
+        let Some(path) = find_font(&places()) else {
+            log::info!(
+                "no fonts/NotoSansHK-*.otf in the data folder: no Chinese text can be drawn"
+            );
+            return None;
+        };
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                log::info!("Chinese font: {}", path.display());
+                Some(Arc::from(bytes))
+            }
+            Err(error) => {
+                log::warn!("{}: {error}", path.display());
+                None
+            }
+        }
+    })
+}
+
 /// The tests that set the process-wide override (or depend on it) hold this lock.
 #[cfg(test)]
 pub(crate) static LOCK: Mutex<()> = Mutex::new(());
@@ -129,5 +187,23 @@ mod tests {
         std::fs::write(first.path().join(TABLE_FILE), "key\tzh\n").unwrap();
         assert_eq!(find_in(&places, TABLE_FILE), Some(first.path().join(TABLE_FILE)));
         assert_eq!(translation(Language::English), None);
+    }
+
+    #[test]
+    fn the_font_is_noto_sans_hk_regular_first_then_another_weight_then_tc() {
+        assert_eq!(font_rank("NotoSansHK-Regular.otf"), Some(0));
+        assert_eq!(font_rank("NotoSansHK-Bold.ttf"), Some(1));
+        assert_eq!(font_rank("NotoSansTC-Regular.ttf"), Some(2));
+        assert_eq!(font_rank("NotoSansHK-Regular.woff2"), None);
+        assert_eq!(font_rank("OFL.txt"), None);
+        let dir = tempfile::tempdir().unwrap();
+        let fonts = dir.path().join("fonts");
+        std::fs::create_dir(&fonts).unwrap();
+        let places = [dir.path().to_path_buf()];
+        assert_eq!(find_font(&places), None);
+        for name in ["NotoSansTC-Regular.otf", "NotoSansHK-Medium.otf", "OFL.txt"] {
+            std::fs::write(fonts.join(name), b"x").unwrap();
+        }
+        assert_eq!(find_font(&places), Some(fonts.join("NotoSansHK-Medium.otf")));
     }
 }
