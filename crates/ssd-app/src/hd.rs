@@ -99,8 +99,8 @@ pub struct Hd {
     wide: WideRun,
     /// The cheats' notices on the field.
     notice: CheatNotice,
-    /// The language of the game's text (see [`crate::lang`]).
-    language: Language,
+    /// The names and texts of the menus in English, as the catalogue has them: a translation is made from them.
+    labels: ssd_menus::Labels,
     /// The language the PC file held when it was last seen: a change of the Options' row is measured from it, so
     /// another row's change does not undo `--lang`.
     language_saved: Option<Language>,
@@ -118,15 +118,15 @@ impl Hd {
     pub fn new(rom: &[u8], ruleset: Ruleset) -> anyhow::Result<Self> {
         let catalogue = Catalogue::from_rom(rom)?;
         let sidecar = read_sidecar()?;
-        let driver =
-            Driver::with_bag(ssd_catalogue::menu_labels(&catalogue), ruleset.bag(), sidecar);
+        let labels = ssd_catalogue::menu_labels(&catalogue);
+        let driver = Driver::with_bag(labels.clone(), ruleset.bag(), sidecar);
         let driver =
             if ruleset.cheats() { driver.with_cheats(read_cheats_sidecar()?) } else { driver };
         let driver =
             driver.with_options(crate::options::read_slots()?, crate::options::read_settings()?);
         let language_saved = Language::from_values(&driver.options().pc);
         let language = crate::lang::effective(&driver.options().pc);
-        Ok(Self {
+        let mut hd = Self {
             driver,
             art: Art {
                 rom: rom.to_vec(),
@@ -152,14 +152,20 @@ impl Hd {
                 wide
             },
             notice: CheatNotice::default(),
-            language,
+            labels,
             language_saved,
-        })
+        };
+        hd.set_language(language);
+        Ok(hd)
     }
 
     /// Draws the game's text in `language` from the next frame on.
     pub fn set_language(&mut self, language: Language) {
-        self.language = language;
+        let table = crate::lang::translation(language);
+        self.driver.set_labels(match &table {
+            Some(table) => ssd_catalogue::translated_labels(&self.labels, table),
+            None => self.labels.clone(),
+        });
     }
 
     /// The PC file now holds `values` (the Options changed a row): a new choice of the Language row takes effect at
