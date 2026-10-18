@@ -212,6 +212,12 @@ impl Driver {
         self
     }
 
+    /// The names and texts the menus show from now on (those of another language): only the words may differ, the
+    /// ids and flags of `labels` are those of the labels the driver was made with.
+    pub fn set_labels(&mut self, labels: Labels) {
+        self.labels = labels;
+    }
+
     /// The options of the run.
     #[must_use]
     pub fn options(&self) -> &Options {
