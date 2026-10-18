@@ -1,0 +1,100 @@
+# The HD menus' words in Traditional Chinese (Hong Kong), for ui_text.rs: english<TAB>chinese.
+# `{}` is a part the menus fill in (a number, a name), carried over in order. Names follow the 文化傳信 單行本 HK
+# comic; register: 書面語. Keep a translation about as wide as the English (a CJK character is about two letters).
+#
+# The field's command menu and its help line
+Talk	對話
+Look	調查
+Fly	飛行
+Land	降落
+Item	道具
+Menu	選單
+Talk to the person ahead.	和前面的人對話。
+Search the ground nearby.	調查附近的地面。
+Take off and fly the map.	起飛，在地圖上飛行。
+Land where the party flies.	在飛行的地方降落。
+Use the items you carry.	使用攜帶的道具。
+Cards, status and saves.	卡、狀態及記錄。
+# The menu
+Cards	卡
+Status	狀態
+Order	隊列
+Save	記錄
+Text	文字
+Options	選項
+Cheats	秘技
+CHEATS	秘技
+Look at the party's cards.	查看隊伍的卡。
+See each fighter's stats.	查看各戰士的能力。
+Change the party order.	改變隊伍的次序。
+Save the game in a slot.	把遊戲記錄在檔案。
+Set the text speed.	設定文字速度。
+Game, picture, sound and keys.	遊戲、畫面、聲音及按鍵。
+Set the cheats of this run.	設定這次遊戲的秘技。
+Nothing on this tab.	這一頁沒有東西。
+# Money and pages
+Zeni	金幣
+Zeni {}P	金幣 {}P
+Page {}/{}	第{}/{}頁
+-- {} --	－－ {} －－
+-- On: {} --	－－ 開啟：{} －－
+-- Next card --	－－ 下一張卡 －－
+-- Options --	－－ 選項 －－
+-- Sample --	－－ 範例 －－
+-- Video --	－－ 畫面 －－
+# Items
+Items	道具
+All	全部
+Allies	同伴
+Tools	工具
+Use	使用
+Drop	丟棄
+Use or drop?	使用還是丟棄？
+Drop one?	丟棄一個嗎？
+This cannot be dropped.	這個不能丟棄。
+This cannot be used or dropped here.	這裏不能使用或丟棄。
+Bag full: nothing more can be taken.	袋子滿了，不能再拿東西。
+Not usable from the menu	不能在選單中使用
+Usable: in battle	可在戰鬥中使用
+Usable: on the map	可在地圖上使用
+Usable: on the map and in battle	可在地圖上及戰鬥中使用
+# Cards and stats
+A card as the game deals it	遊戲發出的卡
+Z in attack	攻擊時為Z
+Z in defence	防禦時為Z
+Z in attack and defence	攻擊及防禦時為Z
+HP	HP
+KI	氣
+Pt	點
+# The hint bar and questions
+A  OK	A  確定
+B  Back	B  返回
+Start  Close	Start  關閉
+A  OK   B  No	A  確定   B  否
+A  Keep   B  Revert	A  保留   B  還原
+Esc  Cancel	Esc  取消
+Backspace  Clear	Backspace  清除
+Yes	是
+No	否
+Keep	保留
+Revert	還原
+Custom	自訂
+Apply video changes?	套用畫面設定嗎？
+Reverting in {} s	{} 秒後還原
+Reset all	全部重設
+Reset this page	重設這一頁
+Reset all options to their defaults?	把所有選項重設為預設值嗎？
+Press the new key	請按新的按鍵
+None. The game plays as the original.	沒有。遊戲和原版一樣。
+coming soon	即將推出
+# The controls page
+Buttons	按鈕
+D-pad and shoulders	十字鍵及肩鍵
+Device	裝置
+Gamepad	手掣
+Key in use	按鍵已被使用
+Keyboard	鍵盤
+Press a button...	請按一個按鈕……
+Press a key...	請按一個按鍵……
+Shortcuts	快捷鍵
+Touch	觸控

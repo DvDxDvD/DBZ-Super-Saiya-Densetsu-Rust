@@ -104,6 +104,8 @@ pub struct Hd {
     /// The language the PC file held when it was last seen: a change of the Options' row is measured from it, so
     /// another row's change does not undo `--lang`.
     language_saved: Option<Language>,
+    /// The menus' words in the language of the text (`None`: English).
+    ui_text: Option<&'static ssd_menus::ui_text::UiText>,
 }
 
 impl Hd {
@@ -154,6 +156,7 @@ impl Hd {
             notice: CheatNotice::default(),
             labels,
             language_saved,
+            ui_text: None,
         };
         hd.set_language(language);
         Ok(hd)
@@ -167,6 +170,7 @@ impl Hd {
             None => self.labels.clone(),
         });
         self.wide.set_overlay(crate::lang::overlay(language));
+        self.ui_text = ssd_menus::ui_text::UiText::of(language);
     }
 
     /// The PC file now holds `values` (the Options changed a row): a new choice of the Language row takes effect at
@@ -232,8 +236,17 @@ impl Hd {
         if let (Some(which), Some(sram)) = (slot_list(wram), sram) {
             list.append(ssd_menus::screens::slot_badges(which, self.driver.marked_slots(sram)));
         }
-        (!list.ops().is_empty())
-            .then(|| crate::options::access::restyle(&self.driver.options().pc, list))
+        (!list.ops().is_empty()).then(|| {
+            crate::options::access::restyle(&self.driver.options().pc, self.translated(list))
+        })
+    }
+
+    /// `list` with the menus' words in the language of the text.
+    fn translated(&self, mut list: DrawList) -> DrawList {
+        if let Some(table) = self.ui_text {
+            list.map_text(|text| table.get(text));
+        }
+        list
     }
 
     /// The Item screen shows `tab` of the bag.
@@ -303,7 +316,7 @@ impl Hd {
     /// The HD's picture of the menu now, if the curtain is up.
     #[must_use]
     pub fn scene(&self, wram: &[u8]) -> Option<DrawList> {
-        self.driver.scene(wram)
+        self.driver.scene(wram).map(|list| self.translated(list))
     }
 
     /// The 16:9 view of the frame that just ran (see [`WideRun::note`]); `None` when the frame has no
