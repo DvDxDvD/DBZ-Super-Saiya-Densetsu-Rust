@@ -1,5 +1,6 @@
 //! The Accessibility page (this PC): the text size, high contrast and the cursor of the HD menus, with a sample
-//! window under the rows that shows them at once. See [`crate::style::Style`] for what they do.
+//! window under the rows that shows them at once. See [`crate::style::Style`] for what they do. The page also holds
+//! the language of the game's text ([`crate::language::Language`]).
 
 use super::{Kind, RowDef, Source, Values};
 use crate::cheats::Cheats;
@@ -13,6 +14,14 @@ pub const ROWS: &[RowDef] = &[
         group: "Text",
         help: "Large makes the text of the menus a quarter bigger where it has room.",
         kind: Kind::Choice(&["Normal", "Large"]),
+        source: Source::Stored { default: 0 },
+    },
+    RowDef {
+        key: crate::language::Language::KEY,
+        label: "Language",
+        group: "Text",
+        help: "The story's text in Enhanced mode. Chinese needs zh-hk.tsv and a Noto Sans HK font in the data folder.",
+        kind: Kind::Choice(&["English", "繁體中文"]),
         source: Source::Stored { default: 0 },
     },
     RowDef {
