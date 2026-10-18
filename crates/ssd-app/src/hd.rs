@@ -106,6 +106,8 @@ pub struct Hd {
     language_saved: Option<Language>,
     /// The menus' words in the language of the text (`None`: English).
     ui_text: Option<std::sync::Arc<ssd_menus::ui_text::UiText>>,
+    /// The canonical ROM: the names a translation draws over the tile maps are read from it.
+    rom: std::sync::Arc<[u8]>,
 }
 
 impl Hd {
@@ -157,6 +159,7 @@ impl Hd {
             labels,
             language_saved,
             ui_text: None,
+            rom: std::sync::Arc::from(rom),
         };
         hd.set_language(language);
         Ok(hd)
@@ -169,7 +172,7 @@ impl Hd {
             Some(table) => ssd_catalogue::translated_labels(&self.labels, table),
             None => self.labels.clone(),
         });
-        self.wide.set_overlay(crate::lang::overlay(language));
+        self.wide.set_overlay(crate::lang::overlay(language, &self.rom));
         self.ui_text = crate::lang::ui_text(language);
     }
 

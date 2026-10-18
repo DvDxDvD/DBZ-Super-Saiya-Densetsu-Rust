@@ -621,7 +621,8 @@ impl WideRenderer {
             if let Some(translator) = self.translator.as_mut() {
                 let width = picture.width as usize;
                 let mut target = Target { rgba: &mut picture.rgba, width, scale };
-                translator.draw(&mut target, self.text.cells(), &wide.frame, logical.x);
+                let character = |glyph| font.character(glyph);
+                translator.draw(&mut target, self.text.cells(), &wide.frame, logical.x, &character);
             }
         }
         Ok(WideHd {

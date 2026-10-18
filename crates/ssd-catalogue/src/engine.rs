@@ -6,8 +6,9 @@
 use crate::names::table_name;
 use crate::rom::RomView;
 use crate::text::decode_tile;
-use crate::translation::{page_key, string_key};
+use crate::translation::{page_key, render, string_key};
 use ssd_game::data as d;
+use std::collections::HashMap;
 
 /// A string longer than this has lost its end.
 const MAX_STRING: usize = 2048;
@@ -136,6 +137,95 @@ pub fn on_screen(rom: &[u8], wram: &[u8], hint: Option<usize>) -> Option<OnScree
         names,
         numbers,
     })
+}
+
+/// A table of bank `$02` names: its pointers, their size in bytes, and the translation key of an index.
+type NameTable = (u32, u32, fn(u32) -> String);
+
+/// The names the game writes straight into its tile maps (the battle's lists of fighters, attacks and objects, the
+/// characters' names), as the screen spells them, and their translations in `table`: the strings of the four name
+/// tables of bank `$02` whose keys (`string:N`, `unit:0xNN`, `attack:N`, `object:N`) the translation has. A name
+/// shorter than two letters, or one the tables spell two ways, is left out (a single letter on screen is not a
+/// name). Nothing of the ROM is kept but the map.
+#[must_use]
+pub fn screen_names(
+    rom: &[u8],
+    table: &crate::translation::Translation,
+) -> HashMap<String, String> {
+    let Ok(rom) = RomView::new(rom) else { return HashMap::new() };
+    let tables: [NameTable; 4] = [
+        (d::STRING_POINTERS, d::STRING_POINTERS_SIZE, |i| format!("string:{i}")),
+        (d::UNIT_NAME_POINTERS, d::UNIT_NAME_POINTERS_SIZE, |i| format!("unit:0x{i:02X}")),
+        (d::ATTACK_NAME_POINTERS, d::ATTACK_NAME_POINTERS_SIZE, |i| format!("attack:{i}")),
+        (d::OBJECT_NAME_POINTERS, d::OBJECT_NAME_POINTERS_SIZE, |i| format!("object:{i}")),
+    ];
+    let mut names: HashMap<String, Option<String>> = HashMap::new();
+    for (pointers, size, key) in tables {
+        for index in 0..size / 2 {
+            let Ok(name) = table_name(rom, pointers, index) else { continue };
+            let english = name.trimmed();
+            let Some(text) = table.text(&key(index)) else { continue };
+            let translated = render(text, |_| String::new()).replace('\n', "");
+            if english.chars().count() < 2 || !name.is_text() || translated.trim().is_empty() {
+                continue;
+            }
+            names
+                .entry(english.to_owned())
+                .and_modify(|seen| {
+                    if seen.as_deref() != Some(translated.as_str()) {
+                        *seen = None;
+                    }
+                })
+                .or_insert(Some(translated));
+        }
+    }
+    // The menu blocks of bank `$02` (`block:0xNN`): a row of a block is a word of its own (`Atk.`, `Pick`)
+    for index in 0..MENU_BLOCKS {
+        let Some(text) = table.text(&format!("block:0x{index:02X}")) else { continue };
+        let translated = render(text, |_| String::new());
+        let Some(rows) = block_rows(rom, index) else { continue };
+        for (english, translated) in rows.iter().zip(translated.split('\n')) {
+            let (english, translated) = (english.trim(), translated.trim());
+            if english.chars().count() < 2 || translated.is_empty() || english.contains('\u{fffd}')
+            {
+                continue;
+            }
+            names
+                .entry(english.to_owned())
+                .and_modify(|seen| {
+                    if seen.as_deref() != Some(translated) {
+                        *seen = None;
+                    }
+                })
+                .or_insert(Some(translated.to_owned()));
+        }
+    }
+    // (a name the translation keeps as it is, `Lv` or `HP`, is left to the HD letters)
+    names
+        .into_iter()
+        .filter_map(|(english, translated)| Some((english, translated?)))
+        .filter(|(english, translated)| english != translated)
+        .collect()
+}
+
+/// The blocks of `bank2_pointer_table` that can be text (`docs/re/data/menus.md`, `xtask text-dump`).
+const MENU_BLOCKS: u32 = 80;
+
+/// The rows of menu block `index` as the screen spells them (a tile the HD font has no letter for is U+FFFD); `None`
+/// for a block that is not text (no place in the tile map, or less than half letters).
+fn block_rows(rom: RomView<'_>, index: u32) -> Option<Vec<String>> {
+    let address = rom.pointer(d::BANK2_POINTER_TABLE + 2 * index, 0x02).ok()?;
+    let head = rom.slice(address, 4).ok()?;
+    let (width, height) = (usize::from(head[0]) + 1, usize::from(head[1]) + 1);
+    let offset = u16::from_le_bytes([head[2], head[3]]);
+    let tiles = rom.slice(address + 4, width * height).ok()?;
+    let letters = tiles.iter().filter(|&&tile| decode_tile(tile).is_some()).count();
+    if offset == 0 || letters * 2 < tiles.len() {
+        return None;
+    }
+    let spell =
+        |row: &[u8]| row.iter().map(|&tile| decode_tile(tile).unwrap_or('\u{fffd}')).collect();
+    Some(tiles.chunks(width).map(spell).collect())
 }
 
 /// The bus address of string `index` of the `message_table` value `table`: `string_table_pointers` gives the

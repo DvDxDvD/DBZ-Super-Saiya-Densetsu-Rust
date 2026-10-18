@@ -24,6 +24,7 @@ use rustc_hash::FxHashMap;
 use ssd_catalogue::engine::OnScreen;
 use ssd_catalogue::translation::{Slot, Translation, render};
 use ssd_oracle::Color;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// The side of a glyph's em box, in pixels of the original.
@@ -46,8 +47,8 @@ const NO_END: &str = "「『（〔【《〈([{";
 /// A Traditional Chinese font, rasterised at the picture's scale on first use of each glyph.
 pub struct ChineseFace {
     face: FontVec,
-    /// The glyphs drawn so far, by character and scale.
-    glyphs: Mutex<FxHashMap<(char, usize), Arc<Glyph>>>,
+    /// The glyphs drawn so far, by character, scale and em (in tenths of a pixel of the original).
+    glyphs: Mutex<FxHashMap<(char, usize, u16), Arc<Glyph>>>,
 }
 
 impl std::fmt::Debug for ChineseFace {
@@ -80,21 +81,34 @@ impl ChineseFace {
 
     /// The advance of `ch` in pixels of the original, at the em of the text.
     fn advance(&self, ch: char) -> f32 {
+        self.advance_at(ch, EM)
+    }
+
+    /// The advance of `ch` in pixels of the original, at an em of `em` pixels of the original.
+    fn advance_at(&self, ch: char, em: f32) -> f32 {
         let units = self.face.units_per_em().unwrap_or(1000.0);
-        self.face.h_advance_unscaled(self.face.glyph_id(ch)) * EM / units
+        self.face.h_advance_unscaled(self.face.glyph_id(ch)) * em / units
     }
 
-    /// The glyph of `ch` at `scale`, drawn on first use.
+    /// The glyph of `ch` at `scale`, at the em of the text, drawn on first use.
     fn glyph(&self, ch: char, scale: usize) -> Arc<Glyph> {
-        let mut glyphs = self.glyphs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        Arc::clone(glyphs.entry((ch, scale)).or_insert_with(|| Arc::new(self.rasterise(ch, scale))))
+        self.glyph_at(ch, scale, EM)
     }
 
-    fn rasterise(&self, ch: char, scale: usize) -> Glyph {
-        let advance = self.advance(ch);
+    /// The glyph of `ch` at `scale` and an em of `em` pixels of the original, drawn on first use.
+    fn glyph_at(&self, ch: char, scale: usize, em: f32) -> Arc<Glyph> {
+        let tenths = (em * 10.0).round() as u16;
+        let em = f32::from(tenths) / 10.0;
+        let mut glyphs = self.glyphs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = glyphs.entry((ch, scale, tenths));
+        Arc::clone(entry.or_insert_with(|| Arc::new(self.rasterise(ch, scale, em))))
+    }
+
+    fn rasterise(&self, ch: char, scale: usize, em: f32) -> Glyph {
+        let advance = self.advance_at(ch, em);
         let empty = Glyph { w: 0, h: 0, left: 0, top: 0, alpha: Vec::new(), advance };
         let Some(units) = self.face.units_per_em() else { return empty };
-        let em = EM * scale as f32;
+        let em = em * scale as f32;
         // `PxScale` is the font's height (ascent to descent) in pixels, not its em
         let height = em * self.face.height_unscaled() / units;
         let glyph = self
@@ -135,12 +149,36 @@ impl ChineseFace {
 pub struct Overlay {
     table: Arc<Translation>,
     face: Arc<ChineseFace>,
+    /// The names the game writes straight into its tile maps, as the screen spells them, and their translations
+    /// (`ssd_catalogue::engine::screen_names`).
+    names: HashMap<String, String>,
 }
 
 impl Overlay {
     #[must_use]
     pub fn new(table: Arc<Translation>, face: Arc<ChineseFace>) -> Self {
-        Self { table, face }
+        Self { table, face, names: HashMap::new() }
+    }
+
+    /// The translation of the name `english` spells on screen: the name, or the one name it is the start of
+    /// (a list cuts a long name at its column: `Piccol`) when it has four letters or more.
+    fn name(&self, english: &str) -> Option<&str> {
+        if let Some(name) = self.names.get(english) {
+            return Some(name);
+        }
+        if english.chars().count() < 4 {
+            return None;
+        }
+        let mut starting = self.names.iter().filter(|(name, _)| name.starts_with(english));
+        let (_, first) = starting.next()?;
+        starting.all(|(_, other)| other == first).then_some(first.as_str())
+    }
+
+    /// The overlay drawing the translations of `names` over the runs of letters that spell them.
+    #[must_use]
+    pub fn with_names(mut self, names: HashMap<String, String>) -> Self {
+        self.names = names;
+        self
     }
 
     /// The text of the page `screen` shows, its slots filled in; `None` when the translation lacks the page.
@@ -218,14 +256,17 @@ impl Translator {
         Self { overlay, screen: None, kept: Kept::default() }
     }
 
-    /// Draws the frame's translation (see [`draw`]).
+    /// Draws the frame's translation: the names written into the tile maps ([`draw_names`]), then the message
+    /// engine's page ([`draw`]). `character` spells a glyph of the cells.
     pub(crate) fn draw(
         &mut self,
         target: &mut Target<'_>,
         cells: &[TextCell],
         frame: &crate::Frame,
         window_x: i32,
+        character: &dyn Fn(u8) -> Option<char>,
     ) {
+        draw_names(&self.overlay, target, cells, character);
         let screen = self.screen.as_ref();
         draw(
             &self.overlay,
@@ -351,6 +392,84 @@ impl Target<'_> {
                 }
             }
         }
+    }
+}
+
+/// The em of a name drawn over a run of letters, at most: a line of the tile map is 8 pixels high.
+const NAME_EM: f32 = 10.0;
+
+/// Draws, over each run of letters of `cells` (spelled by `character`) that is a name of the overlay's, its
+/// translation: the run's cells take their ground colour and the name is drawn across them in their ink, its em
+/// shrunk to fit the run. A run is the letters of one row, 8 pixels apart; a name is the whole run, or a part of
+/// it between two or more blank cells (a list's columns).
+fn draw_names(
+    overlay: &Overlay,
+    target: &mut Target<'_>,
+    cells: &[TextCell],
+    character: &dyn Fn(u8) -> Option<char>,
+) {
+    if overlay.names.is_empty() {
+        return;
+    }
+    let mut row: Vec<(&TextCell, char)> = cells
+        .iter()
+        .filter(|cell| cell.glyph < CARD_BASE)
+        .filter_map(|cell| Some((cell, character(cell.glyph)?)))
+        .collect();
+    row.sort_unstable_by_key(|(cell, _)| (cell.y, cell.x));
+    let mut start = 0;
+    for end in 1..=row.len() {
+        let joined = end < row.len()
+            && row[end].0.y == row[end - 1].0.y
+            && row[end].0.x == row[end - 1].0.x + 8;
+        if !joined {
+            draw_run_names(overlay, target, &row[start..end]);
+            start = end;
+        }
+    }
+}
+
+/// Draws the names of one run (see [`draw_names`]).
+fn draw_run_names(overlay: &Overlay, target: &mut Target<'_>, run: &[(&TextCell, char)]) {
+    let blank = |at: usize| run.get(at).is_none_or(|&(_, ch)| ch == ' ');
+    let mut at = 0;
+    while at < run.len() {
+        if blank(at) {
+            at += 1;
+            continue;
+        }
+        // a part: from a letter to before two blanks in a row (or the run's end)
+        let mut end = at;
+        while end < run.len() && !(blank(end) && blank(end + 1)) {
+            end += 1;
+        }
+        let english: String = run[at..end].iter().map(|&(_, ch)| ch).collect();
+        if let Some(name) = overlay.name(english.trim_end()) {
+            draw_name(&overlay.face, target, &run[at..end], name);
+        }
+        at = end;
+    }
+}
+
+/// Draws `name` over the cells `part`, in their colours.
+fn draw_name(face: &ChineseFace, target: &mut Target<'_>, part: &[(&TextCell, char)], name: &str) {
+    let (first, last) = (part[0].0, part[part.len() - 1].0);
+    let (ink, paper) = (first.fg, first.bg);
+    let width = (last.x + 8 - first.x) as f32;
+    let natural: f32 = name.chars().map(|ch| face.advance_at(ch, NAME_EM)).sum();
+    let em = if natural > width { NAME_EM * width / natural } else { NAME_EM };
+    // (a pixel more around: the HD letters reach a little past their cells)
+    target.fill((first.x - 1, first.y - 1), (last.x + 9, first.y + 9), paper);
+    let scale = target.scale;
+    let top = first.y as f32 + (8.0 - em) / 2.0;
+    let mut pen = first.x as f32;
+    for ch in name.chars() {
+        let glyph = face.glyph_at(ch, scale, em);
+        if !ch.is_whitespace() {
+            let at = ((pen * scale as f32).round() as i32, (top * scale as f32).round() as i32);
+            target.glyph(&glyph, at, ink);
+        }
+        pen += glyph.advance;
     }
 }
 
@@ -612,6 +731,19 @@ mod tests {
         let other = OnScreen { key: "str3:0x01".to_owned(), ..screen(1.0) };
         let rgba = drawn(&overlay, &mut kept, Some(&other), &[letter()]);
         assert!(rgba.chunks(4).all(|p| p[..3] == [7, 7, 7]));
+    }
+
+    #[test]
+    fn a_name_is_found_whole_or_by_the_one_name_a_cut_column_starts() {
+        let names =
+            [("Piccolo", "笛子魔童"), ("Goku", "孫悟空"), ("Gohan", "孫悟飯"), ("Nappa", "立巴")]
+                .map(|(english, name)| (english.to_owned(), name.to_owned()));
+        let overlay = overlay().with_names(names.into_iter().collect());
+        assert_eq!(overlay.name("Goku"), Some("孫悟空"));
+        assert_eq!(overlay.name("Piccol"), Some("笛子魔童"));
+        assert_eq!(overlay.name("Go"), None, "too short to stand for a name");
+        assert_eq!(overlay.name("Napp"), Some("立巴"));
+        assert_eq!(overlay.name("Talk"), None);
     }
 
     #[test]
