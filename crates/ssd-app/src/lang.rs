@@ -158,9 +158,10 @@ pub fn cjk_font() -> Option<Arc<[u8]>> {
     })
 }
 
-/// The overlay that draws the translation of `language` over the game's message windows (`ssd_hd::translate`):
-/// `None` for English, and without the translation or the font (the text stays English).
-pub fn overlay(language: Language) -> Option<Arc<Overlay>> {
+/// The overlay that draws the translation of `language` over the game's message windows and the names in its tile
+/// maps (`ssd_hd::translate`), read from the canonical ROM `rom`: `None` for English, and without the translation
+/// or the font (the text stays English).
+pub fn overlay(language: Language, rom: &[u8]) -> Option<Arc<Overlay>> {
     let table = translation(language)?;
     let face = looked_up(&FACE, || {
         let bytes = cjk_font()?;
@@ -172,7 +173,8 @@ pub fn overlay(language: Language) -> Option<Arc<Overlay>> {
             }
         }
     })?;
-    Some(Arc::new(Overlay::new(table, face)))
+    let names = ssd_catalogue::engine::screen_names(rom, &table);
+    Some(Arc::new(Overlay::new(table, face).with_names(names)))
 }
 
 /// The tests that set the process-wide override (or depend on it) hold this lock.
