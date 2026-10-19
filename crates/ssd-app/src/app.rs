@@ -219,6 +219,9 @@ struct WindowState {
     stages: Stages,
     /// The last frames run were a fast-forward's batch (see [`run_frames`]).
     fast_forward: bool,
+    /// The game runs at speed 1: a batch is frames the clock owes (a screen slower than the game), not a
+    /// fast-forward, so every frame's sound is heard (see [`run_frames`]).
+    real_time: bool,
     /// The Video page's choices as the run shows them (the command line's scale and look included).
     video: VideoSettings,
     /// The choices the PC file held when they were last read: the player's changes are measured from them.
@@ -271,6 +274,7 @@ impl WindowState {
             hd_view: None,
             stages: Stages::default(),
             fast_forward: false,
+            real_time: false,
             video: VideoSettings::default(),
             video_saved: VideoSettings::default(),
             video_apply: false,
@@ -950,7 +954,9 @@ fn run_frames(
     // Only the last frame of a batch is shown, and only the first one's sound is heard: the
     // others run without drawing their pixels, logging their render or resampling their sound.
     // A breakpoint stops a frame wherever it is, and the HD menu's frames behind its curtain are
-    // few: both run every frame whole.
+    // few: both run every frame whole. At speed 1 the batch is the frames the clock owes (a phone
+    // whose screen fell behind): each one's sound is heard, or the sound would starve.
+    let every_sound = state.real_time;
     let fast_forward = frames > 1
         && !state.step_once
         && machine.breakpoints().is_empty()
@@ -966,10 +972,10 @@ fn run_frames(
             let shown = n + 1 == frames;
             machine.set_compose_pixels(shown);
             machine.set_line_log(logging && shown);
-            machine.set_audio_resampling(n == 0);
+            machine.set_audio_resampling(n == 0 || every_sound);
         }
         let driven = Instant::now();
-        let stopped = if n == 0 {
+        let stopped = if n == 0 || every_sound {
             session.run(machine, pad, &events, audio, &stops)?
         } else {
             session.run(machine, pad, &events, &mut null, &stops)?
@@ -1945,6 +1951,7 @@ fn windowed_loop(
         if env.verify.is_none() && (!state.controls.paused || state.step_once) {
             requested = if state.step_once { 1 } else { pacer.frames(multiplier, Instant::now()) };
             state.stages = Stages::default();
+            state.real_time = multiplier <= 1;
             frames_run =
                 window_frames(&mut state, machine, session, &env, pad, &mut audio, requested)?;
             pacer.note_cost(frames_run, state.stages.frames());
