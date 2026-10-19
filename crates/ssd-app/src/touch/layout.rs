@@ -101,29 +101,53 @@ pub fn orient_of(screen: Rect) -> Orient {
     if screen.width() >= screen.height() { Orient::Landscape } else { Orient::Portrait }
 }
 
-/// The default centre of a group on `screen`.
+/// The space kept between two groups a short screen pushes together, in dp.
+const GAP: f32 = 8.0;
+
+/// The top of the portrait band under the picture (a 16:9 area under a 28 dp margin), from the screen's top.
+fn band_top(w: f32) -> f32 {
+    28.0 + w * 9.0 / 16.0
+}
+
+/// The default centre of a group on `screen`: the design's place at its size (932 x 430, 430 x 932), and on a
+/// shorter screen (split screen, a window) the d-pad, the face buttons and Start/Select kept under the top
+/// buttons, and in portrait under the picture.
 fn default_centre(o: Orient, g: Group, s: Rect) -> Pos2 {
     let (w, h) = (s.width(), s.height());
     let at = |x: f32, y: f32| pos2(s.min.x + x, s.min.y + y);
     match o {
-        Orient::Landscape => match g {
-            Group::Dpad => at(80.0, 0.619 * h),
-            Group::Face => at(w - 82.0, 0.633 * h),
-            Group::L => at(65.0, 34.0),
-            Group::R => at(w - 65.0, 34.0),
-            Group::Speed => at(46.0, 94.0),
-            Group::Menu => at(w - 65.0, 94.0),
-            Group::StartSelect => at(w / 2.0, h - 28.0),
-        },
-        Orient::Portrait => match g {
-            Group::Dpad => at(0.256 * w, 0.616 * h),
-            Group::Face => at(0.749 * w, 0.616 * h),
-            Group::L => at(0.137 * w, 0.354 * h),
-            Group::Speed => at(0.379 * w, 0.354 * h),
-            Group::Menu => at(0.62 * w, 0.354 * h),
-            Group::R => at(0.863 * w, 0.354 * h),
-            Group::StartSelect => at(0.5 * w, 0.88 * h),
-        },
+        Orient::Landscape => {
+            // MIN's bottom (under the speed button) and MENU's, then the half heights of the d-pad and the diamond
+            let (min_bottom, menu_bottom) = (94.0 + 56.0 + MIN_DP / 2.0, 94.0 + MIN_DP / 2.0);
+            match g {
+                Group::Dpad => at(80.0, (0.619 * h).max(min_bottom + GAP + 72.0)),
+                Group::Face => at(w - 82.0, (0.633 * h).max(menu_bottom + GAP + 75.0)),
+                Group::L => at(65.0, 34.0),
+                Group::R => at(w - 65.0, 34.0),
+                Group::Speed => at(46.0, 94.0),
+                Group::Menu => at(w - 65.0, 94.0),
+                Group::StartSelect => at(w / 2.0, h - 28.0),
+            }
+        }
+        Orient::Portrait => {
+            // the design's band is 270..932: its rows are at these parts of the band
+            let top = band_top(w);
+            let band = (h - top).max(0.0);
+            let row = top + 0.0906 * band;
+            // under MIN (a row under the top one), then the d-pad's half height (cells of 56 dp)
+            let pads = (top + 0.459 * band).max(row + 56.0 + MIN_DP / 2.0 + GAP + 84.0);
+            match g {
+                Group::Dpad => at(0.256 * w, pads),
+                Group::Face => at(0.749 * w, pads),
+                Group::L => at(0.137 * w, row),
+                Group::Speed => at(0.379 * w, row),
+                Group::Menu => at(0.62 * w, row),
+                Group::R => at(0.863 * w, row),
+                Group::StartSelect => {
+                    at(0.5 * w, (top + 0.831 * band).max(pads + 84.0 + GAP + MIN_DP / 2.0))
+                }
+            }
+        }
     }
 }
 
@@ -175,7 +199,7 @@ pub fn compute(screen: Rect, minimal: bool, settings: &Settings) -> Geometry {
         }
         Orient::Portrait => {
             let top = screen.min.y + 28.0;
-            let bottom = top + w * 9.0 / 16.0;
+            let bottom = screen.min.y + band_top(w);
             let area = Rect::from_min_max(pos2(screen.min.x, top), pos2(screen.max.x, bottom));
             (area, Some(Rect::from_min_max(pos2(screen.min.x, bottom), screen.max)))
         }
@@ -356,6 +380,42 @@ mod tests {
         let band = g.band.unwrap();
         assert!((g.picture.max.y - band.min.y).abs() < 0.01);
         assert!(g.items.iter().all(|i| i.shape.bounds().min.y >= band.min.y));
+    }
+
+    #[test]
+    fn on_split_screen_sizes_no_group_covers_another_or_the_portrait_picture() {
+        // the designs, a phone, a Fold's inner screen halved (portrait, then landscape) and a short window
+        for (w, h) in [
+            (932.0, 430.0),
+            (430.0, 932.0),
+            (411.0, 891.0),
+            (420.0, 673.0),
+            (841.0, 337.0),
+            (800.0, 360.0),
+        ] {
+            let s = screen(w, h);
+            let g = compute(s, false, &Settings::default());
+            let groups = [
+                Group::Dpad,
+                Group::Face,
+                Group::L,
+                Group::R,
+                Group::Speed,
+                Group::Menu,
+                Group::StartSelect,
+            ];
+            let bounds: Vec<(Group, Rect)> =
+                groups.iter().map(|&k| (k, g.group_bounds(k).unwrap())).collect();
+            for (i, &(a, ra)) in bounds.iter().enumerate() {
+                assert!(s.expand(1.0).contains_rect(ra), "{a:?} off the {w}x{h} screen");
+                for &(b, rb) in &bounds[i + 1..] {
+                    assert!(!ra.intersects(rb), "{a:?} {ra:?} covers {b:?} {rb:?} on {w}x{h}");
+                }
+                if g.orient == Orient::Portrait {
+                    assert!(ra.min.y >= g.picture.max.y, "{a:?} {ra:?} on the picture on {w}x{h}");
+                }
+            }
+        }
     }
 
     #[test]
