@@ -281,7 +281,8 @@ fn window(p: &Painter, t: &Touch, panel: &Panel) {
     }
     let note_y = match t.mode {
         Mode::Edit => r.min.y + 176.0,
-        _ => r.min.y + 50.0 + 3.0 * 56.0 + 56.0,
+        // under the last row of buttons
+        _ => panel.buttons.iter().map(|b| b.rect.max.y).fold(r.min.y + 50.0, f32::max) + 8.0,
     };
     if t.mode != Mode::Edit || note_y < r.max.y {
         wrapped(p, pos2(r.min.x + 14.0, note_y), panel.note, 12.0, r.width() - 28.0, NOTE);
