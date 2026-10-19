@@ -398,10 +398,9 @@ impl Target<'_> {
 /// The em of a name drawn over a run of letters, at most: a line of the tile map is 8 pixels high.
 const NAME_EM: f32 = 10.0;
 
-/// Draws, over each run of letters of `cells` (spelled by `character`) that is a name of the overlay's, its
-/// translation: the run's cells take their ground colour and the name is drawn across them in their ink, its em
-/// shrunk to fit the run. A run is the letters of one row, 8 pixels apart; a name is the whole run, or a part of
-/// it between two or more blank cells (a list's columns).
+/// Draws, over each part of `cells` (spelled by `character`, see [`name_parts`]) that is a name of the overlay's,
+/// its translation: the part's cells take their ground colour and the name is drawn across them in their ink, its
+/// em shrunk to fit the part.
 fn draw_names(
     overlay: &Overlay,
     target: &mut Target<'_>,
@@ -411,49 +410,78 @@ fn draw_names(
     if overlay.names.is_empty() {
         return;
     }
+    for (english, part) in name_parts(cells, character) {
+        if let Some(name) = overlay.name(english.trim_end()) {
+            draw_name(&overlay.face, target, &part, name);
+        }
+    }
+}
+
+/// The parts of `cells` (spelled by `character`) a name could be, with their cells. A run is the letters of one
+/// row, 8 pixels apart, or 16 where a space has no tile (prose: the opening's scroll); a part is the whole run, or
+/// a piece of it between two or more blank cells (a list's columns). So a word of a sentence is never a part.
+fn name_parts<'a>(
+    cells: &'a [TextCell],
+    character: &dyn Fn(u8) -> Option<char>,
+) -> Vec<(String, Vec<&'a TextCell>)> {
     let mut row: Vec<(&TextCell, char)> = cells
         .iter()
         .filter(|cell| cell.glyph < CARD_BASE)
         .filter_map(|cell| Some((cell, character(cell.glyph)?)))
         .collect();
     row.sort_unstable_by_key(|(cell, _)| (cell.y, cell.x));
-    let mut start = 0;
-    for end in 1..=row.len() {
-        let joined = end < row.len()
-            && row[end].0.y == row[end - 1].0.y
-            && row[end].0.x == row[end - 1].0.x + 8;
-        if !joined {
-            draw_run_names(overlay, target, &row[start..end]);
-            start = end;
+    // the row's letters, with `None` for a space that has no tile
+    let mut slots: Vec<Option<(&TextCell, char)>> = Vec::new();
+    let mut parts = Vec::new();
+    for at in 0..=row.len() {
+        if at > 0 {
+            let (prev, before) = row[at - 1];
+            let next = row.get(at).copied();
+            let same_row = next.is_some_and(|(next, _)| next.y == prev.y);
+            // (a number beside a name is its own: a box's line or a frame's tile is between them)
+            let digit = before.is_ascii_digit() || next.is_some_and(|(_, ch)| ch.is_ascii_digit());
+            match next {
+                Some((next, _)) if same_row && next.x == prev.x + 8 => {}
+                Some((next, _)) if same_row && !digit && next.x == prev.x + 16 => slots.push(None),
+                _ => {
+                    run_parts(&slots, &mut parts);
+                    slots.clear();
+                }
+            }
+        }
+        if let Some(&letter) = row.get(at) {
+            slots.push(Some(letter));
         }
     }
+    parts
 }
 
-/// Draws the names of one run (see [`draw_names`]).
-fn draw_run_names(overlay: &Overlay, target: &mut Target<'_>, run: &[(&TextCell, char)]) {
-    let blank = |at: usize| run.get(at).is_none_or(|&(_, ch)| ch == ' ');
+/// The parts of one run's `slots` (see [`name_parts`]), added to `parts`.
+fn run_parts<'a>(
+    slots: &[Option<(&'a TextCell, char)>],
+    parts: &mut Vec<(String, Vec<&'a TextCell>)>,
+) {
+    let blank = |at: usize| slots.get(at).is_none_or(|slot| slot.is_none_or(|(_, ch)| ch == ' '));
     let mut at = 0;
-    while at < run.len() {
+    while at < slots.len() {
         if blank(at) {
             at += 1;
             continue;
         }
         // a part: from a letter to before two blanks in a row (or the run's end)
         let mut end = at;
-        while end < run.len() && !(blank(end) && blank(end + 1)) {
+        while end < slots.len() && !(blank(end) && blank(end + 1)) {
             end += 1;
         }
-        let english: String = run[at..end].iter().map(|&(_, ch)| ch).collect();
-        if let Some(name) = overlay.name(english.trim_end()) {
-            draw_name(&overlay.face, target, &run[at..end], name);
-        }
+        let english = slots[at..end].iter().map(|slot| slot.map_or(' ', |(_, ch)| ch)).collect();
+        parts.push((english, slots[at..end].iter().flatten().map(|&(cell, _)| cell).collect()));
         at = end;
     }
 }
 
 /// Draws `name` over the cells `part`, in their colours.
-fn draw_name(face: &ChineseFace, target: &mut Target<'_>, part: &[(&TextCell, char)], name: &str) {
-    let (first, last) = (part[0].0, part[part.len() - 1].0);
+fn draw_name(face: &ChineseFace, target: &mut Target<'_>, part: &[&TextCell], name: &str) {
+    let (first, last) = (part[0], part[part.len() - 1]);
     let (ink, paper) = (first.fg, first.bg);
     let width = (last.x + 8 - first.x) as f32;
     let natural: f32 = name.chars().map(|ch| face.advance_at(ch, NAME_EM)).sum();
@@ -744,6 +772,35 @@ mod tests {
         assert_eq!(overlay.name("Go"), None, "too short to stand for a name");
         assert_eq!(overlay.name("Napp"), Some("立巴"));
         assert_eq!(overlay.name("Talk"), None);
+    }
+
+    #[test]
+    fn a_word_of_a_sentence_is_no_part_even_where_its_spaces_have_no_tiles() {
+        // `text` at row `y`: a letter is a cell (its glyph its place in `LETTERS`), a space none (the opening's
+        // scroll draws no tile for it)
+        const LETTERS: &str = "ADEFGHIKLNOPRSYabcehiklnopsu.01";
+        let row = |text: &str, y: i32| -> Vec<TextCell> {
+            (0..)
+                .zip(text.chars())
+                .filter(|&(_, ch)| ch != ' ')
+                .map(|(at, ch)| {
+                    let glyph = u8::try_from(LETTERS.find(ch).unwrap()).unwrap();
+                    TextCell { x: 8 * at, y, glyph, ..TextCell::default() }
+                })
+                .collect()
+        };
+        let character = |glyph: u8| LETTERS.chars().nth(usize::from(glyph));
+        let english = |cells: &[TextCell]| -> Vec<String> {
+            name_parts(cells, &character).into_iter().map(|(english, _)| english).collect()
+        };
+        assert_eq!(english(&row("LONG DISAPPEARS FOR ONE YEAR.", 0)), ["LONG DISAPPEARS FOR ONE YEAR."]);
+        assert_eq!(english(&row("FOR", 0)), ["FOR"], "a word alone is still a part");
+        assert_eq!(english(&row("Goku   Piccolo", 0)), ["Goku", "Piccolo"], "a list's columns");
+        assert_eq!(english(&row("Piccol 01", 0)), ["Piccol", "01"], "a frame's tile before the level");
+        let two_rows = [row("Goku", 0), row("Gohan", 8)].concat();
+        assert_eq!(english(&two_rows), ["Goku", "Gohan"]);
+        let parts = name_parts(&two_rows, &character);
+        assert_eq!(parts[1].1.len(), 5, "a part keeps its cells");
     }
 
     #[test]
