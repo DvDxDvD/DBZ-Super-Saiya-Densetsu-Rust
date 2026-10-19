@@ -3,6 +3,18 @@ use ssd_oracle::AudioSink;
 
 const FREQUENCY: u64 = 48_000;
 const MAX_LATENCY_MS: usize = 150;
+/// The queue the rate control keeps: room for a late frame or two before the device runs dry.
+const TARGET_MS: f32 = 60.0;
+/// The most the playback speed is bent to get back to [`TARGET_MS`]: half a percent, which no ear hears.
+const MAX_BEND: f32 = 0.005;
+
+/// The speed SDL plays the queue at for a queue of `queued_ms`: faster above the target, slower below, by up to
+/// [`MAX_BEND`]. The game makes its samples on the clock of its frames, the device takes them on its own (and a
+/// phone's frames are not a desktop's), so without the bend the queue drifts until it runs dry (gaps: crackle) or
+/// overflows (cut samples: clicks).
+pub(crate) fn rate_ratio(queued_ms: f32) -> f32 {
+    1.0 + MAX_BEND * ((queued_ms - TARGET_MS) / TARGET_MS).clamp(-1.0, 1.0)
+}
 
 /// Keeps queued plus pending audio under `MAX_LATENCY_MS` by dropping the oldest pending samples.
 ///
@@ -24,22 +36,23 @@ pub struct Audio {
     stream: Option<sdl3::audio::AudioStreamOwner>,
     pending: Vec<f32>,
     settings: AudioSettings,
+    /// The queue at the last frame's end, in milliseconds.
+    queued_ms: f32,
+    /// The frames that found the queue empty (the device ran dry): each is a gap the ear hears.
+    underruns: u32,
 }
 
 pub(crate) fn open_with<F>(open: F) -> Audio
 where
     F: FnOnce() -> Result<sdl3::audio::AudioStreamOwner, String>,
 {
-    match open() {
-        Ok(stream) => Audio {
-            stream: Some(stream),
-            pending: Vec::with_capacity(4096),
-            settings: AudioSettings::default(),
-        },
-        Err(e) => {
-            log::warn!("audio unavailable, running muted: {e}");
-            Audio { stream: None, pending: Vec::new(), settings: AudioSettings::default() }
-        }
+    let stream = open().inspect_err(|e| log::warn!("audio unavailable, running muted: {e}")).ok();
+    Audio {
+        pending: if stream.is_some() { Vec::with_capacity(4096) } else { Vec::new() },
+        stream,
+        settings: AudioSettings::default(),
+        queued_ms: 0.0,
+        underruns: 0,
     }
 }
 
@@ -55,8 +68,8 @@ impl Audio {
             };
             let device = audio.open_playback_device(&spec).map_err(|e| e.to_string())?;
             let stream = device.open_device_stream(Some(&spec)).map_err(|e| e.to_string())?;
-            // Prime ~50 ms of silence to avoid an underrun before the first frame's samples arrive.
-            let silence = vec![0.0_f32; (FREQUENCY as usize / 20) * 2];
+            // Prime the target's worth of silence so the first frames do not find the device dry.
+            let silence = vec![0.0_f32; (FREQUENCY as f32 * TARGET_MS / 1000.0) as usize * 2];
             stream.put_data_f32(&silence).map_err(|e| e.to_string())?;
             stream.resume().map_err(|e| e.to_string())?; // device streams start paused
             Ok(stream)
@@ -65,7 +78,12 @@ impl Audio {
 
     /// A muted output, with no device: what a run without sound has (the bench).
     pub fn muted() -> Audio {
-        Audio { stream: None, pending: Vec::new(), settings: AudioSettings::default() }
+        open_with(|| Err("muted".to_owned()))
+    }
+
+    /// The queue at the last frame's end in milliseconds, and the frames so far that found it empty.
+    pub fn health(&self) -> (f32, u32) {
+        (self.queued_ms, self.underruns)
     }
 
     /// Sets the volume and the output the samples are shaped by from now on.
@@ -88,9 +106,22 @@ impl Audio {
             return;
         };
         let queued = stream.queued_bytes().map_or(0, |q| q.max(0) as usize);
+        if queued == 0 && !self.pending.is_empty() {
+            self.underruns += 1;
+        }
         trim_for_latency(queued, FREQUENCY, &mut self.pending);
         if let Err(e) = stream.put_data_f32(&self.pending) {
             log::warn!("dropping audio after SDL error: {e}");
+        }
+        // bytes of stereo f32 to milliseconds
+        self.queued_ms =
+            (queued + self.pending.len() * 4) as f32 / (FREQUENCY as f32 * 2.0 * 4.0) * 1000.0;
+        // SAFETY: the stream is alive (owned by `self`); the call only sets the stream's playback ratio.
+        unsafe {
+            sdl3::sys::audio::SDL_SetAudioStreamFrequencyRatio(
+                stream.raw(),
+                rate_ratio(self.queued_ms),
+            );
         }
         self.pending.clear();
     }
@@ -118,6 +149,15 @@ mod tests {
         audio.push(0.5, -0.5);
         assert!(audio.pending.is_empty(), "a muted Audio must not accumulate samples");
         audio.end_frame(); // must not panic
+    }
+
+    #[test]
+    fn the_rate_bends_toward_the_target_queue_by_half_a_percent_at_most() {
+        assert!((rate_ratio(TARGET_MS) - 1.0).abs() < 1e-6);
+        assert!(rate_ratio(90.0) > 1.0, "a full queue plays a little faster");
+        assert!(rate_ratio(30.0) < 1.0, "a low one a little slower");
+        assert!((rate_ratio(10_000.0) - 1.005).abs() < 1e-6);
+        assert!((rate_ratio(0.0) - 0.995).abs() < 1e-6);
     }
 
     #[test]
