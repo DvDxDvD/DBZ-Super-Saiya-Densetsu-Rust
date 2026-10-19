@@ -64,6 +64,7 @@ pub enum PBtn {
     OptHidePad,
     OptReset,
     OptFps,
+    OptPicture,
     Back,
     SizeDown,
     SizeUp,
@@ -367,7 +368,7 @@ impl Touch {
                 Some(p)
             }
             Mode::Options => {
-                let mut p = make(338.0, "TOUCH OPTIONS");
+                let mut p = make(394.0, "TOUCH OPTIONS");
                 let st = &self.settings;
                 cell(
                     &mut p,
@@ -410,15 +411,23 @@ impl Touch {
                     false,
                 );
                 cell(&mut p, PBtn::OptReset, "Reset layout".into(), 1.0, 2.0, false);
-                cell(&mut p, PBtn::Back, "Back".into(), 0.0, 3.0, true);
                 cell(
                     &mut p,
                     PBtn::OptFps,
                     format!("Show FPS: {}", if st.show_fps { "On" } else { "Off" }),
+                    0.0,
+                    3.0,
+                    false,
+                );
+                cell(
+                    &mut p,
+                    PBtn::OptPicture,
+                    format!("Picture: {}", st.picture.name()),
                     1.0,
                     3.0,
                     false,
                 );
+                cell(&mut p, PBtn::Back, "Back".into(), 0.0, 4.0, true);
                 p.note = "Saved on this device only, in ssd.settings. Auto battle switches to the minimal layout in fights.";
                 Some(p)
             }
@@ -702,6 +711,10 @@ impl Touch {
             }
             PBtn::OptFps => {
                 self.settings.show_fps = !self.settings.show_fps;
+                self.persist();
+            }
+            PBtn::OptPicture => {
+                self.settings.picture = self.settings.picture.next();
                 self.persist();
             }
             PBtn::OptHidePad => {
