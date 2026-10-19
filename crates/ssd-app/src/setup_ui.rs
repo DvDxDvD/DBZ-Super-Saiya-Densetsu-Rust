@@ -64,6 +64,44 @@ mod tests {
         }
     }
 
+    /// The Video page of the Options in English and in zh-HK, with the cursor on the Look row. With
+    /// `SSD_SETUP_PREVIEW_DIR` set, the pictures are written there (`options-video-en.png`, `-zh.png`).
+    #[test]
+    fn the_video_page_draws_in_both_languages_offscreen() {
+        let Ok(mut offscreen) = Offscreen::new(1280, 720) else { return };
+        let dir = std::env::var_os("SSD_SETUP_PREVIEW_DIR").map(std::path::PathBuf::from);
+        for (name, language) in
+            [("en", ssd_menus::Language::English), ("zh", ssd_menus::Language::ZhHk)]
+        {
+            let category = ssd_menus::options::Category::Video;
+            let view = ssd_menus::view::OptionsView {
+                category,
+                row: 3,
+                values: vec![0; category.rows().len()],
+                confirm: None,
+                video: None,
+                controls: None,
+            };
+            let mut list = ssd_menus::screens::options_screen(&view);
+            if let Some(table) = ssd_menus::ui_text::UiText::of(language) {
+                list.map_text(|text| table.get(text));
+            }
+            let mut art = Art::empty();
+            let pixels = offscreen
+                .draw(&[], |ui, _| {
+                    crate::theme::install(ui.ctx());
+                    let area = ui.available_rect_before_wrap();
+                    crate::hd::paint(ui, area, &list, &mut art);
+                })
+                .expect("the page draws");
+            if let Some(dir) = &dir {
+                let _ = std::fs::create_dir_all(dir);
+                ssd_hd::png::write_rgba(&dir.join(format!("options-video-{name}.png")), 1280, 720, &pixels)
+                    .expect("written");
+            }
+        }
+    }
+
     /// Draws every page (and a few states) offscreen. With `SSD_SETUP_PREVIEW_DIR` set, the pictures are written
     /// there for a look; without a GPU adapter the test has nothing to draw on and passes.
     #[test]

@@ -52,7 +52,7 @@ pub const ROWS: &[RowDef] = &[
     },
     RowDef {
         key: "video.look",
-        label: "Look",
+        label: "Picture look",
         group: "Picture",
         help: "Crisp is pixel art made bigger with smoothed diagonals. Smooth is a soft bicubic filter.",
         kind: Kind::Choice(&["Crisp", "Smooth"]),

@@ -133,4 +133,13 @@ mod tests {
         }
         assert!(UiText::of(Language::English).is_none());
     }
+
+    #[test]
+    fn the_video_pages_look_row_is_not_the_field_commands_look() {
+        let table = UiText::of(Language::ZhHk).unwrap();
+        let row = crate::options::video::ROWS.iter().find(|row| row.key == "video.look").unwrap();
+        assert_ne!(row.label, "Look");
+        assert_ne!(table.get(row.label), table.get("Look"));
+        assert!(table.get(row.label).is_some());
+    }
 }

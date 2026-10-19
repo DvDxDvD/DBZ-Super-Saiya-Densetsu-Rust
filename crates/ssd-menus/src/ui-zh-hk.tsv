@@ -297,6 +297,7 @@ Fullscreen	全螢幕
 How many times the PPU picture is redrawn in HD (2 to 8). Higher looks finer and costs more. The change asks for confirmation.	PPU畫面以HD重繪的倍數（2至8）。越高越精細，但較耗效能。更改時需要確認。
 Light	輕
 Picture	畫面
+Picture look	畫面風格
 Picture size	畫面大小
 Scale	倍數
 Scanlines	掃描線
@@ -343,4 +344,4 @@ HD menus, art and extra options.	HD選單、圖像及額外選項。
 Needs the HD pack (about 0.9 GB).	需要HD資源包（約0.9 GB）。
 Change it later: Options > Game in Enhanced, or hold Select and Start for 2 seconds in Classic.	之後可更改：加強模式中選「選項 > 遊戲」，經典模式中按住Select及Start 2秒。
 # Not translated on purpose: generic patterns ("{} {}", ", {} {}", "{}, {}, {} ({} x {})") would match any run.
-# Known clash: the Video page's "Look" row shows 調查 (the field command); it needs its own English label.
+# The Video page's row is "Picture look", not "Look": that word is the field command (調查).
