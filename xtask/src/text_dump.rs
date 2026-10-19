@@ -31,8 +31,9 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-/// Where the TSV goes without an argument (outside the repository: the text is ROM-derived).
-pub const DEFAULT_OUT: &str = r"D:\Code\zh-hk\strings-en.tsv";
+/// Where the TSV goes without an argument: the scratch folder, which git ignores (the text is ROM-derived and
+/// never tracked).
+pub const DEFAULT_OUT: &str = ".work/text/strings-en.tsv";
 
 /// The parsed command line: the TSV to write.
 #[derive(Debug, Clone, PartialEq, Eq)]

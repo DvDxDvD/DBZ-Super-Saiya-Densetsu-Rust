@@ -123,7 +123,7 @@ the slots `$1641` and `$1643` = `$80`, units), states `$85` while the names are 
 
     cargo run --release -p xtask -- text-dump [out.tsv]
 
-writes every string of the tables above, one row per page, to `out.tsv` (default `D:\Code\zh-hk\strings-en.tsv`) and the
+writes every string of the tables above, one row per page, to `out.tsv` (default `.work/text/strings-en.tsv`, which git ignores) and the
 lists of the 368 messages as the keys of their strings to `messages.tsv` beside it, and prints per table the entries, rows,
 failures (a pointer outside the ROM, a string without an end), rows with an unknown tile and lines longer than the window.
 The columns, the keys and the tokens are in `xtask/src/text_dump.rs`. Keys: `help:N`, `battle:N`, `str2:0xNNN`, `str3:0xNN`
