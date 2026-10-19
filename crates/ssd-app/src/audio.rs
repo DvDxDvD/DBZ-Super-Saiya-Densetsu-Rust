@@ -7,18 +7,36 @@ const MAX_LATENCY_MS: usize = 150;
 const TARGET_MS: f32 = 60.0;
 /// The most the playback speed is bent to get back to [`TARGET_MS`]: half a percent, which no ear hears.
 const MAX_BEND: f32 = 0.005;
-/// The least queue a frame may find before its samples go in: more than the device takes at a time (SDL's
-/// Android output asks for 20 ms) plus a little. Below it, the device's next asks would come up short over and
-/// over (a gap each time: crackle), and the queue cannot grow back by itself, since each ask takes all there is.
-const LOW_MS: f32 = 25.0;
+/// A queue a frame finds this low before its samples go in has (nearly) run dry: the frame is counted.
+const DRY_MS: f32 = 2.0;
+/// How often the sound's health goes to the log.
+const REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// The floats of silence (stereo) that bring a queue of `queued_ms` up to [`TARGET_MS`] when it is below
-/// [`LOW_MS`]; none otherwise. One short gap, once, instead of a gap at every ask of the device.
-pub(crate) fn refill_floats(queued_ms: f32) -> usize {
-    if queued_ms >= LOW_MS {
-        return 0;
+/// What the sound did since the last report: for the log, to tell the device, the game and the queue apart.
+#[derive(Debug)]
+struct Health {
+    since: std::time::Instant,
+    /// Stereo floats the game made.
+    floats: usize,
+    /// Frames flushed, and those that found the queue dry.
+    frames: u32,
+    dry: u32,
+    /// The least and the most queue a frame found, in milliseconds.
+    least: f32,
+    most: f32,
+}
+
+impl Health {
+    fn new() -> Self {
+        Self {
+            since: std::time::Instant::now(),
+            floats: 0,
+            frames: 0,
+            dry: 0,
+            least: f32::MAX,
+            most: 0.0,
+        }
     }
-    ((TARGET_MS - queued_ms) / 1000.0 * FREQUENCY as f32) as usize * 2
 }
 
 /// Milliseconds of `bytes` of stereo f32 samples.
@@ -56,8 +74,9 @@ pub struct Audio {
     settings: AudioSettings,
     /// The queue at the last frame's end, in milliseconds.
     queued_ms: f32,
-    /// The frames that found the queue under [`LOW_MS`] and filled it up with silence: each is a gap the ear hears.
+    /// The frames that found the queue dry (under [`DRY_MS`]): each may be a gap the ear hears.
     underruns: u32,
+    health: Health,
 }
 
 pub(crate) fn open_with<F>(open: F) -> Audio
@@ -71,6 +90,7 @@ where
         settings: AudioSettings::default(),
         queued_ms: 0.0,
         underruns: 0,
+        health: Health::new(),
     }
 }
 
@@ -86,6 +106,22 @@ impl Audio {
             };
             let device = audio.open_playback_device(&spec).map_err(|e| e.to_string())?;
             let stream = device.open_device_stream(Some(&spec)).map_err(|e| e.to_string())?;
+            // What the device really is: its rate and how many sample frames it takes at a time.
+            let mut real = sdl3::sys::audio::SDL_AudioSpec::default();
+            let mut frames = 0;
+            // SAFETY: the stream is alive; SDL fills the two out values.
+            let known = unsafe {
+                let id = sdl3::sys::audio::SDL_GetAudioStreamDevice(stream.raw());
+                sdl3::sys::audio::SDL_GetAudioDeviceFormat(id, &raw mut real, &raw mut frames)
+            };
+            if known {
+                log::info!(
+                    "sound device: {} Hz, {} channels, {frames} sample frames at a time ({:.1} ms)",
+                    real.freq,
+                    real.channels,
+                    frames as f32 * 1000.0 / real.freq.max(1) as f32
+                );
+            }
             // Prime the target's worth of silence so the first frames do not find the device dry.
             let silence = vec![0.0_f32; (FREQUENCY as f32 * TARGET_MS / 1000.0) as usize * 2];
             stream.put_data_f32(&silence).map_err(|e| e.to_string())?;
@@ -123,13 +159,28 @@ impl Audio {
             self.pending.clear();
             return;
         };
-        let mut queued = stream.queued_bytes().map_or(0, |q| q.max(0) as usize);
-        let refill = if self.pending.is_empty() { 0 } else { refill_floats(ms_of(queued)) };
-        if refill > 0 {
+        let queued = stream.queued_bytes().map_or(0, |q| q.max(0) as usize);
+        let found = ms_of(queued);
+        let health = &mut self.health;
+        health.floats += self.pending.len();
+        health.frames += 1;
+        health.least = health.least.min(found);
+        health.most = health.most.max(found);
+        if found < DRY_MS && !self.pending.is_empty() {
             self.underruns += 1;
-            if stream.put_data_f32(&vec![0.0; refill]).is_ok() {
-                queued += refill * 4;
-            }
+            health.dry += 1;
+        }
+        let elapsed = health.since.elapsed();
+        if elapsed >= REPORT_EVERY {
+            log::info!(
+                "sound: the game made {:.0} samples/s over {} flushes, {} dry; the queue a flush found {:.1} to {:.1} ms",
+                health.floats as f64 / 2.0 / elapsed.as_secs_f64(),
+                health.frames,
+                health.dry,
+                health.least,
+                health.most
+            );
+            *health = Health::new();
         }
         trim_for_latency(queued, FREQUENCY, &mut self.pending);
         if let Err(e) = stream.put_data_f32(&self.pending) {
@@ -181,17 +232,9 @@ mod tests {
     }
 
     #[test]
-    fn a_queue_shorter_than_an_ask_of_the_device_is_filled_up_to_the_target_once() {
-        assert_eq!(refill_floats(LOW_MS), 0, "enough: nothing added");
-        assert_eq!(
-            refill_floats(43.0),
-            0,
-            "the steady queue (the target less a frame) is left alone"
-        );
-        // one frame's worth (17 ms) is short of a 20 ms ask: 43 ms of silence, stereo
-        assert_eq!(refill_floats(17.0), (43.0 / 1000.0 * 48_000.0) as usize * 2);
-        assert_eq!(refill_floats(0.0), 2_880 * 2, "empty: the whole target");
+    fn bytes_of_stereo_floats_are_counted_in_milliseconds() {
         assert!((ms_of(48_000 * 2 * 4) - 1000.0).abs() < 1e-3);
+        assert!((ms_of(800 * 2 * 4) - 16.667).abs() < 1e-2, "a game frame's 800 samples");
     }
 
     #[test]
