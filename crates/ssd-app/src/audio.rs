@@ -7,6 +7,24 @@ const MAX_LATENCY_MS: usize = 150;
 const TARGET_MS: f32 = 60.0;
 /// The most the playback speed is bent to get back to [`TARGET_MS`]: half a percent, which no ear hears.
 const MAX_BEND: f32 = 0.005;
+/// The least queue a frame may find before its samples go in: more than the device takes at a time (SDL's
+/// Android output asks for 20 ms) plus a little. Below it, the device's next asks would come up short over and
+/// over (a gap each time: crackle), and the queue cannot grow back by itself, since each ask takes all there is.
+const LOW_MS: f32 = 25.0;
+
+/// The floats of silence (stereo) that bring a queue of `queued_ms` up to [`TARGET_MS`] when it is below
+/// [`LOW_MS`]; none otherwise. One short gap, once, instead of a gap at every ask of the device.
+pub(crate) fn refill_floats(queued_ms: f32) -> usize {
+    if queued_ms >= LOW_MS {
+        return 0;
+    }
+    ((TARGET_MS - queued_ms) / 1000.0 * FREQUENCY as f32) as usize * 2
+}
+
+/// Milliseconds of `bytes` of stereo f32 samples.
+fn ms_of(bytes: usize) -> f32 {
+    bytes as f32 / (FREQUENCY as f32 * 2.0 * 4.0) * 1000.0
+}
 
 /// The speed SDL plays the queue at for a queue of `queued_ms`: faster above the target, slower below, by up to
 /// [`MAX_BEND`]. The game makes its samples on the clock of its frames, the device takes them on its own (and a
@@ -38,7 +56,7 @@ pub struct Audio {
     settings: AudioSettings,
     /// The queue at the last frame's end, in milliseconds.
     queued_ms: f32,
-    /// The frames that found the queue empty (the device ran dry): each is a gap the ear hears.
+    /// The frames that found the queue under [`LOW_MS`] and filled it up with silence: each is a gap the ear hears.
     underruns: u32,
 }
 
@@ -105,17 +123,19 @@ impl Audio {
             self.pending.clear();
             return;
         };
-        let queued = stream.queued_bytes().map_or(0, |q| q.max(0) as usize);
-        if queued == 0 && !self.pending.is_empty() {
+        let mut queued = stream.queued_bytes().map_or(0, |q| q.max(0) as usize);
+        let refill = if self.pending.is_empty() { 0 } else { refill_floats(ms_of(queued)) };
+        if refill > 0 {
             self.underruns += 1;
+            if stream.put_data_f32(&vec![0.0; refill]).is_ok() {
+                queued += refill * 4;
+            }
         }
         trim_for_latency(queued, FREQUENCY, &mut self.pending);
         if let Err(e) = stream.put_data_f32(&self.pending) {
             log::warn!("dropping audio after SDL error: {e}");
         }
-        // bytes of stereo f32 to milliseconds
-        self.queued_ms =
-            (queued + self.pending.len() * 4) as f32 / (FREQUENCY as f32 * 2.0 * 4.0) * 1000.0;
+        self.queued_ms = ms_of(queued + self.pending.len() * 4);
         // SAFETY: the stream is alive (owned by `self`); the call only sets the stream's playback ratio.
         unsafe {
             sdl3::sys::audio::SDL_SetAudioStreamFrequencyRatio(
@@ -158,6 +178,20 @@ mod tests {
         assert!(rate_ratio(30.0) < 1.0, "a low one a little slower");
         assert!((rate_ratio(10_000.0) - 1.005).abs() < 1e-6);
         assert!((rate_ratio(0.0) - 0.995).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_queue_shorter_than_an_ask_of_the_device_is_filled_up_to_the_target_once() {
+        assert_eq!(refill_floats(LOW_MS), 0, "enough: nothing added");
+        assert_eq!(
+            refill_floats(43.0),
+            0,
+            "the steady queue (the target less a frame) is left alone"
+        );
+        // one frame's worth (17 ms) is short of a 20 ms ask: 43 ms of silence, stereo
+        assert_eq!(refill_floats(17.0), (43.0 / 1000.0 * 48_000.0) as usize * 2);
+        assert_eq!(refill_floats(0.0), 2_880 * 2, "empty: the whole target");
+        assert!((ms_of(48_000 * 2 * 4) - 1000.0).abs() < 1e-3);
     }
 
     #[test]
