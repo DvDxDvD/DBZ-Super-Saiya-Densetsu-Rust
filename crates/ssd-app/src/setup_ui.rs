@@ -96,8 +96,13 @@ mod tests {
                 .expect("the page draws");
             if let Some(dir) = &dir {
                 let _ = std::fs::create_dir_all(dir);
-                ssd_hd::png::write_rgba(&dir.join(format!("options-video-{name}.png")), 1280, 720, &pixels)
-                    .expect("written");
+                ssd_hd::png::write_rgba(
+                    &dir.join(format!("options-video-{name}.png")),
+                    1280,
+                    720,
+                    &pixels,
+                )
+                .expect("written");
             }
         }
     }

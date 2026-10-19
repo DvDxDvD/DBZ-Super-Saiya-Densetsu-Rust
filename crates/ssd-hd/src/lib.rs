@@ -33,8 +33,8 @@ pub mod png;
 mod screen;
 mod sprites;
 mod tooltip;
-pub mod translate;
 mod transfer;
+pub mod translate;
 pub mod world;
 
 use ssd_oracle::{CgramWrite, Color, FrameLog, LineEntry, OamWrite, VramWrite};

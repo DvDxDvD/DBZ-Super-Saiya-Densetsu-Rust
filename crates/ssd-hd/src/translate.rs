@@ -793,10 +793,17 @@ mod tests {
         let english = |cells: &[TextCell]| -> Vec<String> {
             name_parts(cells, &character).into_iter().map(|(english, _)| english).collect()
         };
-        assert_eq!(english(&row("LONG DISAPPEARS FOR ONE YEAR.", 0)), ["LONG DISAPPEARS FOR ONE YEAR."]);
+        assert_eq!(
+            english(&row("LONG DISAPPEARS FOR ONE YEAR.", 0)),
+            ["LONG DISAPPEARS FOR ONE YEAR."]
+        );
         assert_eq!(english(&row("FOR", 0)), ["FOR"], "a word alone is still a part");
         assert_eq!(english(&row("Goku   Piccolo", 0)), ["Goku", "Piccolo"], "a list's columns");
-        assert_eq!(english(&row("Piccol 01", 0)), ["Piccol", "01"], "a frame's tile before the level");
+        assert_eq!(
+            english(&row("Piccol 01", 0)),
+            ["Piccol", "01"],
+            "a frame's tile before the level"
+        );
         let two_rows = [row("Goku", 0), row("Gohan", 8)].concat();
         assert_eq!(english(&two_rows), ["Goku", "Gohan"]);
         let parts = name_parts(&two_rows, &character);
