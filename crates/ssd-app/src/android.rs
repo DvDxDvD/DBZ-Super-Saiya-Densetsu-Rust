@@ -60,6 +60,9 @@ pub extern "C" fn SDL_main(_argc: c_int, _argv: *mut *mut c_char) -> c_int {
     // One SDL context for the whole life of the activity: the setup screens and the game each open their window
     // from it, and the setup comes back when the game asks for it (Options, or Select + Start in Classic).
     let _sdl = sdl3::init();
+    if let Some(dir) = data_dir() {
+        unpack_assets(&dir);
+    }
     let mut forced = None;
     loop {
         let mut args = base.clone();
@@ -77,6 +80,42 @@ pub extern "C" fn SDL_main(_argc: c_int, _argv: *mut *mut c_char) -> c_int {
         match android_setup::take_request() {
             Some(request) => forced = Some(request),
             None => return 0,
+        }
+    }
+}
+
+/// The files a local build may carry in the APK's assets (`android/build-apk.sh`, `SSD_APK_ASSETS`), by their
+/// place in the data folder: the translation and its font, which a release build (no `run-as`) cannot be given
+/// otherwise. None is in the repository; an APK without them has no assets.
+const BUNDLED: &[&str] =
+    &["zh-hk.tsv", "fonts/NotoSansHK-Regular.otf", "fonts/LICENSE-NotoSansHK.txt"];
+
+/// Copies each file of [`BUNDLED`] the APK carries into `dir`, where it is missing or differs (a newer APK).
+fn unpack_assets(dir: &Path) {
+    for &name in BUNDLED {
+        let Ok(path) = std::ffi::CString::new(name) else { continue };
+        let mut size = 0;
+        // SAFETY: SDL is initialised; on Android a relative path is opened in the APK's assets. The buffer is SDL's
+        // and is freed below, after its bytes are copied.
+        let data = unsafe { sdl3::sys::iostream::SDL_LoadFile(path.as_ptr(), &mut size) };
+        if data.is_null() {
+            continue; // not in this APK
+        }
+        // SAFETY: `data` holds `size` bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) }.to_vec();
+        // SAFETY: allocated by SDL_LoadFile, freed once.
+        unsafe { sdl3::sys::stdinc::SDL_free(data) };
+        let target = dir.join(name);
+        if std::fs::read(&target).is_ok_and(|old| old == bytes) {
+            continue;
+        }
+        let written = target
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&target, &bytes));
+        match written {
+            Ok(()) => log::info!("{name}: copied from the APK ({} bytes)", bytes.len()),
+            Err(error) => log::warn!("{name}: cannot copy it from the APK: {error}"),
         }
     }
 }

@@ -33,4 +33,19 @@ rm -rf android/app/src/main/java/org
 mkdir -p android/app/src/main/java/org/libsdl
 cp -r "$sdl_java" android/app/src/main/java/org/libsdl/app
 
+# SSD_APK_ASSETS: a folder laid out as the data folder; its translation and font go into the APK's assets, and the
+# app copies them into its data folder at launch (a release build cannot be given them with run-as). Never commit
+# them, and keep such an APK to yourself: it carries the translation.
+assets=android/app/src/main/assets
+rm -rf "$assets"
+if [ -n "${SSD_APK_ASSETS:-}" ]; then
+    for name in zh-hk.tsv fonts/NotoSansHK-Regular.otf fonts/LICENSE-NotoSansHK.txt; do
+        if [ -f "$SSD_APK_ASSETS/$name" ]; then
+            mkdir -p "$assets/$(dirname "$name")"
+            cp "$SSD_APK_ASSETS/$name" "$assets/$name"
+            echo "bundled $name"
+        fi
+    done
+fi
+
 (cd android && ./gradlew --no-daemon "$gradle_task")

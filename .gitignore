@@ -31,6 +31,9 @@
 *.orig
 *~
 
+# The APK's assets are copied in by android/build-apk.sh from SSD_APK_ASSETS (the translation is never committed)
+/android/app/src/main/assets/
+
 # The HD art pack is a download of the releases page, not a file of the repository
 /hd-pack/
 /hd-pack.zip
