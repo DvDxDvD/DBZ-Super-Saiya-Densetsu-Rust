@@ -408,6 +408,21 @@ fn persist_touch(state: &mut WindowState) {
     }
 }
 
+/// Forgets the language in the PC settings file and the HD menus' copy of it, so the next start asks for it again.
+fn forget_language(state: &mut WindowState) {
+    let mut values = match state.hd.as_mut() {
+        Some(hd) => hd.pc_options_mut().clone(),
+        None => crate::options::read_settings().unwrap_or_default(),
+    };
+    values.remove(ssd_menus::Language::KEY);
+    if let Some(hd) = state.hd.as_mut() {
+        *hd.pc_options_mut() = values.clone();
+    }
+    if let Err(error) = crate::options::write_settings(&values) {
+        log::warn!("the language was not forgotten: {error:#}");
+    }
+}
+
 /// Which sidecar files a frame writes, as (the bags, the cheats): the files of the saves the frame wrote, and none
 /// while a replay plays (the replay's own events carry the bookkeeping, and the saves' sidecars stay as they are).
 fn sidecar_writes(frame: &ssd_game::menu::driver::Frame, playing: bool) -> (bool, bool) {
@@ -1866,9 +1881,12 @@ fn windowed_loop(
                     touch::Out::Haptic => touch::haptic(),
                     touch::Out::Persist => persist_touch(&mut state),
                     touch::Out::Quit => break 'main,
-                    touch::Out::Restart => {
+                    touch::Out::Language | touch::Out::Restart => {
+                        if out == touch::Out::Language {
+                            forget_language(&mut state);
+                        }
                         // The launch loop starts the game again (Android); a desktop run has none, and Restart
-                        // there waits for the next start.
+                        // and Change language there wait for the next start.
                         #[cfg(target_os = "android")]
                         {
                             crate::android_setup::request(crate::android_setup::Forced::Relaunch);

@@ -38,7 +38,7 @@ pub enum Forced {
     Mode,
     /// The HD pack install (Options > Game > Install the HD pack).
     Pack,
-    /// No page: the game starts again (the touch MENU's GAME page: Restart).
+    /// No page: the game starts again (the touch MENU's GAME page: Restart, Change language).
     Relaunch,
 }
 
