@@ -1932,6 +1932,11 @@ fn windowed_loop(
         }
         let now = video.now();
         let rate = fps.add(now, frames_run);
+        if state.touch.enabled && state.touch.settings.show_fps {
+            let (queued_ms, gaps) = audio.health();
+            state.touch.stats =
+                Some(format!("{rate:.1} fps · sound {queued_ms:.0} ms · {gaps} gaps"));
+        }
         note_wram(&mut state, machine);
         if any_verify(machine)
             && let Some(routine) = state.watch.update(&machine.hook_stats())

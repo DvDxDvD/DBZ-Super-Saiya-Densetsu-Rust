@@ -95,6 +95,8 @@ pub struct Settings {
     pub haptics: bool,
     pub auto_battle: bool,
     pub hide_pad: bool,
+    /// The frame rate and the sound buffer at the top of the screen.
+    pub show_fps: bool,
     pub land: [Place; 7],
     pub port: [Place; 7],
 }
@@ -107,6 +109,7 @@ impl Default for Settings {
             haptics: true,
             auto_battle: false,
             hide_pad: true,
+            show_fps: false,
             land: [Place::default(); 7],
             port: [Place::default(); 7],
         }
@@ -134,6 +137,7 @@ impl Settings {
             haptics: flag(values, keys::TOUCH_HAPTICS, true),
             auto_battle: flag(values, keys::TOUCH_AUTO_BATTLE, false),
             hide_pad: flag(values, keys::TOUCH_HIDE_PAD, true),
+            show_fps: flag(values, keys::TOUCH_SHOW_FPS, false),
             ..Self::default()
         };
         for (orient, places) in [(Orient::Landscape, &mut s.land), (Orient::Portrait, &mut s.port)]
@@ -168,6 +172,7 @@ impl Settings {
         put(keys::TOUCH_HAPTICS, i64::from(self.haptics), 1);
         put(keys::TOUCH_AUTO_BATTLE, i64::from(self.auto_battle), 0);
         put(keys::TOUCH_HIDE_PAD, i64::from(self.hide_pad), 1);
+        put(keys::TOUCH_SHOW_FPS, i64::from(self.show_fps), 0);
         for (orient, places) in [(Orient::Landscape, &self.land), (Orient::Portrait, &self.port)] {
             for g in Group::ALL {
                 let p = places[g.index()];
@@ -221,7 +226,13 @@ mod tests {
 
     #[test]
     fn choices_round_trip_and_wild_values_clamp() {
-        let mut s = Settings { stick: true, opacity: 40, haptics: false, ..Settings::default() };
+        let mut s = Settings {
+            stick: true,
+            opacity: 40,
+            haptics: false,
+            show_fps: true,
+            ..Settings::default()
+        };
         *s.place_mut(Orient::Landscape, Group::Face) =
             Place { x: Some(800), y: Some(500), scale: Some(150) };
         *s.place_mut(Orient::Portrait, Group::Dpad) = Place { x: None, y: None, scale: Some(120) };

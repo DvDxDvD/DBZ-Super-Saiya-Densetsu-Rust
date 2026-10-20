@@ -63,6 +63,7 @@ pub enum PBtn {
     OptAuto,
     OptHidePad,
     OptReset,
+    OptFps,
     Back,
     SizeDown,
     SizeUp,
@@ -134,6 +135,8 @@ pub struct Touch {
     pub speed_label: &'static str,
     pub slot: u8,
     in_battle: bool,
+    /// The line of the frame rate and the sound buffer, told by the host; drawn while Show FPS is on.
+    pub stats: Option<String>,
     geo: Geometry,
     fingers: Vec<Finger>,
     pressed: [bool; 12],
@@ -206,6 +209,7 @@ impl Touch {
             speed_label: "x1",
             slot: 1,
             in_battle: false,
+            stats: None,
             geo,
             fingers: Vec::new(),
             pressed: [false; 12],
@@ -407,6 +411,14 @@ impl Touch {
                 );
                 cell(&mut p, PBtn::OptReset, "Reset layout".into(), 1.0, 2.0, false);
                 cell(&mut p, PBtn::Back, "Back".into(), 0.0, 3.0, true);
+                cell(
+                    &mut p,
+                    PBtn::OptFps,
+                    format!("Show FPS: {}", if st.show_fps { "On" } else { "Off" }),
+                    1.0,
+                    3.0,
+                    false,
+                );
                 p.note = "Saved on this device only, in ssd.settings. Auto battle switches to the minimal layout in fights.";
                 Some(p)
             }
@@ -687,6 +699,10 @@ impl Touch {
             PBtn::Restart | PBtn::Quit => {
                 self.close_menu();
                 self.emit(if b == PBtn::Restart { Out::Restart } else { Out::Quit });
+            }
+            PBtn::OptFps => {
+                self.settings.show_fps = !self.settings.show_fps;
+                self.persist();
             }
             PBtn::OptHidePad => {
                 self.settings.hide_pad = !self.settings.hide_pad;

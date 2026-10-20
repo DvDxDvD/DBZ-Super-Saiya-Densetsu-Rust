@@ -74,6 +74,8 @@ pub struct Audio {
     settings: AudioSettings,
     /// The queue at the last frame's end, in milliseconds.
     queued_ms: f32,
+    /// The frames that found the queue dry (under [`DRY_MS`]): each may be a gap the ear hears.
+    underruns: u32,
     health: Health,
 }
 
@@ -87,6 +89,7 @@ where
         stream,
         settings: AudioSettings::default(),
         queued_ms: 0.0,
+        underruns: 0,
         health: Health::new(),
     }
 }
@@ -132,6 +135,11 @@ impl Audio {
         open_with(|| Err("muted".to_owned()))
     }
 
+    /// The queue at the last frame's end in milliseconds, and the frames so far that found it empty.
+    pub fn health(&self) -> (f32, u32) {
+        (self.queued_ms, self.underruns)
+    }
+
     /// Sets the volume and the output the samples are shaped by from now on.
     pub fn set_settings(&mut self, settings: AudioSettings) {
         self.settings = settings;
@@ -159,6 +167,7 @@ impl Audio {
         health.least = health.least.min(found);
         health.most = health.most.max(found);
         if found < DRY_MS && !self.pending.is_empty() {
+            self.underruns += 1;
             health.dry += 1;
         }
         let elapsed = health.since.elapsed();

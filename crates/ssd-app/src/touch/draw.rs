@@ -156,6 +156,16 @@ pub fn paint(p: &Painter, t: &Touch) {
     if let Some(band) = geo.band {
         p.rect_filled(band, 0.0, BAND);
     }
+    if t.settings.show_fps
+        && let Some(stats) = &t.stats
+    {
+        // At the top in the middle, clear of L and R; drawn even while the controls are hidden.
+        let at = pos2(geo.screen.center().x, geo.screen.min.y + 14.0);
+        let galley = p.layout_no_wrap(stats.clone(), theme::game(13.0), CREAM);
+        let back = Rect::from_center_size(at, galley.size() + vec2(12.0, 6.0));
+        p.rect_filled(back, radius(4.0), Color32::from_rgba_unmultiplied(0, 0, 0, 160));
+        p.galley(back.min + vec2(6.0, 3.0), galley, CREAM);
+    }
     if t.mode == Mode::Edit {
         // The picture dims while the layout is edited.
         p.rect_filled(geo.picture, 0.0, Color32::from_rgba_unmultiplied(0, 0, 0, 140));
