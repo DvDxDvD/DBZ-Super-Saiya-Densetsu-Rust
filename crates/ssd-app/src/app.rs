@@ -1846,6 +1846,16 @@ fn windowed_loop(
                     }
                     touch::Out::Haptic => touch::haptic(),
                     touch::Out::Persist => persist_touch(&mut state),
+                    touch::Out::Quit => break 'main,
+                    touch::Out::Restart => {
+                        // The launch loop starts the game again (Android); a desktop run has none, and Restart
+                        // there waits for the next start.
+                        #[cfg(target_os = "android")]
+                        {
+                            crate::android_setup::request(crate::android_setup::Forced::Relaunch);
+                            break 'main;
+                        }
+                    }
                 }
             }
             input.set_touch(state.touch.pressed());

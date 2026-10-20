@@ -236,10 +236,7 @@ fn window(p: &Painter, t: &Touch, panel: &Panel) {
         };
         p.rect_filled(b.rect, 0.0, fill);
         p.rect_stroke(b.rect, 0.0, Stroke::new(2.0, line), StrokeKind::Inside);
-        let centred = matches!(
-            b.id,
-            PBtn::SizeDown | PBtn::SizeUp | PBtn::OpDown | PBtn::OpUp | PBtn::HidePadToggle
-        );
+        let centred = matches!(b.id, PBtn::SizeDown | PBtn::SizeUp | PBtn::OpDown | PBtn::OpUp);
         let mut size = if centred { 22.0 } else { 17.0 };
         // Long labels shrink to fit the button.
         let probe = p.layout_no_wrap(b.label.clone(), theme::game(size), ink);
@@ -259,39 +256,18 @@ fn window(p: &Painter, t: &Touch, panel: &Panel) {
             );
         }
     }
-    match t.mode {
-        Mode::Menu => {
-            let y = r.min.y + 50.0 + 3.0 * 56.0 + 24.0;
-            wrapped(
-                p,
-                pos2(r.min.x + 14.0, y - 20.0),
-                "Hide controls when a gamepad is connected",
-                14.0,
-                r.width() - 130.0,
-                TEXT_DARK,
-            );
-        }
-        Mode::Edit => {
-            p.text(
-                r.min + vec2(16.0, 46.0),
-                Align2::LEFT_CENTER,
-                format!("Selected: {}", t.selected.name()),
-                theme::game(15.0),
-                DARK_RED,
-            );
-            let place = t.settings.place(t.orient(), t.selected);
-            let pct = place.scale.unwrap_or(100);
-            bar(p, r.min + vec2(0.0, 62.0), "Size", pct, SCALE_MIN, SCALE_MAX);
-            bar(
-                p,
-                r.min + vec2(0.0, 118.0),
-                "Opacity",
-                t.settings.opacity,
-                OPACITY_MIN,
-                OPACITY_MAX,
-            );
-        }
-        _ => {}
+    if t.mode == Mode::Edit {
+        p.text(
+            r.min + vec2(16.0, 46.0),
+            Align2::LEFT_CENTER,
+            format!("Selected: {}", t.selected.name()),
+            theme::game(15.0),
+            DARK_RED,
+        );
+        let place = t.settings.place(t.orient(), t.selected);
+        let pct = place.scale.unwrap_or(100);
+        bar(p, r.min + vec2(0.0, 62.0), "Size", pct, SCALE_MIN, SCALE_MAX);
+        bar(p, r.min + vec2(0.0, 118.0), "Opacity", t.settings.opacity, OPACITY_MIN, OPACITY_MAX);
     }
     let note_y = match t.mode {
         Mode::Edit => r.min.y + 176.0,

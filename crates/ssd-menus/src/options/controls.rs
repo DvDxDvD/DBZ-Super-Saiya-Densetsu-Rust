@@ -356,7 +356,7 @@ pub const TOUCH_OPACITY_STEPS: u8 = 17;
 /// The step of 75%.
 pub const TOUCH_OPACITY_DEFAULT: u8 = 11;
 
-/// Puts the touch controls' places and sizes back to the design (the five choices stay).
+/// Puts the touch controls' places and sizes back to the design (the choices stay).
 pub fn reset_touch_layout(values: &mut Values) {
     values.retain(|key| {
         !key.starts_with(TOUCH_PREFIX)
