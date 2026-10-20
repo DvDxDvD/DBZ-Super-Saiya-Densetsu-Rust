@@ -39,7 +39,7 @@ HD text, new menus, a 60-slot bag, cheats, fast-forward and save states.
 
 > [!NOTE]
 > **This fork: a Traditional Chinese (Hong Kong) fan translation.** The
-> [zh-HK pack](https://github.com/DvDxDvD/DBZ-Super-Saiya-Densetsu-Rust/releases/tag/zh-hk-pack-v1.0.0) is an
+> [zh-HK pack](https://github.com/DvDxDvD/DBZ-Super-Saiya-Densetsu-Rust/releases/tag/zh-hk-pack-v1.0.1) is an
 > unofficial, fan-made translation, **provided as is**, with names from the 文化傳信 Hong Kong comic. It holds no game
 > data. It needs a build with translation support: offered upstream in
 > [#6](https://github.com/JackRushante/DBZ-Super-Saiya-Densetsu-Rust/pull/6), or build the
