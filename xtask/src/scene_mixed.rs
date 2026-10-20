@@ -214,6 +214,8 @@ mod tests {
             field: true,
             shadow: false,
             sprites,
+            excluded: 0,
+            picture: false,
             matched: art.is_some(),
             recoloured: false,
             visible: 100,

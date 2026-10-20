@@ -10,9 +10,12 @@
 
 use anyhow::{Context, bail};
 use ssd_game::scripts::{self, REPLAYS};
+use ssd_hd::world::{FieldState, Rom, WideRun};
+use ssd_hd::{HdOptions, Look};
 use ssd_oracle::{Joypad, Machine, MemorySaveStore, NullAudio, Symbols};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// The command line of `shots`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,11 +48,23 @@ pub struct Args {
     /// Write the battery SRAM (8 KiB) at the end: a save the game wrote itself, when the script
     /// ended with the map menu's Save.
     pub sram_out: Option<PathBuf>,
+    /// Draw the Enhanced picture at this scale (2 to 8) instead of the PPU frame, from the pack's
+    /// art: the size the game's window shows. `--state-in` with it is how a saved moment is seen in
+    /// HD without a window.
+    pub hd_scale: Option<u32>,
+    /// The HD pack folder of `--hd-scale` [default: the converter's under the cache directory].
+    pub hd_pack: Option<PathBuf>,
+    /// With `--hd-scale`: write the field, fighter and effect poses the frames show with no art
+    /// (`field-missing-<key>.json`, as `hd-tour --gaps` does), for making that art.
+    pub gaps: Option<PathBuf>,
+    /// With `--gaps`: also map this box of the picture, `x,y,w,h` in the wide view's pixels: for
+    /// each pixel the layer on top (OAM `O`, BG `U`/`L`/`H`/`B`) and a letter per picture.
+    pub box_map: Option<(i32, i32, usize, usize)>,
 }
 
 /// Parses `<script> [--frames a,b,c] [--every N] [--upto N] [--out dir] [--sheet COLS]
 /// [--no-png] [--peek a,b] [--watch a,b] [--watch-from N] [--state-in f] [--state-out f]
-/// [--wram-out f] [--sram f] [--sram-out f]`.
+/// [--wram-out f] [--sram f] [--sram-out f] [--hd-scale N] [--pack DIR] [--gaps DIR]`.
 ///
 /// # Errors
 ///
@@ -72,6 +87,10 @@ pub fn parse_args(args: &[&str]) -> Result<Args, String> {
         watch: Vec::new(),
         watch_from: None,
         sram_out: None,
+        hd_scale: None,
+        hd_pack: None,
+        gaps: None,
+        box_map: None,
     };
     let number = |flag: &str, v: Option<&&str>| -> Result<u64, String> {
         let v = v.ok_or(format!("{flag} needs a value"))?;
@@ -124,6 +143,28 @@ pub fn parse_args(args: &[&str]) -> Result<Args, String> {
             }
             "--wram-out" => {
                 parsed.wram_out = Some(PathBuf::from(it.next().ok_or("--wram-out needs a file")?));
+            }
+            "--hd-scale" => {
+                let scale = u32::try_from(number(arg, it.next())?).unwrap_or(4).clamp(2, 8);
+                parsed.hd_scale = Some(scale);
+            }
+            "--pack" => {
+                parsed.hd_pack = Some(PathBuf::from(it.next().ok_or("--pack needs a folder")?));
+            }
+            "--gaps" => {
+                parsed.gaps = Some(PathBuf::from(it.next().ok_or("--gaps needs a folder")?));
+            }
+            "--box" => {
+                let v = it.next().ok_or("--box needs x,y,w,h")?;
+                let parts: Vec<i32> = v
+                    .split(',')
+                    .map(|p| p.trim().parse::<i32>())
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| "--box takes x,y,w,h".to_owned())?;
+                if parts.len() != 4 {
+                    return Err("--box takes x,y,w,h".to_owned());
+                }
+                parsed.box_map = Some((parts[0], parts[1], parts[2] as usize, parts[3] as usize));
             }
             option if option.starts_with("--") => return Err(format!("unknown option `{option}`")),
             script if parsed.script.is_empty() => script.clone_into(&mut parsed.script),
@@ -383,6 +424,7 @@ pub fn run(
     symbols: &Symbols,
     args: &Args,
     root: &Path,
+    hd_pack: &Path,
     out: &mut dyn std::io::Write,
 ) -> anyhow::Result<()> {
     let script = if args.script.ends_with(".ssdreplay") {
@@ -421,6 +463,35 @@ pub fn run(
     let watches = resolve_peeks(symbols, &args.watch)?;
     let mut last_seen: Vec<Option<u8>> = vec![None; watches.len()];
     machine.set_cpu_write_log(!watches.is_empty());
+    // `--hd-scale`: draw the Enhanced picture from the pack instead of the PPU frame.
+    let mut hd_font: Option<Arc<ssd_hd::Font>> = None;
+    let mut hd = match args.hd_scale {
+        Some(scale) => {
+            let pack = crate::hd_art_run::open_pack(hd_pack)?;
+            let font = Arc::new(ssd_hd::Font::standard_with_pack(rom, Some(&pack.dir))?);
+            hd_font = Some(Arc::clone(&font));
+            let mut run = WideRun::new(rom);
+            run.set_art(Some(pack));
+            run.set_font(Some(font));
+            machine.set_line_log(true);
+            Some((run, HdOptions { scale, look: Look::Crisp }))
+        }
+        None => None,
+    };
+    // `--gaps`: a second run that counts what each frame shows, to write the poses with no art.
+    let mut gaps_run = match (&args.gaps, args.hd_scale) {
+        (Some(_), Some(_)) => {
+            let pack = crate::hd_art_run::open_pack(hd_pack)?;
+            let mut run = WideRun::new(rom);
+            run.set_art(Some(pack));
+            run.set_font(hd_font.clone());
+            run.set_tally(true);
+            Some(run)
+        }
+        _ => None,
+    };
+    let mut gaps_written: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let gaps_options = HdOptions { scale: args.hd_scale.unwrap_or(4), look: Look::Crisp };
     let wanted = |frame: u64| {
         args.frames.contains(&frame)
             || args.every.is_some_and(|n| frame.is_multiple_of(n) && frame > 0)
@@ -468,11 +539,189 @@ pub fn run(
                 }
             }
         }
-        if !wanted(frame) {
-            continue;
+        let mut line: String;
+        let mut picture: Option<(u32, u32, Vec<u8>)> = None;
+        if let Some((run, options)) = hd.as_mut() {
+            if !wanted(frame) {
+                run.note(machine.wram(), machine.frame_log());
+                if let Some(tally) = gaps_run.as_mut() {
+                    let _ = tally.note_hd(machine.wram(), machine.frame_log(), gaps_options);
+                }
+                continue;
+            }
+            match run.note_hd(machine.wram(), machine.frame_log(), *options) {
+                Some(shown) => {
+                    let (w, h) = (shown.picture.width, shown.picture.height);
+                    picture = Some((w, h, shown.picture.rgba));
+                    line = format!("frame {frame:6} hd {w}x{h}");
+                }
+                None => line = format!("frame {frame:6} hd not drawn"),
+            }
+            if let Some(tally) = gaps_run.as_mut() {
+                let shown = tally.note_hd(machine.wram(), machine.frame_log(), gaps_options);
+                if let Some(dir) = &args.gaps {
+                    if let Some(picture) = shown.as_ref() {
+                        let _ = std::fs::write(
+                            dir.join(format!("gaps-run-{frame:06}.png")),
+                            ssd_hd::png::encode_rgba(
+                                picture.picture.width,
+                                picture.picture.height,
+                                &picture.picture.rgba,
+                            ),
+                        );
+                    }
+                    let mode = machine.wram()[0x24];
+                    let field = FieldState::from_wram(machine.wram());
+                    if let Some(log) = machine.frame_log() {
+                        let scene = ssd_hd::world::classify(Rom(rom), mode, field.as_ref(), log);
+                        writeln!(
+                            out,
+                            "frame {frame} mode {mode:02X} scene {scene:?} field_frame {}",
+                            matches!(mode & 0x7F, 0x00 | 0x01 | 0x03 | 0x05 | 0x06)
+                        )?;
+                    }
+                    let stats = tally.art_stats();
+                    for p in &stats.poses {
+                        let kind = if p.field {
+                            "field"
+                        } else if p.fighter {
+                            "fighter"
+                        } else {
+                            "effect"
+                        };
+                        writeln!(
+                            out,
+                            "pose {:016x} {kind} {:<6} pal {} vis {:5} art {:?} src {:?} pic {} exc {:016x}",
+                            p.key,
+                            if p.matched { "art" } else { "NONE" },
+                            p.palette,
+                            p.visible,
+                            p.art,
+                            p.source,
+                            if p.picture { "P" } else { "-" },
+                            p.excluded
+                        )?;
+                    }
+                    for p in tally.portrait_uses() {
+                        writeln!(
+                            out,
+                            "portrait {} at {},{} cells {:016x} pics {:?} rows {:?} dist {} bare {}",
+                            p.name(),
+                            p.x,
+                            p.y,
+                            p.cells,
+                            p.pictures,
+                            p.rows,
+                            p.distance,
+                            p.bare
+                        )?;
+                        if let Some(fault) = p.fault() {
+                            writeln!(out, "portrait fault: {fault}")?;
+                        }
+                        let box_map = tally.picture_map(p.x, p.y, 32, 32);
+                        let mut letters: Vec<(u32, char)> = Vec::new();
+                        let mut next = b'A';
+                        for line in box_map.chunks(32) {
+                            let mut row = String::new();
+                            for (kind, picture, _) in line {
+                                let ch = if let Some(picture) = *picture {
+                                    match letters.iter().find(|(id, _)| *id == picture) {
+                                        Some((_, letter)) => *letter,
+                                        None => {
+                                            let letter = char::from(next);
+                                            next = next.saturating_add(1).min(b'Z');
+                                            letters.push((picture, letter));
+                                            letter
+                                        }
+                                    }
+                                } else {
+                                    char::from(*kind)
+                                };
+                                row.push(ch);
+                            }
+                            writeln!(out, "map {row}")?;
+                        }
+                        writeln!(out, "map pictures {letters:?}")?;
+                    }
+                    if let Some((x, y, w, h)) = args.box_map {
+                        let map = tally.picture_map(x, y, w, h);
+                        let mut letters: Vec<(u32, char)> = Vec::new();
+                        let mut next = b'A';
+                        for line in map.chunks(w) {
+                            let mut row = String::new();
+                            for (kind, picture, _) in line {
+                                let ch = if let Some(picture) = *picture {
+                                    match letters.iter().find(|(id, _)| *id == picture) {
+                                        Some((_, letter)) => *letter,
+                                        None => {
+                                            let letter = char::from(next);
+                                            next = next.saturating_add(1).min(b'Z');
+                                            letters.push((picture, letter));
+                                            letter
+                                        }
+                                    }
+                                } else {
+                                    char::from(*kind)
+                                };
+                                row.push(ch);
+                            }
+                            writeln!(out, "box {row}")?;
+                        }
+                        writeln!(out, "box pictures {letters:?}")?;
+                    }
+                    for (entry, bg, mode, map_base, char_base, size, field) in
+                        tally.bg_slot_report()
+                    {
+                        writeln!(
+                            out,
+                            "bg entry {entry} bg {bg} mode {mode:02X} map {map_base:04X} char \
+                             {char_base:04X} size {size} field {field}"
+                        )?;
+                    }
+                    if let Some(log) = machine.frame_log()
+                        && let Some(line) = log.entries.first()
+                    {
+                        let regs = &line.regs;
+                        writeln!(
+                            out,
+                            "regs mode {} main {:?} sizes {:?} maps {:04X?} chars {:04X?} scrolls h {:04X?} v {:04X?}",
+                            regs.bg_mode,
+                            regs.main_bg,
+                            regs.bg_screen_size,
+                            regs.bg_map_base,
+                            regs.bg_char_base,
+                            regs.bg_h_scroll,
+                            regs.bg_v_scroll
+                        )?;
+                    }
+                    if let Some(log) = machine.frame_log()
+                        && log
+                            .entries
+                            .iter()
+                            .any(|e| !e.regs.forced_blanking && e.regs.bg_mode == 7)
+                    {
+                        let key = ssd_hd::mode7art::plane_key(&log.vram);
+                        writeln!(
+                            out,
+                            "mode7 plane key {key:016x} vram writes {}",
+                            log.vram_writes.len()
+                        )?;
+                        let plane = dir.join(format!("m7-{key:016x}"));
+                        if !plane.join("key.txt").is_file() {
+                            crate::hd_mode7::dump_log(log, machine.wram()[0x24], &plane, out)?;
+                        }
+                    }
+                    write_gaps(dir, &tally.tally(), frame, &mut gaps_written);
+                }
+            }
+        } else {
+            if !wanted(frame) {
+                continue;
+            }
+            let (w, h, pixels) = rgba(&machine);
+            line = format!("frame {frame:6} crc {:08X}", ssd_rom::crc32(&pixels));
+            picture = Some((w, h, pixels));
         }
-        let (w, h, pixels) = rgba(&machine);
-        let mut line = format!("frame {frame:6} crc {:08X}", ssd_rom::crc32(&pixels));
         for p in &peeks {
             let bytes = &machine.wram()[p.offset..p.offset + p.size];
             let value = bytes.iter().rev().fold(String::new(), |mut text, b| {
@@ -481,21 +730,25 @@ pub fn run(
             });
             let _ = write!(line, " {}={value}", p.label);
         }
-        if !args.no_png {
-            if args.sheet.is_some() {
-                tiles.push(halve(w, h, &pixels));
+        if !args.no_png
+            && let Some((w, h, pixels)) = &picture
+        {
+            if args.sheet.is_some() && hd.is_none() {
+                tiles.push(halve(*w, *h, pixels));
                 labels.push(frame);
             } else {
                 std::fs::create_dir_all(&dir)?;
                 let path = dir.join(format!("f{frame:06}.png"));
-                std::fs::write(&path, encode_png(w, h, &pixels))
+                std::fs::write(&path, encode_png(*w, *h, pixels))
                     .with_context(|| format!("writing {}", path.display()))?;
                 let _ = write!(line, " {}", path.display());
             }
         }
         writeln!(out, "{line}")?;
     }
-    if let (Some(cols), false) = (args.sheet, tiles.is_empty()) {
+    if hd.is_none()
+        && let (Some(cols), false) = (args.sheet, tiles.is_empty())
+    {
         let (w, h, pixels) = sheet(&tiles, cols);
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("sheet_{}.png", labels[0]));
@@ -526,6 +779,57 @@ pub fn run(
         writeln!(out, "state at frame {} written to {}", machine.frame_count(), path.display())?;
     }
     Ok(())
+}
+
+/// Writes the poses of `tally` that no art holds, one JSON per pose and each pose once (see
+/// `hd-tour --gaps`): the key, the palette-index array and the palette row the art is made from.
+fn write_gaps(
+    dir: &Path,
+    tally: &ssd_hd::FrameTally,
+    frame: u64,
+    written: &mut std::collections::HashSet<String>,
+) {
+    let _ = std::fs::create_dir_all(dir);
+    for shape in &tally.shapes {
+        let name = format!(
+            "{}-{}-{:016x}",
+            if shape.field {
+                "field"
+            } else if shape.fighter {
+                "fighter"
+            } else {
+                "effect"
+            },
+            if shape.fate == ssd_hd::Fate::Partial { "partial" } else { "missing" },
+            shape.key
+        );
+        if !written.insert(name.clone()) || dir.join(format!("{name}.json")).exists() {
+            continue;
+        }
+        if !shape.rgba.is_empty() {
+            let _ = ssd_hd::png::write_rgba(
+                &dir.join(format!("{name}.png")),
+                shape.w as u32,
+                shape.h as u32,
+                &shape.rgba,
+            );
+        }
+        let json = serde_json::json!({
+            "key": format!("{:016x}", shape.key),
+            "fighter": shape.fighter,
+            "field": shape.field,
+            "shadow": shape.shadow,
+            "fate": format!("{:?}", shape.fate),
+            "width": shape.w,
+            "height": shape.h,
+            "origin": [shape.org.0, shape.org.1],
+            "oam_palette": shape.palette,
+            "palette_row": shape.row,
+            "indexes": shape.arr,
+            "first_seen": format!("state frame {frame}"),
+        });
+        let _ = std::fs::write(dir.join(format!("{name}.json")), json.to_string());
+    }
 }
 
 #[cfg(test)]

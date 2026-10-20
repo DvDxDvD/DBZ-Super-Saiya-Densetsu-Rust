@@ -117,8 +117,21 @@ pub fn dump(
     anyhow::ensure!(machine.frame_count() > frame, "the replay has no frame {frame}");
     let log = machine.frame_log().context("no render log")?;
     anyhow::ensure!(shows_plane(log), "frame {frame} shows no Mode 7 plane");
+    dump_log(log, machine.wram()[GAME_MODE], out_dir, out)?;
+    Ok(0)
+}
+
+/// What [`dump`] writes, for the frame `log` (`game_mode`, the game's mode byte, is printed with the
+/// key); `shots --gaps` calls it for a saved moment that shows a plane.
+pub fn dump_log(
+    log: &FrameLog,
+    game_mode: u8,
+    out_dir: &Path,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(out_dir)?;
     let key = plane_key(&log.vram);
-    writeln!(out, "key {key:016X}, game mode {:02X}", machine.wram()[GAME_MODE])?;
+    writeln!(out, "key {key:016X}, game mode {game_mode:02X}")?;
     let backdrop = expand(log.cgram_start[0]);
     let mut src = Vec::with_capacity(1024 * 1024 * 4);
     let mut idx = Vec::with_capacity(1024 * 1024 * 4);
@@ -185,5 +198,5 @@ pub fn dump(
         }
         last = Some(now);
     }
-    Ok(0)
+    Ok(())
 }

@@ -49,15 +49,17 @@ impl<'a> GameView<'a> {
     }
 
     /// The Enhanced picture `picture`, shown with the pixel aspect of `frame`, the machine's frame
-    /// it was made from: the picture keeps the proportions of the Classic one.
+    /// it was made from: the picture keeps the proportions of the Classic one. `smooth` draws it
+    /// with linear filtering (the Video page's smooth look); the crisp look keeps every pixel as
+    /// it is.
     #[must_use]
-    pub fn enhanced(picture: &'a HdFrame, frame: &Frame<'_>) -> Self {
+    pub fn enhanced(picture: &'a HdFrame, frame: &Frame<'_>, smooth: bool) -> Self {
         Self {
             rgba: &picture.rgba,
             width: picture.width,
             height: picture.height,
             pixel_aspect: pixel_aspect(frame),
-            smooth: true,
+            smooth,
             logical: Some([
                 picture.logical.x,
                 picture.logical.y,

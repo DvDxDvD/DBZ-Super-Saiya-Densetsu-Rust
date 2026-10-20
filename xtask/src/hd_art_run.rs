@@ -307,7 +307,7 @@ pub fn parse_args(args: &[&str]) -> Result<Args, String> {
     }
 }
 
-fn open_pack(dir: &Path) -> anyhow::Result<Arc<Pack>> {
+pub(crate) fn open_pack(dir: &Path) -> anyhow::Result<Arc<Pack>> {
     let pack = Pack::open(dir).with_context(|| format!("opening the pack {}", dir.display()))?;
     anyhow::ensure!(
         !pack.art.pictures().is_empty() || !pack.art.objects().is_empty(),

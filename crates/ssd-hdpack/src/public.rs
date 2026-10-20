@@ -117,6 +117,14 @@ impl Masks {
         self.poses.is_empty()
     }
 
+    /// Every outline the file holds: its key, the width and height of its box and its bits (a bit
+    /// per pixel, the first pixel in the low bit of the first byte).
+    pub fn entries(&self) -> impl Iterator<Item = (u64, u16, u16, &[u8])> {
+        self.poses
+            .iter()
+            .map(|(key, (width, height, bits))| (*key, *width, *height, bits.as_slice()))
+    }
+
     /// The file: the magic, the count, then for each outline its key, size and bits, and the
     /// CRC-32 of all of it.
     #[must_use]

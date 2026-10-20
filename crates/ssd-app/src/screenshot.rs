@@ -86,7 +86,7 @@ pub fn save(
     rgba: &[u8],
 ) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let bytes = ssd_hd::png::encode_rgba(width, height, rgba);
+    let bytes = ssd_hd::png::encode_rgba_compressed(width, height, rgba);
     for n in 1..10_000 {
         let path = dir.join(file_name(stamp, n));
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -101,17 +101,41 @@ pub fn save(
     Err(std::io::Error::other("too many screenshots in the same second"))
 }
 
+/// The name of the state taken beside the screenshot at `png`: the same name with `.ssdstate`.
+#[must_use]
+pub fn state_name(png: &Path) -> PathBuf {
+    png.with_extension("ssdstate")
+}
+
+/// Writes `state` (the machine's own bytes, as `states\slotN.ssdstate`) beside the screenshot at
+/// `png`, through a temporary file so a crash leaves no truncated state. Returns the path written.
+///
+/// # Errors
+///
+/// The folder or the file cannot be written.
+pub fn save_state(png: &Path, state: &[u8]) -> std::io::Result<PathBuf> {
+    let path = state_name(png);
+    let tmp = path.with_extension("ssdstate.tmp");
+    let written = std::fs::write(&tmp, state)
+        .and_then(|()| std::fs::rename(&tmp, &path))
+        .map_err(|e| std::io::Error::new(e.kind(), format!("writing {}: {e}", path.display())));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written.map(|()| path)
+}
+
 /// The pixels of a frame as RGBA bytes.
 #[must_use]
 pub fn frame_rgba(frame: &ssd_oracle::Frame<'_>) -> Vec<u8> {
     frame.pixels.iter().flat_map(|c| [c.r, c.g, c.b, 255]).collect()
 }
 
-/// The text of the notice after a screenshot.
+/// The text of the notice after a screenshot (the picture and the state beside it).
 #[must_use]
-pub fn notice(result: &std::io::Result<PathBuf>) -> String {
+pub fn notice(result: &std::io::Result<(PathBuf, PathBuf)>) -> String {
     match result {
-        Ok(path) => format!("Screenshot saved: {}", path.display()),
+        Ok((png, _state)) => format!("Screenshot + state saved: {}", png.display()),
         Err(e) => format!("Screenshot failed: {e}"),
     }
 }
@@ -218,7 +242,7 @@ mod tests {
         assert_eq!(first.file_name().unwrap(), "dbz-20261016-090503.png");
         assert_eq!(second.file_name().unwrap(), "dbz-20261016-090503-2.png");
         assert_eq!(third.file_name().unwrap(), "dbz-20261016-090503-3.png");
-        let (w, h, pixels) = ssd_hd::png::decode_rgba(&std::fs::read(&first).unwrap());
+        let (w, h, pixels) = ssd_hd::png::read_rgba(&std::fs::read(&first).unwrap()).unwrap();
         assert_eq!((w, h), (2, 1));
         assert_eq!(pixels, rgba);
     }
@@ -232,7 +256,7 @@ mod tests {
         assert_eq!(rgba.len(), (w * h * 4) as usize);
         let dir = tempfile::tempdir().unwrap();
         let path = save(dir.path(), STAMP, w, h, &rgba).unwrap();
-        let (sw, sh, pixels) = ssd_hd::png::decode_rgba(&std::fs::read(path).unwrap());
+        let (sw, sh, pixels) = ssd_hd::png::read_rgba(&std::fs::read(path).unwrap()).unwrap();
         assert_eq!((sw, sh), (w, h));
         assert_eq!(pixels, rgba);
     }
@@ -255,9 +279,33 @@ mod tests {
 
     #[test]
     fn the_notice_names_the_path_or_the_error() {
-        let ok = Ok(PathBuf::from("a/b.png"));
-        assert!(notice(&ok).starts_with("Screenshot saved: "));
+        let ok = Ok((PathBuf::from("a/b.png"), PathBuf::from("a/b.ssdstate")));
+        assert!(notice(&ok).starts_with("Screenshot + state saved: "));
         let failed = Err(std::io::Error::other("disk full"));
         assert_eq!(notice(&failed), "Screenshot failed: disk full");
+    }
+
+    #[test]
+    fn the_state_is_written_beside_the_screenshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let rgba = [10_u8, 20, 30, 255, 40, 50, 60, 255];
+        let png = save(dir.path(), STAMP, 2, 1, &rgba).unwrap();
+        let state = [1_u8, 2, 3, 4, 5];
+        let path = save_state(&png, &state).unwrap();
+        assert_eq!(path.file_name().unwrap(), "dbz-20261016-090503.ssdstate");
+        assert_eq!(std::fs::read(&path).unwrap(), state);
+    }
+
+    #[test]
+    fn a_screenshot_is_written_compressed() {
+        // A flat image stores to almost nothing under stored deflate too, so use noise.
+        let (w, h) = (64_u32, 64_u32);
+        let rgba: Vec<u8> = (0..w * h * 4).map(|i| u8::try_from(i % 251).unwrap()).collect();
+        let stored = ssd_hd::png::encode_rgba(w, h, &rgba);
+        let compressed = ssd_hd::png::encode_rgba_compressed(w, h, &rgba);
+        assert!(compressed.len() < stored.len(), "{} !< {}", compressed.len(), stored.len());
+        let (dw, dh, pixels) = ssd_hd::png::read_rgba(&compressed).unwrap();
+        assert_eq!((dw, dh), (w, h));
+        assert_eq!(pixels, rgba);
     }
 }

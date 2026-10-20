@@ -24,6 +24,7 @@ mod hd_margins;
 mod hd_mode7;
 mod hd_pack;
 mod hd_pack_public;
+mod hd_pack_to_store;
 mod hd_parity;
 mod hd_wide;
 mod make_replays;
@@ -474,6 +475,33 @@ fn hd_pack_public(args: &[&str]) -> anyhow::Result<ExitCode> {
         return Ok(usage());
     }
     Ok(code)
+}
+
+/// Puts the art of a shared pack back into the art store (see [`hd_pack_to_store`]).
+fn hd_pack_to_store(args: &[&str]) -> anyhow::Result<ExitCode> {
+    let mut pack = None;
+    let mut store = None;
+    let mut masks = None;
+    let mut rest = args.iter();
+    while let Some(&arg) = rest.next() {
+        match arg {
+            "--masks" => masks = rest.next().map(|&dir| std::path::PathBuf::from(dir)),
+            other if !other.starts_with("--") => {
+                if pack.is_none() {
+                    pack = Some(std::path::PathBuf::from(other));
+                } else if store.is_none() {
+                    store = Some(std::path::PathBuf::from(other));
+                }
+            }
+            _ => {}
+        }
+    }
+    let (Some(pack), Some(store)) = (pack, store) else {
+        eprintln!("hd-pack-to-store: <pack.zip|pack dir> <art store> [--masks <dir>]");
+        return Ok(usage());
+    };
+    hd_pack_to_store::run(&pack, &store, masks.as_deref(), &mut std::io::stdout())?;
+    Ok(ExitCode::SUCCESS)
 }
 
 /// What the HD art does in the replays, or its frames (see [`hd_art_run`]).
@@ -1027,7 +1055,8 @@ fn shots(args: &[&str]) -> anyhow::Result<ExitCode> {
     let root = repo_root()?;
     let symbols = ssd_oracle::Symbols::load(root.join("re").join("symbols.toml"))?;
     let rom = cached_rom()?;
-    shots::run(&rom, &symbols, &args, &root, &mut std::io::stdout())?;
+    let hd_pack = args.hd_pack.clone().unwrap_or_else(|| hd_pack_dir(&rom));
+    shots::run(&rom, &symbols, &args, &root, &hd_pack, &mut std::io::stdout())?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1134,6 +1163,9 @@ fn usage() -> ExitCode {
         "       cargo run --release -p xtask -- hd-pack-public <art store> <out.zip> [--masks <dir>]... [--sources <dir>] [--maps-quality N] [--revision TEXT] [--jobs N] [--without-masks] [--no-verify] [--keep-reference <dir>]"
     );
     eprintln!(
+        "       cargo run --release -p xtask -- hd-pack-to-store <pack.zip|pack dir> <art store> [--masks <dir>]"
+    );
+    eprintln!(
         "       cargo run --release -p xtask -- hd-maps dump [--out DIR] [--maps N,..] [--frames N] [--jobs N] [--base SAVE]"
     );
     eprintln!("       cargo run --release -p xtask -- hd-maps scan [--every N] [replay|dir...]");
@@ -1184,7 +1216,7 @@ fn usage() -> ExitCode {
         "       cargo run --release -p xtask -- probe <symbol> | --address A --returns rts|rtl [--name n] [--entry-m8 b] [--entry-x8 b] [--cycles N] [--samples N] [--dir D] [--verify [--quick]]"
     );
     eprintln!(
-        "       cargo run --release -p xtask -- shots <script|timeline.txt> [--frames a,b|--every N] [--upto N] [--sheet COLS] [--peek v,a] [--state-in f] [--state-out f] [--wram-out f] [--mesen-inputs f] [--out dir] [--no-png]"
+        "       cargo run --release -p xtask -- shots <script|timeline.txt> [--frames a,b|--every N] [--upto N] [--sheet COLS] [--peek v,a] [--state-in f] [--state-out f] [--wram-out f] [--mesen-inputs f] [--hd-scale N] [--pack DIR] [--gaps DIR] [--out dir] [--no-png]"
     );
     eprintln!(
         "       cargo run --release -p xtask -- catalogue [--kind characters|cards|enemies|items|attacks|encounters]"
@@ -1282,6 +1314,7 @@ fn main() -> anyhow::Result<ExitCode> {
         ["hd-import", rest @ ..] => hd_import(rest),
         ["export-public", rest @ ..] => export_public(rest),
         ["hd-pack-public", rest @ ..] => hd_pack_public(rest),
+        ["hd-pack-to-store", rest @ ..] => hd_pack_to_store(rest),
         ["hd-coverage", rest @ ..] => hd_coverage(rest),
         ["hd-tour", rest @ ..] => hd_tour(rest),
         ["hd-maps", rest @ ..] => hd_maps(rest),

@@ -211,6 +211,11 @@ pub struct PoseStat {
     pub shadow: bool,
     /// The OAM entries the pose draws or hides (bit n: entry n), the ones another pose took not counted.
     pub sprites: u128,
+    /// The OAM entries the pose had but another pose took (the ones `sprites` leaves out).
+    pub excluded: u128,
+    /// The pose's sprites mostly show a picture's pixels (a portrait drawn as sprites): it is that
+    /// picture, not a pose of its own (see `is_picture`).
+    pub picture: bool,
     /// The art index has art for the pose, and it was drawn.
     pub matched: bool,
     /// The art was made for another palette than the pose's, and was drawn recoloured.
@@ -747,6 +752,57 @@ impl ArtState {
         (&self.lookup, &mut self.pixels)
     }
 
+    /// The background slots of the last picture, one row per slot: the index entry, its BG, the
+    /// registers its layer was shown with (mode, map base, char base, size) and whether it is a
+    /// field map's layer.
+    pub(crate) fn bg_slot_report(&self) -> Vec<(u32, u8, u8, u16, u16, u8, bool)> {
+        self.lookup
+            .bg_slots
+            .iter()
+            .map(|s| (s.entry, s.bg, s.mode, s.map_base, s.char_base, s.size, s.field))
+            .collect()
+    }
+
+    /// The box `w` x `h` at `(x, y)` of the last picture, one row per pixel: the layer on top (an
+    /// object `O`, a BG's `U`nder/`L`ayer/`H`idden, or `B`), the picture it is part of (`None` when
+    /// it is no picture's) and its CGRAM row. It says which part of a portrait is drawn from a
+    /// picture and which is left as the game's own pixels.
+    pub(crate) fn picture_map(
+        &self,
+        x: i32,
+        y: i32,
+        w: usize,
+        h: usize,
+    ) -> Vec<(u8, Option<u32>, u8)> {
+        let width = self.width;
+        let mut out = Vec::with_capacity(w * h);
+        for j in 0..h {
+            for i in 0..w {
+                let (x, y) = (x + i as i32, y + j as i32);
+                let Some(pixel) = (x >= 0 && y >= 0)
+                    .then(|| (y as usize) * width + (x as usize))
+                    .and_then(|at| self.pixels.get(at))
+                else {
+                    out.push((b'?', None, 0));
+                    continue;
+                };
+                let kind = if pixel.oam != crate::NO_OBJECT {
+                    b'O'
+                } else {
+                    match pixel.bg.kind {
+                        bgart::Kind::Under => b'U',
+                        bgart::Kind::Layer => b'L',
+                        bgart::Kind::Hidden => b'H',
+                        bgart::Kind::Object => b'B',
+                    }
+                };
+                let picture = if pixel.picture == NO_PICTURE { None } else { Some(pixel.picture) };
+                out.push((kind, picture, pixel.row));
+            }
+        }
+        out
+    }
+
     /// The poses of the frame `log` whose art the index holds, with the art's object index.
     pub(crate) fn find_poses(&mut self, log: &FrameLog) -> Vec<(Pose, u32)> {
         self.find_poses_in(log, &poses::View::window())
@@ -845,6 +901,8 @@ impl ArtState {
                 field: pose.field,
                 shadow: pose.shadow,
                 sprites: pose.sprites & !pose.excluded,
+                excluded: pose.excluded,
+                picture: is_picture(pose),
                 matched: false,
                 recoloured: false,
                 visible: seen(pose),

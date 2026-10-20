@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- A screenshot (F12, or the debug panel's Save screenshot and Save 1x frame) now writes the machine's
+  state beside the picture, named the same with `.ssdstate`, so the moment can be played back headless
+  (`xtask shots --state-in`). The PNG is deflate-compressed.
+
 ## 0.2.0 (2026-10-16)
 
 ### New

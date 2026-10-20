@@ -378,24 +378,31 @@ goes from polish to new content. Dates are not promised; each milestone ships wh
 | **M7** | **Options and difficulty** | The Options screen in the original's style: difficulty presets over the cheats' numbers, gameplay (text speed, message auto-run, battle animation speed, random encounters), video (fullscreen, scale, look, 16:9 or 4:3, scanlines, CRT, V-sync, Keep or Revert), audio (volume, mono or stereo), keyboard and gamepad remapping, accessibility (larger text, high contrast, a colour-blind-safe cursor); saved with the game or kept for the PC. |
 | **M8** | **HD polish** | HD art for the last field sprites and the town rooms, story scenes checked by an audit of every replay (flicker, faces, margins, missing art), palette-exact recolouring of every layer, a fast-forward that keeps x8, and the scripted fights checked with cheats. |
 
-### M9: Android port of the HD Remastered edition
+### M9: Android port of the HD Remastered edition (in progress)
 
-The finished Remastered game, on a phone or tablet:
+The finished Remastered game, on a phone or tablet. Built and played on phones; the release build (signing, icon) is
+what is left:
 
 - **Touch controls** (an on-screen pad and buttons, with a layout you can move) and **gamepad** support.
 - **Performance on mobile GPUs**: the HD renderer, the art streaming and the memory use tuned for phones.
 - **Installing the HD pack on the device**: one file, picked from the device's storage, installed on first launch.
 - **Bring your own ROM on Android**: pick your ROM file once; it is checked and cached like on the PC, and nothing is bundled.
 
-### M10: Mod support and data packs
+### M10: Cheats, mod support and data packs
 
+- Two more **cheats**: an **item spawner** (every object, with a short description and how many to add; story objects
+  such as the Dragon Balls and the Dragon Radar carry a red warning, since spawning them can break the story, so save
+  first) and a **zeni multiplier** (x1 to x10 on every zeni gained).
 - **Virtual ROM banks**: a pack adds or replaces data (maps, text, enemies, items, art) without touching the ROM.
 - A **scene-script language** for events, dialogue and cutscenes, with the original's scripts expressible in it.
 - **Tiled map import**: new maps authored in Tiled and compiled to the game's map format.
 - **Packaging**: one file per mod, a manifest with dependencies and versions, and checks that refuse a pack that
   does not fit your ROM.
 - A **mod loader screen** in the game: list, enable, disable and order packs; Classic stays untouched.
-- Documentation and an example pack.
+- Documentation and an example pack, which is also **the first mod**, not canon: **Super Saiyan Kaioken**. Goku can
+  use the Kaioken while he is a Super Saiyan, up to x10, and every move made in both costs 10% of his HP; with new
+  sprites for the mix of the two auras.
+- A **review of all the HD art**, character by character, before the new chapters.
 
 ### M11: The Androids and Cell arc
 

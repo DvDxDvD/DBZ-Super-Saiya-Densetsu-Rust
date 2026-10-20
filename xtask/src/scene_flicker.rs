@@ -130,6 +130,8 @@ mod tests {
             field,
             shadow: false,
             sprites: 0,
+            excluded: 0,
+            picture: false,
             matched: art.is_some(),
             recoloured: false,
             visible: 300,

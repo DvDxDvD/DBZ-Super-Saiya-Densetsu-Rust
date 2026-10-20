@@ -1054,11 +1054,12 @@ fn game_views<'a>(
     machine: &'a Machine,
     picture: Option<&'a HdFrame>,
     verify: Option<&'a LockstepRun>,
+    smooth: bool,
 ) -> Vec<GameView<'a>> {
     let hd_view = current_hd_view(hd_view, machine);
     let shown = hd_view.filter(|_| verify.is_none()).map(|view| &view.picture).or(picture);
     match (shown, verify) {
-        (Some(picture), _) => vec![GameView::enhanced(picture, &machine.frame())],
+        (Some(picture), _) => vec![GameView::enhanced(picture, &machine.frame(), smooth)],
         (None, Some(run)) => vec![
             GameView::classic(&run.machine_a().frame()),
             GameView::classic(&run.machine_b().frame()),
@@ -1938,6 +1939,7 @@ fn windowed_loop(
             machine,
             picture.as_ref(),
             env.verify.as_ref(),
+            matches!(state.video.look, ssd_hd::Look::Smooth),
         );
         let views = shape_views(views, state.video.shape(), &mut shape_buffer);
         // The HD menu on screen, from this frame's state: nothing on the field, nothing in Classic.
@@ -1975,7 +1977,11 @@ fn windowed_loop(
                 machine,
             );
             match &result {
-                Ok(path) => log::info!("screenshot saved to {}", path.display()),
+                Ok((png, state)) => log::info!(
+                    "screenshot saved to {} (state beside it at {})",
+                    png.display(),
+                    state.display()
+                ),
                 Err(e) => log::warn!("screenshot failed: {e}"),
             }
             let now = video.now();
@@ -1996,7 +2002,8 @@ fn windowed_loop(
 
 /// Takes a screenshot into the screenshots folder: the picture of the window without the debug panel (`Window`:
 /// the game views and the HD layer, drawn as the window draws them, at the window's size in pixels), or the PPU's own
-/// frame (`Frame`).
+/// frame (`Frame`). Writes the machine's state beside it, named the same, so the picture can be played back with
+/// `xtask shots --state-in`. Returns the two paths.
 fn take_screenshot(
     kind: screenshot::Kind,
     video: &mut video::Video,
@@ -2004,7 +2011,7 @@ fn take_screenshot(
     (scene, overlay): (Option<&ssd_menus::DrawList>, Option<&ssd_menus::DrawList>),
     mut art: Option<&mut hd::Art>,
     machine: &Machine,
-) -> std::io::Result<PathBuf> {
+) -> std::io::Result<(PathBuf, PathBuf)> {
     let (width, height, rgba) = match kind {
         screenshot::Kind::Window => video
             .capture(views, |ui, games| {
@@ -2016,7 +2023,10 @@ fn take_screenshot(
             (frame.size.width, frame.size.height, screenshot::frame_rgba(&frame))
         }
     };
-    screenshot::save(&screenshot::folder(), screenshot::Stamp::now(), width, height, &rgba)
+    let png =
+        screenshot::save(&screenshot::folder(), screenshot::Stamp::now(), width, height, &rgba)?;
+    let state = screenshot::save_state(&png, &machine.save_state())?;
+    Ok((png, state))
 }
 
 /// Windowed run: clock-paced at the core's target rate, audio queued to SDL, video via wgpu.
@@ -2140,7 +2150,11 @@ fn draw_snapshot(
     let wide = game_frame(current_view(state.view.as_ref(), machine), machine);
     let mut shape_buffer = Vec::new();
     let views = match shown_picture {
-        Some(picture) => GameView::enhanced(picture, &machine.frame()),
+        Some(picture) => GameView::enhanced(
+            picture,
+            &machine.frame(),
+            matches!(state.video.look, ssd_hd::Look::Smooth),
+        ),
         None => GameView::classic(&wide),
     };
     let views = [filter::shape(views, state.video.shape(), &mut shape_buffer)];

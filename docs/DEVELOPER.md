@@ -467,8 +467,10 @@ F12 (or the debug panel's Save screenshot) saves the picture the window shows as
 Enhanced picture with the HD menus and overlays at the window's size in pixels, or the Classic picture, laid out as with the
 panel closed. Save 1x frame saves the PPU's own frame unscaled. The files go to `<Pictures>\DBZ SSD Recompiled\`
 (the system's Pictures folder), named `dbz-YYYYMMDD-HHMMSS.png` in local time (`-2`, `-3` if several are taken in one
-second; a file is never overwritten). Without a Pictures folder, and on Android, they go to `screenshots\` of the data
-folder. A short notice (2 s) shows the path. The key is remappable on the Controls page; `SSD_SCREENSHOT_DIR` overrides
+second; a file is never overwritten). The PNG is deflate-compressed. Beside each picture the same run writes the machine's
+state, named the same with `.ssdstate` (as `states\slotN.ssdstate` is), so the moment is reproducible: `xtask shots
+--state-in`. Without a Pictures folder, and on Android, they go to `screenshots\` of the data folder. A short notice (2 s)
+shows the path. The key is remappable on the Controls page; `SSD_SCREENSHOT_DIR` overrides
 the folder (the tests use it). A screenshot is not a save: a headless run, a UI snapshot or a `--replay` run takes none.
 
 Only a windowed run writes the saves and states folders. A run that does not persist (a headless run, a UI snapshot, a
@@ -821,6 +823,15 @@ executable, the first `--mode enhanced` or `--hd-scale` launch builds the HD pac
 (`ssd_hdpack::install`: the converter, then the import, in a folder beside the pack that is moved into place when it is
 whole; a pack made from the same art is left alone), and says what it is doing on the console. `--install-hd-pack <zip or
 folder>` installs a pack from anywhere and fails the launch if it cannot (exit 7). Classic never installs anything.
+
+    cargo run --release -p xtask -- hd-pack-to-store <pack.zip|pack dir> <art store> [--masks <dir>]
+
+is the reverse of `hd-pack-public`: it brings an art store up to what a shared pack holds, to rebuild a lost store from
+a release. Every art file of the pack is written as a PNG into the store's folder (the field's poses into `class3`) unless
+the store has the same pixels; a map tile the store already has keeps its lossless PNG. The pack's entries are merged into
+the store's `index.json` by `id`: the fields the pack defines replace the store's and the store's own fields (descriptions,
+how the art was made) stay. With `--masks`, the outlines of `masks.bin` are written as PNGs for the keys the folder lacks.
+Run `hd-convert` and `hd-import` afterwards.
 
     cargo run --release -p xtask -- hd-art refpal [--pack DIR] [--maps-dump DIR] [--out FILE] [replay|dir...]
     cargo run --release -p xtask -- hd-art diff --pack A --pack-b B --pack-c C [--every N] [replay|dir...]
@@ -1187,6 +1198,12 @@ code that changes a variable. `--sram-out` writes the cartridge's SRAM at the en
 the map menu's Save it is a save the game wrote itself, a consistent start for the next experiment. How the menu, landing and save replays were authored: a timeline file, a state
 at the frame before it, and sheets of the frames in between. A timeline that is good goes into
 `crates/ssd-game/scripts/` and gets an entry in `ssd_game::scripts::REPLAYS`, which `make-replays` records.
+With `--hd-scale N` (and `--pack DIR`, else the cached pack) the frames are drawn as the Enhanced picture, so a moment
+saved with F12 (`--state-in`) is seen in HD with no window. `--gaps DIR` then prints, per frame, each pose with its art
+and where the art comes from, the background slots and the line registers, writes the poses with no art into `DIR`,
+and for a frame that shows a Mode 7 plane prints the plane's key and writes what `hd-art m7dump` writes into
+`DIR/m7-<key>/` (the plane's art in `mode7\` is made from it). `--box x,y,w,h` maps a box of the picture, a letter per
+pixel for the layer on top or the picture that draws it.
 
     cargo run --release -p xtask -- catalogue [--kind characters|cards|enemies|items|attacks|encounters]
 

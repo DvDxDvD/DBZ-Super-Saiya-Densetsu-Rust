@@ -1,7 +1,9 @@
 //! PNG files for the HD pack and the UI snapshots: 8-bit RGBA or 8-bit indexed images, written
 //! with stored (uncompressed) deflate blocks, so no image crate is needed. The files are larger
 //! than compressed PNGs; they are written once (the pack, the snapshots) and read by this crate
-//! only, so the size is the price of a deterministic writer with no dependency.
+//! only, so the size is the price of a deterministic writer with no dependency. Screenshots take
+//! it the other way: [`encode_rgba_compressed`] deflates them, since their size is what the player
+//! pays and their bytes are not part of anything reproducible.
 
 use std::io;
 use std::path::Path;
@@ -58,6 +60,29 @@ pub fn encode_rgba(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     assert_eq!(rgba.len(), row * height as usize, "{width} x {height} RGBA pixels");
     // 8 bits per sample, colour type 6 (RGBA), deflate, filter method 0, no interlacing.
     finish(width, height, 6, rgba.chunks_exact(row), &[])
+}
+
+/// The PNG file of an RGBA image, deflate-compressed. The same image as [`encode_rgba`], but a
+/// fraction of the size; for the screenshots, whose bytes nobody depends on. The pack keeps the
+/// stored writer above, so its files stay reproducible.
+///
+/// # Panics
+///
+/// `width` or `height` is zero, or `rgba` is not `width * height * 4` bytes.
+#[must_use]
+pub fn encode_rgba_compressed(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+    assert!(width > 0 && height > 0, "an image has pixels");
+    let row = width as usize * 4;
+    assert_eq!(rgba.len(), row * height as usize, "{width} x {height} RGBA pixels");
+    let mut out = Vec::new();
+    let mut encoder = ::png::Encoder::new(&mut out, width, height);
+    encoder.set_color(::png::ColorType::Rgba);
+    encoder.set_depth(::png::BitDepth::Eight);
+    encoder.set_compression(::png::Compression::Balanced);
+    let mut writer = encoder.write_header().expect("encoding a PNG header in memory");
+    writer.write_image_data(rgba).expect("encoding PNG pixels in memory");
+    writer.finish().expect("finishing a PNG in memory");
+    out
 }
 
 /// The PNG file of an image of palette indexes: 8-bit colour type 3 with `palette` (at most 256

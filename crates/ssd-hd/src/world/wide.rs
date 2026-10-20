@@ -408,6 +408,25 @@ impl WideRenderer {
         self.art.as_ref().map(|art| art.stats.clone()).unwrap_or_default()
     }
 
+    /// The portraits of the last picture: where each one's cells come from (see
+    /// [`crate::art::portrait_check::ArtState::portrait_uses`]).
+    #[must_use]
+    pub fn portrait_uses(&self) -> Vec<crate::PortraitUse> {
+        self.art.as_ref().map(|art| art.portrait_uses()).unwrap_or_default()
+    }
+
+    /// The box of the last picture (see [`crate::art::ArtState::picture_map`]).
+    #[must_use]
+    pub fn picture_map(&self, x: i32, y: i32, w: usize, h: usize) -> Vec<(u8, Option<u32>, u8)> {
+        self.art.as_ref().map(|art| art.picture_map(x, y, w, h)).unwrap_or_default()
+    }
+
+    /// The background slots of the last picture (see [`crate::art::ArtState::bg_slot_report`]).
+    #[must_use]
+    pub fn bg_slot_report(&self) -> Vec<(u32, u8, u8, u16, u16, u8, bool)> {
+        self.art.as_ref().map(|art| art.bg_slot_report()).unwrap_or_default()
+    }
+
     /// Turns the tally on or off ([`WideRenderer::set_art`] first): [`WideRenderer::render_hd`]
     /// then counts the pixels of every picture by what they are made of ([`crate::FrameTally`])
     /// and does not draw the art, only the filter's picture (what a tour measures is which pixels
@@ -1286,6 +1305,24 @@ impl WideRun {
     #[must_use]
     pub fn tally(&mut self) -> crate::FrameTally {
         self.renderer().tally()
+    }
+
+    /// The portraits of the last picture ([`WideRenderer::portrait_uses`]).
+    #[must_use]
+    pub fn portrait_uses(&self) -> Vec<crate::PortraitUse> {
+        self.renderer.as_ref().map(WideRenderer::portrait_uses).unwrap_or_default()
+    }
+
+    /// The box of the last picture ([`WideRenderer::picture_map`]).
+    #[must_use]
+    pub fn picture_map(&self, x: i32, y: i32, w: usize, h: usize) -> Vec<(u8, Option<u32>, u8)> {
+        self.renderer.as_ref().map(|r| r.picture_map(x, y, w, h)).unwrap_or_default()
+    }
+
+    /// The background slots of the last picture ([`WideRenderer::bg_slot_report`]).
+    #[must_use]
+    pub fn bg_slot_report(&self) -> Vec<(u32, u8, u8, u16, u16, u8, bool)> {
+        self.renderer.as_ref().map(WideRenderer::bg_slot_report).unwrap_or_default()
     }
 
     /// Notes the work RAM at the end of a frame: the state the frame just run started from.
