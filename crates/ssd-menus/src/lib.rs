@@ -18,6 +18,7 @@ pub mod options;
 pub mod screens;
 pub mod setup;
 pub mod style;
+pub mod ui_text;
 pub mod view;
 
 pub use draw::{Align, Color, DrawList, Op, Rect};

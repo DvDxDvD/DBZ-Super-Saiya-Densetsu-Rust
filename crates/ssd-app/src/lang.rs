@@ -5,23 +5,29 @@
 //! The translation is the player's file, read at run time (nothing of it is built in): `zh-hk.tsv`
 //! (`ssd_catalogue::translation`) in the data folder (`SSD_DATA_DIR`, the app's folder on Android), else next to the
 //! executable. Without it, or for a key it lacks, the text stays English; a missing file is said once in the log.
+//! The HD menus' words are the player's file too (`ui-zh-hk.tsv`, `ssd_menus::ui_text`), in the same places.
 
 use crate::paths;
 use ssd_catalogue::translation::Translation;
 use ssd_hd::translate::{ChineseFace, Overlay};
 use ssd_menus::Language;
 use ssd_menus::options::Values;
+use ssd_menus::ui_text::UiText;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// The file of the Traditional Chinese (Hong Kong) translation.
 pub const TABLE_FILE: &str = "zh-hk.tsv";
+/// The file of the HD menus' words in Traditional Chinese (Hong Kong).
+pub const UI_FILE: &str = "ui-zh-hk.tsv";
 
 /// The language `--lang` gave, which wins over the PC file for the run.
 static OVERRIDE: Mutex<Option<Language>> = Mutex::new(None);
 /// The translation, read on first use (`None` inside: looked for and not found, or unreadable), and forgotten by
 /// [`configure`]: Android runs the game more than once in a process.
 static TABLE: Mutex<Lookup<Arc<Translation>>> = Mutex::new(Lookup::Unread);
+/// The HD menus' words, read and forgotten as [`TABLE`] is.
+static UI_TABLE: Mutex<Lookup<Arc<UiText>>> = Mutex::new(Lookup::Unread);
 /// The Chinese font's bytes, read on first use, kept as [`TABLE`] is (but not forgotten: the windows' fonts are
 /// made from it).
 static FONT: Mutex<Lookup<Arc<[u8]>>> = Mutex::new(Lookup::Unread);
@@ -50,6 +56,7 @@ fn looked_up<T: Clone>(slot: &Mutex<Lookup<T>>, read: impl FnOnce() -> Option<T>
 pub fn configure(language: Option<Language>) {
     *OVERRIDE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = language;
     *TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Lookup::Unread;
+    *UI_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Lookup::Unread;
 }
 /// The language the command line gave, if it gave one.
 pub fn overridden() -> Option<Language> {
@@ -101,6 +108,34 @@ pub fn translation(language: Language) -> Option<Arc<Translation>> {
             }
         }
     })
+}
+
+/// The HD menus' words in `language`, read on first use; `None` for English, and when the file is missing or cannot
+/// be read (said once in the log: the menus stay English).
+pub fn ui_text(language: Language) -> Option<Arc<UiText>> {
+    if language != Language::ZhHk {
+        return None;
+    }
+    looked_up(&UI_TABLE, || read_ui_text(&places()))
+}
+
+/// The menus' table of the first of `places` that holds [`UI_FILE`].
+fn read_ui_text(places: &[PathBuf]) -> Option<Arc<UiText>> {
+    let Some(path) = find_in(places, UI_FILE) else {
+        log::warn!("no {UI_FILE} beside the translation: the HD menus stay English");
+        return None;
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let table = UiText::parse(&text);
+            log::info!("menus: {} rows from {}", table.len(), path.display());
+            Some(Arc::new(table))
+        }
+        Err(error) => {
+            log::warn!("{}: {error}; the HD menus stay English", path.display());
+            None
+        }
+    }
 }
 
 /// The font files a Traditional Chinese face is taken from, in the `fonts` folder of a place: Noto Sans HK (SIL OFL),
@@ -207,6 +242,19 @@ mod tests {
         std::fs::write(first.path().join(TABLE_FILE), "key\tzh\n").unwrap();
         assert_eq!(find_in(&places, TABLE_FILE), Some(first.path().join(TABLE_FILE)));
         assert_eq!(translation(Language::English), None);
+    }
+
+    #[test]
+    fn the_menus_table_is_the_players_file_and_english_reads_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let places = [dir.path().to_path_buf()];
+        assert!(read_ui_text(&places).is_none(), "no file: the menus stay English");
+        std::fs::write(dir.path().join(UI_FILE), "# made up\nTalk\t對話\nPage {}/{}\t第{}/{}頁\n")
+            .unwrap();
+        let table = read_ui_text(&places).unwrap();
+        assert_eq!(table.len(), 2);
+        assert_eq!(table.get("Page 1/2").as_deref(), Some("第1/2頁"));
+        assert!(ui_text(Language::English).is_none());
     }
 
     #[test]
