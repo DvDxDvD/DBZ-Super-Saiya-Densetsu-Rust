@@ -52,8 +52,10 @@ fn looked_up<T: Clone>(slot: &Mutex<Lookup<T>>, read: impl FnOnce() -> Option<T>
     }
 }
 
-/// Sets the language of the command line (`None`: the PC file's), and forgets the files read by an earlier run.
+/// Sets the language of the command line (`None`: the PC file's), forgets the files read by an earlier run, and
+/// shows the Options' Language row only where the player has a translation ([`available`]).
 pub fn configure(language: Option<Language>) {
+    ssd_menus::options::show_language_row(available());
     *OVERRIDE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = language;
     *TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Lookup::Unread;
     *UI_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Lookup::Unread;
@@ -82,6 +84,13 @@ fn places() -> Vec<PathBuf> {
 /// The first of `places` that holds the file `name`.
 fn find_in(places: &[PathBuf], name: &str) -> Option<PathBuf> {
     places.iter().map(|dir| dir.join(name)).find(|path| path.is_file())
+}
+
+/// Whether the player has a translation to choose: its file and a Chinese font in one of the places. Without them
+/// the language is never asked and the Options have no Language row, so the game is as it is without this feature.
+pub fn available() -> bool {
+    let places = places();
+    find_in(&places, TABLE_FILE).is_some() && find_font(&places).is_some()
 }
 
 /// The translation of `language`, read on first use; `None` for English, and when the file is missing or cannot be

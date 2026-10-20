@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn the_row_of_the_accessibility_page_has_the_choices_in_this_order() {
-        let row = crate::options::accessibility::ROWS
+        let row = crate::options::accessibility::ROWS_WITH_LANGUAGE
             .iter()
             .find(|row| row.key == Language::KEY)
             .expect("the Language row");

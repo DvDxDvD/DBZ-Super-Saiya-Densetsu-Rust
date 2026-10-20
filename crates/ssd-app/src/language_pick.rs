@@ -17,12 +17,13 @@ use ssd_menus::setup::{self, Command, Page, Setup};
 use ssd_menus::{Key, Language};
 use std::time::Duration;
 
-/// Whether the run asks for the language: an Enhanced run (`enhanced`) that writes the player's files, whose PC file
-/// (`settings`) holds no language, and whose command line gave none.
+/// Whether the run asks for the language: an Enhanced run (`enhanced`) that writes the player's files, where the
+/// player has a translation, whose PC file (`settings`) holds no language, and whose command line gave none.
 #[must_use]
 pub fn needed(enhanced: bool, settings: &Values) -> bool {
     enhanced
         && paths::persists()
+        && ssd_menus::options::language_row_shown()
         && crate::lang::overridden().is_none()
         && Language::from_values(settings).is_none()
 }
@@ -180,11 +181,15 @@ mod tests {
         crate::lang::configure(None);
         paths::set_persistent(true);
         let mut values = Values::new();
+        ssd_menus::options::show_language_row(false);
+        assert!(!needed(true, &values), "no translation: never asked");
+        ssd_menus::options::show_language_row(true);
         assert!(needed(true, &values));
         assert!(!needed(false, &values), "Classic never asks");
         Language::English.store(&mut values);
         assert!(!needed(true, &values), "asked once");
         paths::set_persistent(false);
         assert!(!needed(true, &Values::new()), "a run that does not persist never asks");
+        ssd_menus::options::show_language_row(false);
     }
 }
