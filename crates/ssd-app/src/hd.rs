@@ -240,14 +240,16 @@ impl Hd {
             list.append(ssd_menus::screens::slot_badges(which, self.driver.marked_slots(sram)));
         }
         (!list.ops().is_empty()).then(|| {
-            crate::options::access::restyle(&self.driver.options().pc, self.translated(list))
+            crate::options::access::restyle(&self.driver.options().pc, self.translated(list, None))
         })
     }
 
-    /// `list` with the menus' words in the language of the text.
-    fn translated(&self, mut list: DrawList) -> DrawList {
+    /// `list` with the menus' words in the language of the text, on the screen `context` (see [`UiText::get_in`]).
+    ///
+    /// [`UiText::get_in`]: ssd_menus::ui_text::UiText::get_in
+    fn translated(&self, mut list: DrawList, context: Option<&str>) -> DrawList {
         if let Some(table) = &self.ui_text {
-            list.map_text(|text| table.get(text));
+            list.map_text(|text| table.get_in(context, text));
         }
         list
     }
@@ -319,7 +321,11 @@ impl Hd {
     /// The HD's picture of the menu now, if the curtain is up.
     #[must_use]
     pub fn scene(&self, wram: &[u8]) -> Option<DrawList> {
-        self.driver.scene(wram).map(|list| self.translated(list))
+        let context = match self.driver.screen() {
+            Some(ssd_menus::view::Screen::Options) => Some("options"),
+            _ => None,
+        };
+        self.driver.scene(wram).map(|list| self.translated(list, context))
     }
 
     /// The 16:9 view of the frame that just ran (see [`WideRun::note`]); `None` when the frame has no

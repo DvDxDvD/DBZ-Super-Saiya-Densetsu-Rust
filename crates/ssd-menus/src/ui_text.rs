@@ -4,6 +4,9 @@
 //! name: `Page {}/{}` → `第{}/{}頁`), which go to the translation's holes in their order. A run the table lacks keeps
 //! its English.
 //!
+//! A whole run can also have a row for one screen only, `screen/english` (`options/Look`: the Video page's row, not the
+//! field command), which wins over the plain row on that screen ([`UiText::get_in`]).
+//!
 //! A table is the player's file, read by the app at run time (`ui-zh-hk.tsv` beside the translation of the game's
 //! text): nothing of it is built in.
 
@@ -47,6 +50,15 @@ impl UiText {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// The translation of the run `text` on the screen `context` (`options`): the screen's own row when the table has
+    /// one, else as [`UiText::get`] has it.
+    #[must_use]
+    pub fn get_in(&self, context: Option<&str>, text: &str) -> Option<String> {
+        context
+            .and_then(|context| self.whole.get(&format!("{context}/{text}")).cloned())
+            .or_else(|| self.get(text))
     }
 
     /// The translation of the run `text`; `None` when the table has neither it nor a pattern it fits.
@@ -115,6 +127,20 @@ mod tests {
     #[test]
     fn a_hole_that_is_a_word_of_the_table_is_translated_too() {
         assert_eq!(table().get("On: Talk").as_deref(), Some("開啟：對話"));
+    }
+
+    #[test]
+    fn a_screens_own_row_wins_there_and_only_there() {
+        let table = UiText::parse("Look\t調查\noptions/Look\t畫面風格\nTalk\t對話\n");
+        assert_eq!(table.get("Look").as_deref(), Some("調查"));
+        assert_eq!(table.get_in(None, "Look").as_deref(), Some("調查"));
+        assert_eq!(table.get_in(Some("options"), "Look").as_deref(), Some("畫面風格"));
+        assert_eq!(
+            table.get_in(Some("options"), "Talk").as_deref(),
+            Some("對話"),
+            "no own row: the plain one"
+        );
+        assert_eq!(table.get_in(Some("options"), "Fly"), None);
     }
 
     #[test]

@@ -422,6 +422,12 @@ impl Driver {
         self.state.nav.set_tab(tab);
     }
 
+    /// The screen the HD shows while the curtain is up (`None`: the game's own picture).
+    #[must_use]
+    pub fn screen(&self) -> Option<Screen> {
+        (self.state.curtain == Curtain::Up).then(|| self.state.nav.screen())
+    }
+
     /// What the HD draws now: the screen the HD shows, with its cursors, while the curtain is up.
     #[must_use]
     pub fn scene(&self, wram: &[u8]) -> Option<DrawList> {
