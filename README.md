@@ -37,6 +37,27 @@ HD text, new menus, a 60-slot bag, cheats, fast-forward and save states.
 > - Rights holders: if you believe something here infringes your rights, open an issue on this repository and it
 >   will be handled promptly.
 
+> [!NOTE]
+> **This fork: a Traditional Chinese (Hong Kong) fan translation.** The
+> [zh-HK pack](https://github.com/DvDxDvD/DBZ-Super-Saiya-Densetsu-Rust/releases/tag/zh-hk-pack-v1.0.0) is an
+> unofficial, fan-made translation, **provided as is**, with names from the 文化傳信 Hong Kong comic. It holds no game
+> data. It needs a build with translation support: offered upstream in
+> [#6](https://github.com/JackRushante/DBZ-Super-Saiya-Densetsu-Rust/pull/6), or build the
+> [`translation`](https://github.com/DvDxDvD/DBZ-Super-Saiya-Densetsu-Rust/tree/translation) branch here.
+>
+> Unzip the pack into the game's data folder, so the files sit next to `cache\`:
+>
+> | File | Goes to |
+> |------|---------|
+> | `zh-hk.tsv` (the game's text) | `<data folder>\zh-hk.tsv` |
+> | `ui-zh-hk.tsv` (the HD menus' words) | `<data folder>\ui-zh-hk.tsv` |
+> | `fonts\NotoSansHK-Regular.otf` and its licence | `<data folder>\fonts\` |
+>
+> The data folder is `%LOCALAPPDATA%\dbz-ssd-recompiled\` on Windows (or the folder `SSD_DATA_DIR` names), and
+> the app's private `files/` folder on Android. Then start the Remastered game: it asks for the language once, and
+> Options > Accessibility > Language changes it. Without these files nothing changes. The pack's README has the
+> details, a name comparison and the known gaps.
+
 ## Contents
 
 [Features](#features) - [Comparison gallery](#comparison-gallery) - [The new menus](#the-new-menus) -
